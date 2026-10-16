@@ -78,6 +78,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -320,6 +321,7 @@ function same(got, wanted, label, fieldsOnly = false) {
 
 (async () => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   const pageErrors = [];
   const dialogs = [];
   const newPage = async () => {
@@ -356,6 +358,20 @@ function same(got, wanted, label, fieldsOnly = false) {
   const nextName = () => `${NAME} ${String.fromCharCode(65 + (itemCount.n++ % 26))}${itemCount.n > 26 ? itemCount.n : ''}`;
   // The requests of a page that were answered: a page is at rest when no
   // further one arrives for a moment.
+  // The reads of a model the mock has answered: what the next item is drawn from.
+  const readsOf = async (id) =>
+    (await getLog()).filter((entry) => entry.method === 'GET' && entry.url.startsWith(`/modelRepository/models/${id}`) && entry.status !== null).length;
+  // An answer held back until the item chosen next is read: it arrives once
+  // that item is on its way to the page.
+  const nextItem = (id) => {
+    const next = { id, before: Infinity, chosen: false };
+    next.choose = async () => {
+      next.before = await readsOf(id);
+      next.chosen = true;
+    };
+    next.read = async () => next.chosen && (await readsOf(id)) > next.before;
+    return next;
+  };
   const atRest = async () => {
     let seen = -1;
     for (let round = 0; round < 60; round++) {
@@ -431,10 +447,10 @@ function same(got, wanted, label, fieldsOnly = false) {
     await goStep(page, 'LPB', 'setup');
     const before = await page.inputValue('#LPB-prompt-dropdown');
     await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
-    await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+    await dialogShown(page, '#promptBuilderCreatePromptModal');
     await page.fill('#promptBuilderCreatePromptName', name);
     await page.click('#promptBuilderCreatePromptModal .btn-primary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => {
       const now = await page.inputValue('#LPB-prompt-dropdown');
       return now !== before && now.startsWith('model-new-');
@@ -445,10 +461,10 @@ function same(got, wanted, label, fieldsOnly = false) {
   const createPromptProject = async (page) => {
     await goStep(page, 'LPB', 'setup');
     await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
-    await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+    await dialogShown(page, '#promptBuilderCreateProjectModal');
     await page.fill('#promptBuilderCreateProjectName', nextName());
     await page.click('#promptBuilderCreateProjectModal .btn-primary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await page.inputValue('#LPB-project-dropdown')) === 'proj-new', 'the new project is selected');
     await atRest();
   };
@@ -456,10 +472,10 @@ function same(got, wanted, label, fieldsOnly = false) {
   const cancelCreate = async (page, modal, nameField) => {
     await goStep(page, modal.includes('RGB') ? 'RGB' : 'LPB', 'setup');
     await page.click(`button[data-bs-target="${modal}"]`);
-    await page.waitForSelector(`${modal}.show`);
+    await dialogShown(page, modal);
     await page.fill(nameField, 'never created');
     await page.click(`${modal} .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     // The field is emptied by script, as `fill` would do it: once the dialog
     // has faded out it is hidden, and `fill` waits for a field to be visible.
     await page.$eval(nameField, (field) => {
@@ -714,9 +730,9 @@ function same(got, wanted, label, fieldsOnly = false) {
     await fillPromptTemplate(page);
     await goStep(page, 'LPB', 'setup');
     await page.click('#LPB-delete-prompt-button');
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     await page.click('.modal.show .btn-danger');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => !(await page.inputValue('#LPB-prompt-dropdown')).startsWith('model-new-'), 'the deleted prompt-test has left the picker');
     await atRest();
     same(await read(page, 'LPB'), promptIdle, 'new, filled by hand -> deleted: the page is what a fresh page shows with no prompt-test open');
@@ -774,13 +790,19 @@ function same(got, wanted, label, fieldsOnly = false) {
     // The first one, which has a best run, is still being read when the
     // second one, which has none, is chosen: nothing of the first was drawn,
     // so what was typed is still nobody's and is kept for the second.
+    const first = { asked: 0, answered: 0 };
+    const second = nextItem('model-free');
     await page.route('**/modelRepository/models/model-used', async (route) => {
-      await sleep(1500);
+      first.asked += 1;
+      await waitUntil(second.read, 'the second prompt-test is read', 120000).catch(() => {});
       await route.continue();
+      first.answered += 1;
     });
     await page.selectOption('#LPB-prompt-dropdown', 'model-used');
+    await second.choose();
     await page.selectOption('#LPB-prompt-dropdown', 'model-free');
-    await sleep(2500);
+    await waitUntil(async () => first.answered === first.asked, 'the first prompt-test is read', 60000);
+    await quiet(page);
     await atRest();
     await page.unroute('**/modelRepository/models/model-used');
     const kept = await read(page, 'LPB');
@@ -948,13 +970,14 @@ function same(got, wanted, label, fieldsOnly = false) {
     await goStep(page, 'LPB', 'evaluate');
     await page.check(lpb('evaluate-source-cas'));
     await chooseEvaluationTable(page);
-    // Every answer of a decision model takes six seconds from here on: the
-    // four cases of the first model are still out when the new template is
-    // created, and the four of the second model have not been asked yet.
+    // Every answer of a decision model is held from here on until the new
+    // template is created: the four cases of the first model are still out
+    // then, and the four of the second model have not been asked yet.
     let asked = 0;
+    const created = gate();
     await page.route('**/scr/**', async (route) => {
       asked += 1;
-      await sleep(6000);
+      await created.pass();
       await route.continue();
     });
     const firstCase = page.waitForRequest('**/scr/**');
@@ -962,6 +985,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await firstCase;
     await createPromptTest(page);
     const stillOut = await page.isDisabled(lpb('evaluate-run'));
+    created.open();
     step(stillOut, 'the new decision template was created while the answers of the evaluation were still out, and Evaluate stays disabled until they are in');
     await waitUntil(async () => !(await page.isDisabled(lpb('evaluate-run'))), 'the calls of the evaluation have ended', 40000);
     await page.unroute('**/scr/**');
@@ -1016,10 +1040,10 @@ function same(got, wanted, label, fieldsOnly = false) {
     const name = nextName();
     await goStep(page, 'RGB', 'setup');
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     await page.fill(rgb('create-setupName'), name);
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => {
       const made = (await ragState()).models.find((model) => model.name === name);
       return Boolean(made) && (await page.inputValue(rgb('setup'))) === made.id;
@@ -1029,10 +1053,10 @@ function same(got, wanted, label, fieldsOnly = false) {
   const createRagProject = async (page) => {
     await goStep(page, 'RGB', 'setup');
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
-    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await dialogShown(page, rgb('create-projectModal'));
     await page.fill(rgb('create-projectName'), nextName());
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await page.inputValue(rgb('project'))).startsWith('rag-proj-new-'), 'the new RAG project is selected');
     await atRest();
   };
@@ -1274,18 +1298,23 @@ function same(got, wanted, label, fieldsOnly = false) {
     await goStep(page, 'RGB', 'run');
     // Every answer about the state of the job takes three seconds.
     let polls = 0;
+    let answered = 0;
+    const other = nextItem('rag-setup-2');
     await page.route('**/jobExecution/jobs/ragrun-*', async (route) => {
       polls += 1;
-      await sleep(3000);
+      if (polls >= 2) await waitUntil(other.read, 'the other setup is read', 120000).catch(() => {});
       await route.continue();
+      answered += 1;
     });
     await page.click(rgb('launch'));
     // The second poll is the one that finds the job completed: it is out
     // when the other setup is chosen, and comes back after that.
-    await waitUntil(async () => polls >= 2, 'the second poll of the ingestion is out', 30000);
+    await waitUntil(async () => polls >= 2, 'the second poll of the ingestion is out', 60000);
     await goStep(page, 'RGB', 'setup');
+    await other.choose();
     await page.selectOption(rgb('setup'), 'rag-setup-2');
-    await sleep(5000);
+    await waitUntil(async () => answered === polls, 'the polls are answered', 60000);
+    await quiet(page);
     await atRest();
     await page.unroute('**/jobExecution/jobs/ragrun-*');
     const banner = ((await page.textContent(rgb('status'))) || '').replace(/\s+/g, ' ').trim();
@@ -1309,13 +1338,19 @@ function same(got, wanted, label, fieldsOnly = false) {
     await openRagBuilder(page);
     await chooseRagProject(page, 'rag-proj');
     await goStep(page, 'RGB', 'setup');
+    const setupRead = { asked: 0, answered: 0 };
+    const other = nextItem('rag-setup-2');
     await page.route('**/modelRepository/models/rag-setup-1/contents**', async (route) => {
-      await sleep(2000);
+      setupRead.asked += 1;
+      await waitUntil(other.read, 'the other setup is read', 120000).catch(() => {});
       await route.continue();
+      setupRead.answered += 1;
     });
     await page.selectOption(rgb('setup'), 'rag-setup-1');
+    await other.choose();
     await page.selectOption(rgb('setup'), 'rag-setup-2');
-    await sleep(3000);
+    await waitUntil(async () => setupRead.answered === setupRead.asked, 'the setup that was left is read', 60000);
+    await quiet(page);
     await atRest();
     await page.unroute('**/modelRepository/models/rag-setup-1/contents**');
     same(await read(page, 'RGB'), emptySetupReference, 'a saved setup that answers late -> a setup that was never saved: the one that is open shows what it shows on a fresh page, not the stored configuration of the other');
@@ -1350,17 +1385,22 @@ function same(got, wanted, label, fieldsOnly = false) {
       // the other setup is chosen while that answer is out.
       await goStep(page, 'RGB', 'setup');
       let asked = 0;
+      let answered = 0;
+      const other = nextItem('rag-setup-2');
       await page.route('**/modelRepository/models/model-parse/modelVersions**', async (route) => {
         asked += 1;
-        await sleep(2500);
+        await waitUntil(other.read, 'the other setup is read', 120000).catch(() => {});
         // (A request that is still held when the road ends has no page left.)
         await route.continue().catch(() => {});
+        answered += 1;
       });
       await page.selectOption(rgb('setup'), 'rag-setup-1');
       await waitUntil(async () => asked >= 1, 'the first prompt of the stored chain is being read back');
+      await other.choose();
       await page.selectOption(rgb('setup'), 'rag-setup-2');
-      // Long enough for a second prompt to be asked for and drawn, if it is.
-      await sleep(6500);
+      // A second prompt, if it is asked for, is a request of the page.
+      await waitUntil(async () => answered === asked, 'the versions of the first prompt are answered', 60000);
+      await quiet(page);
       await atRest();
       await page.unroute('**/modelRepository/models/model-parse/modelVersions**');
       const left = await enrichmentChain(page);
@@ -1489,7 +1529,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await waitUntil(async () => (await runCard(page)).state === 'running', 'the ingestion of the new setup runs', 30000);
     await goStep(page, 'RGB', 'setup');
     await page.click(rgb('delete-setup'));
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     await page.click('.modal.show .btn-danger');
     await waitUntil(async () => !(await ragState()).models.some((model) => model.id === deleted), 'the setup is deleted');
     await atRest();
@@ -1542,7 +1582,7 @@ function same(got, wanted, label, fieldsOnly = false) {
       90000
     );
     await atRest();
-    await sleep(500);
+    await quiet(page);
     await atRest();
   };
   await road('prompt template: an optimization is still running when another prompt-test is opened', async (page) => {
@@ -1584,16 +1624,18 @@ function same(got, wanted, label, fieldsOnly = false) {
       `and the result of the job, when it ends there (result: "${clip(ended.result)}", button: "${ended.button}"${ended.disabled ? ' [disabled]' : ''})`
     );
 
-    // A job that ends while another prompt-test is open. Its first poll is
-    // answered after four seconds, so that it cannot end before the new
-    // prompt-test is there.
+    // A job that ends while another prompt-test is open. Its polls are
+    // answered once the new prompt-test is there, so that it cannot end
+    // before.
+    const created = gate();
     await page.route('**/jobExecution/jobs/job-1', async (route) => {
-      await sleep(4000);
+      await created.pass();
       await route.continue();
     });
     await launchOptimization(page);
     await createPromptTest(page);
     const outAtTheCreation = (await jobPolls()) === 0;
+    created.open();
     await goStep(page, 'LPB', 'optimize');
     await jobEnded(page);
     await page.unroute('**/jobExecution/jobs/job-1');

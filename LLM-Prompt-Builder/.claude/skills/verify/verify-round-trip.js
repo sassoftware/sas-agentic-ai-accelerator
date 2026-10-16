@@ -60,6 +60,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, dialogShown } = require('./page-waits.cjs');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -344,6 +345,7 @@ function writersCensus(storedNames) {
   }
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   let pageErrors = [];
   const road = async (name, run) => {
     console.log(`---- ${name}`);
@@ -405,8 +407,15 @@ function writersCensus(storedNames) {
     await goStep(page, 'LPB', 'build');
     await resetLog();
     await page.click(lpb('pet-save-button'));
-    await page.waitForTimeout(300);
-    await waitUntil(async () => (await textOf(page, lpb('pet-save-button'))) === 'Save Experiments', 'the save has ended', 30000);
+    // Ended: a write of the save answered, and the button given back.
+    await waitUntil(
+      async () =>
+        (await getLog()).some((entry) => entry.method !== 'GET' && entry.status !== null) &&
+        !(await page.isDisabled(lpb('pet-save-button'))) &&
+        (await textOf(page, lpb('pet-save-button'))) === 'Save Experiments',
+      'the save has ended',
+      180000
+    );
     await atRest();
     return getLog();
   };
@@ -663,12 +672,17 @@ function writersCensus(storedNames) {
   const saveSetup = async (page) => {
     await goStep(page, 'RGB', 'store');
     await resetLog();
+    // The line of an earlier save is marked: the save has ended when the
+    // page has drawn its own line, and the button can be used again. (A save
+    // the page refuses before it writes draws its line at once.)
+    await page.$$eval(`${rgb('save-result')} .alert`, (alerts) => alerts.forEach((alert) => alert.setAttribute('data-verify-earlier', '')));
     await page.click(rgb('save'));
-    await page.waitForTimeout(300);
     await waitUntil(
-      async () => !(await page.isDisabled(rgb('save'))) && Boolean(await page.$(`${rgb('save-result')} .alert-success, ${rgb('save-result')} .alert-danger`)),
+      async () =>
+        !(await page.isDisabled(rgb('save'))) &&
+        Boolean(await page.$(`${rgb('save-result')} .alert-success:not([data-verify-earlier]), ${rgb('save-result')} .alert-danger:not([data-verify-earlier])`)),
       'the save has ended',
-      30000
+      180000
     );
     await atRest();
     return (await page.$(`${rgb('save-result')} .alert-success`)) !== null && uploadsOf(await getLog(), 'rag-setup-1', 'rag-setup.json').length === 1;
@@ -678,8 +692,11 @@ function writersCensus(storedNames) {
     await page.fill(rgb('setup-doc-intendedUse'), text);
     await resetLog();
     await page.click(rgb('save-documentation'));
-    await page.waitForTimeout(300);
-    await waitUntil(async () => !(await page.$(`${rgb('save-documentation')} .spinner-border`)), 'the save has ended', 30000);
+    await waitUntil(
+      async () => (await getLog()).some((entry) => entry.method !== 'GET' && entry.status !== null) && !(await page.$(`${rgb('save-documentation')} .spinner-border`)),
+      'the save has ended',
+      180000
+    );
     await atRest();
     // A save that went through says so in a toast; one that failed, in the banner.
     return uploadsOf(await getLog(), 'rag-setup-1', 'rag-setup.json').length === 1 && (await banner(page)) === '';
@@ -762,11 +779,14 @@ function writersCensus(storedNames) {
     await goStep(page, 'RGB', 'store');
     await resetLog();
     await page.click(rgb('manifest'));
-    await page.waitForTimeout(300);
     await waitUntil(
-      async () => !(await page.isDisabled(rgb('manifest'))) && (await textOf(page, rgb('manifest'))) === 'Manifest setup' && (await textOf(page, rgb('save-result'))) !== '',
+      async () =>
+        (await getLog()).some((entry) => entry.method !== 'GET' && entry.status !== null) &&
+        !(await page.isDisabled(rgb('manifest'))) &&
+        (await textOf(page, rgb('manifest'))) === 'Manifest setup' &&
+        (await textOf(page, rgb('save-result'))) !== '',
       'the manifest has ended',
-      90000
+      180000
     );
     await atRest();
     const manifested = uploadsOf(await getLog(), 'rag-setup-1', 'rag-setup.json').length > 0;
@@ -854,8 +874,7 @@ function writersCensus(storedNames) {
     await resetLog();
     await page.click(`${entries} summary`).catch(() => {});
     await page.click(`${lpb('pane-optimize')} .pb-optimize-history-delete`);
-    await page.waitForSelector('.modal.show .btn-danger', { timeout: 15000 });
-    await page.waitForTimeout(450);
+    await dialogShown(page, '.modal.show');
     await page.click('.modal.show .btn-danger');
     await waitUntil(async () => (await page.$$(entries)).length === drawn - 1, 'the run is gone from the history', 30000).catch(() => {});
     await atRest();

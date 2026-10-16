@@ -73,6 +73,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet } = require('./page-waits.cjs');
 const fs = require('fs');
 const path = require('path');
 const { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson } = require('./source-census.cjs');
@@ -741,6 +742,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
   await shapeCensus();
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   let pageErrors = [];
   const newPage = async () => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
@@ -976,8 +978,10 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
     const rows = [{ runId: 1, model: '', systemPrompt: SYSTEM, userPrompt: USER }, { runId: 1, model: MODEL, response: 'r', best_prompt: 0 }];
     await page.route('**/files/files/trk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) }));
     await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
-    await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 15000).catch(() => {});
-    await page.waitForTimeout(500);
+    await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 60000).catch(() => {});
+    // An image made of the texts would be a request of the page, its error
+    // handler run once that request failed.
+    await quiet(page);
     const seen = await page.evaluate(() => ({
       ran: window.__ran ?? null,
       system: (document.querySelector('#app-obj-LPB-pet-0-run-systenPrompt')?.textContent || '').trim(),
@@ -1025,7 +1029,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
         await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
         await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 15000).catch(() => {});
         await page.click(`${lpb('pet-0')} .pet-run-load`).catch(() => {});
-        await page.waitForTimeout(500);
+        await quiet(page);
         const line = await textOf(page, lpb('pet-save-only-result'));
         const text = await textOf(page, lpb('pet'));
         step(
@@ -1046,7 +1050,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
         const text = await textOf(page, lpb('pane-optimize'));
         const unread = (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-unread`)).length;
         await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`).catch(() => {});
-        await page.waitForTimeout(500);
+        await quiet(page);
         step(
           drawn === 2 && unread === 0 && !text.includes('[object Object]') && pageErrors.length === 0,
           `an optimization history whose entry holds ${how} - as a run and as a comparison - is drawn and loaded (entries: ${drawn}; line that it cannot be shown: ${unread}; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
@@ -1178,10 +1182,10 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
         await choose(page, 'RGB', rgb('project'), 'rag-proj');
         await failOnce(page, await matcher(), how);
         await choose(page, 'RGB', rgb('setup'), setup);
-        await waitUntil(async () => (await banner(page)) !== '', 'the banner', 15000).catch(() => {});
-        // The buttons are given back a moment after the reading - as late as
+        await waitUntil(async () => (await banner(page)) !== '', 'the banner', 60000).catch(() => {});
+        // The buttons are given back once the reading has ended - as late as
         // that, they have to be off still.
-        await page.waitForTimeout(1500);
+        await quiet(page);
         const usable = await usableWrites(page);
         const said = await banner(page);
         const kind = await page.$$eval(`${rgb('status')} .alert`, (alerts) => alerts.map((alert) => [...alert.classList].find((name) => /^alert-/.test(name))).join(','));
@@ -1240,8 +1244,8 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
       const served = typeof body === 'function' ? body(await (await fetch(`${BASE}${file}/content`)).json()) : body;
       await page.route(`**${file}/content`, (route) => route.fulfill({ status: 200, contentType: type, body: served }));
       await choose(page, 'RGB', rgb('setup'), 'rag-setup-1');
-      await waitUntil(async () => (await banner(page)) !== '', 'the banner', 15000).catch(() => {});
-      await page.waitForTimeout(1500);
+      await waitUntil(async () => (await banner(page)) !== '', 'the banner', 60000).catch(() => {});
+      await quiet(page);
       const usable = await usableWrites(page);
       const said = await banner(page);
       step(
@@ -1284,8 +1288,8 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
     await failOnce(page, (url) => url.pathname === `${file}/content`, 'refused');
     await resetLog();
     await page.click(rgb('save-documentation'));
-    await page.waitForTimeout(300);
-    await waitUntil(async () => !(await page.$(`${rgb('save-documentation')} .spinner-border`)), 'the save has ended', 30000);
+    await waitUntil(async () => !(await page.$(`${rgb('save-documentation')} .spinner-border`)) && (await banner(page)) !== '', 'the save has ended', 60000).catch(() => {});
+    await quiet(page);
     await atRest();
     const writes = (await getLog()).filter((entry) => entry.method !== 'GET').map((entry) => `${entry.method} ${entry.url}`);
     const said = await banner(page);
@@ -1365,7 +1369,8 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, fits, isExperimen
       await goStep(page, 'LPB', 'optimize');
       await waitUntil(async () => (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-load`)).length > 0, 'the history is drawn', 15000).catch(() => {});
       await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`);
-      await page.waitForTimeout(500);
+      // Loading an optimized prompt moves to Build & Test once it is loaded.
+      await page.waitForSelector(`${lpb('pane-build')}:not([hidden])`, { timeout: 15000 });
       const afterOptimization = await page.isChecked('#model0');
       step(
         !afterRun && !afterOptimization && pageErrors.length === 0,

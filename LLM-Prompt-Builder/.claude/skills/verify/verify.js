@@ -11,6 +11,7 @@
 const crypto = require('crypto');
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -137,7 +138,8 @@ async function assertLinkOpensTab(target, selector, label, own) {
   const href = await target.$eval(selector, (link) => link.href);
   const shown = await ownLinkText(target, selector, own);
   await target.click(selector);
-  await sleep(500);
+  // The click asks for the tab, or does not, before it returns.
+  await target.waitForFunction(() => window.__verifyOpened.length > 0, null, { timeout: 30000 }).catch(() => {});
   const seen = await target.evaluate(() => ({
     opened: window.__verifyOpened,
     copied: window.__verifyCopied,
@@ -179,7 +181,7 @@ async function assertLinkOpensRealTab(target, selector, label, own) {
   await tab.waitForLoadState('domcontentloaded');
   const tabUrl = tab.url();
   const cutOff = await tab.evaluate(() => window.opener === null);
-  await sleep(400);
+  // The click decided on the note before it returned; the tab has loaded since.
   const text = (await target.textContent(selector)).trim();
   await tab.close();
   await context.unroute(otherApplication);
@@ -237,11 +239,12 @@ async function assertLinkTextSurvivesSecondClick(target, selector, label, own) {
   });
   const shown = await ownLinkText(target, selector, own);
   await target.click(selector);
-  await sleep(600);
+  // The second click comes while the note of the first one is shown.
+  await waitUntil(async () => (await target.textContent(selector)).trim() !== shown, `${label}: the note of the first click is shown`, 30000).catch(() => {});
   await target.click(selector);
-  // The note of the first click would have gone 1.9 s from here, the second
-  // click starts its 2.5 s anew.
-  await sleep(3400);
+  // The second click starts the 2.5 s of its note anew; then the link has its
+  // own text back - not the note for good.
+  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: the link shows its own text again`, 30000).catch(() => {});
   const text = (await target.textContent(selector)).trim();
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
@@ -281,6 +284,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert(python, `a Python interpreter is available for the score code checks (${python ? `${python.command} ${python.args.join(' ')} = ${python.version}` : 'none found - set VERIFY_PYTHON'})`);
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
   const pageErrors = [];
   page.on('pageerror', (e) => {
@@ -442,7 +446,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     'disabled Run Experiments carries a hint'
   );
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   const createModalBody = await page.textContent('.modal.show .modal-body');
   assert(
     createModalBody.includes('saved into the currently selected project'),
@@ -454,12 +458,12 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   await assertCreateDialogLayout(page, '#promptBuilderCreatePromptModal', 'Create a new Prompt');
   await page.click('.modal.show .btn-close');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
-  await page.waitForSelector('#promptBuilderCreateProjectModal.show .modal-body');
+  await dialogShown(page, '#promptBuilderCreateProjectModal');
   await assertCreateDialogLayout(page, '#promptBuilderCreateProjectModal', 'Create a new Project');
   await page.click('.modal.show .btn-close');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
 
   // ---- load a prompt with 3 saved runs -------------------------------------
   await page.selectOption('#LPB-project-dropdown', 'proj-1');
@@ -1044,8 +1048,8 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     );
     assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
     // The click saves the experiments first, through the Save button.
-    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 3000);
-    await sleep(400);
+    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 60000);
+    await quiet(target);
     const entries = await getLog();
     const modelWrite = entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-used');
     const toasts = await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''));
@@ -1230,9 +1234,9 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       return fault === 'error page' ? route.fulfill(errorPage) : route.abort('failed');
     });
     await target.click(SAVE_BUTTON);
-    await waitUntil(async () => injected === 1, `${what}: the upload of the experiments fails`, 20000);
-    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 3000);
-    await sleep(300);
+    await waitUntil(async () => injected === 1, `${what}: the upload of the experiments fails`, 60000);
+    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 60000);
+    await quiet(target);
     const saveButton = `${(await target.textContent(SAVE_BUTTON)).trim()}${(await target.isDisabled(SAVE_BUTTON)) ? ', disabled' : ''}`;
     const saveLines = await target.$$eval(`${SAVE_BOX} .pet-save-failed`, (els) => els.map((e) => e.textContent.trim()));
     const savedToasts = (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('Experiments saved')).length;
@@ -1255,18 +1259,21 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   {
     const { target, errors } = await openPromptTest('a double click on Manifest', 'finalize');
     await target.check('#app-obj-LPB-pet-manifest-integrated');
+    // The upload of the save is answered once both clicks have landed.
+    const clicked = gate();
     await target.route('**/modelRepository/models/model-used/contents?*', async (route) => {
-      if (trackerUpload(route.request())) await sleep(700);
+      if (trackerUpload(route.request())) await clicked.pass();
       await route.continue().catch(() => {});
     });
     await resetLog();
     await target.dblclick(MANIFEST_BUTTON);
     const disabledAtOnce = await target.isDisabled(MANIFEST_BUTTON);
+    clicked.open();
     const manifestedToasts = async () => (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length;
     await waitUntil(async () => (await manifestedToasts()) >= 1, 'a double click on Manifest: a manifest goes through', 20000);
     await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === 'Manifest Best Prompt', 12000);
-    // A second run, where there is one, ends within this.
-    await sleep(2000);
+    // A second run, where there is one, is a request of the page.
+    await quiet(target);
     const entries = await getLog();
     const trackers = entries.filter((e) => e.method === 'POST' && e.body.includes('filename="Prompt-Experiment-Tracker.json"')).length;
     const scoreCodes = entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length;
@@ -1718,14 +1725,14 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       .map((e) => `${e.method} ${e.url.split('?')[0]}${e.xhr ? '' : ' (plain)'} ${e.status}`);
   const cancelDeletePrompt = async () => {
     await page.click('.modal.show .btn-secondary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => !(await page.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt enabled again');
   };
   await goStep('setup');
   await resetLog();
   await noSession('relationships');
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   let modalBody = await page.textContent('.modal.show .modal-body');
   assert(
     modalBody.includes('2 decision(s) currently use this prompt') && modalBody.includes('Loan Approval Decision') && modalBody.includes('Fraud Check Decision'),
@@ -1750,7 +1757,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await resetLog();
   await noSession('relationships', { csrf: true });
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   modalBody = await page.textContent('.modal.show .modal-body');
   usageLog = await usageRequests();
   assert(
@@ -1776,7 +1783,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await resetLog();
   await noSession('relationships', { stuck: true });
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   modalBody = await page.textContent('.modal.show .modal-body');
   assert(
     modalBody.includes('could not be verified') && !modalBody.includes('Loan Approval Decision'),
@@ -1785,7 +1792,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const stuckLog = ['POST /relationships/relationships 449', 'GET /relationships/ (plain) 200', 'POST /relationships/relationships 449'];
   usageLog = await usageRequests();
   assert(JSON.stringify(usageLog) === JSON.stringify(stuckLog), `the request is sent twice and the session asked for once (got: ${usageLog.join(' | ')})`);
-  await sleep(600);
+  await quiet(page);
   usageLog = await usageRequests();
   assert(JSON.stringify(usageLog) === JSON.stringify(stuckLog), `and nothing more is sent while the dialog is open (got: ${usageLog.join(' | ')})`);
   await cancelDeletePrompt();
@@ -1794,7 +1801,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // ---- prompt deletion: usage found, cancel then confirm ---------------------
   await resetLog();
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   modalBody = await page.textContent('.modal.show .modal-body');
   assert(modalBody.includes('2 decision(s) currently use this prompt'), `usage count shown (got: ${modalBody.trim()})`);
   const linkA = await page.$('.modal.show a[href$="/SASDecisionManager/decisions/flow-A"]');
@@ -1803,7 +1810,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert((await linkA.textContent()) === 'Loan Approval Decision', 'decision link shows the decision name');
   await page.screenshot({ path: 'shot-03-delete-prompt-usage.png', fullPage: true });
   await page.click('.modal.show .btn-secondary');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   log = await getLog();
   assert(!log.some((e) => e.method === 'DELETE'), 'cancel issued no DELETE');
   assert((await page.$$('#LPB-prompt-dropdown option[value="model-used"]')).length === 1, 'prompt still listed after cancel');
@@ -1814,9 +1821,9 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   step(true, 'Delete Prompt re-enabled after cancel');
 
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .btn-danger');
+  await dialogShown(page, '.modal.show');
   await page.click('.modal.show .btn-danger');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   await waitUntil(
     async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === '/modelRepository/models/model-used'),
     'model deleted'
@@ -1834,9 +1841,9 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
 
   // ---- prompt deletion: no usage / usage check failed ------------------------
   await page.selectOption('#LPB-prompt-dropdown', 'model-free');
-  await sleep(300);
+  await quiet(page);
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   modalBody = await page.textContent('.modal.show .modal-body');
   assert(modalBody.includes('No decisions were found using this prompt.'), 'no-usage note shown');
   const noOverflow = await page.evaluate(() => {
@@ -1847,13 +1854,13 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   assert(noOverflow, 'long prompt name (score_metric_answer_relevancy) wraps inside the modal');
   await page.screenshot({ path: 'shot-04-delete-prompt-nousage.png', fullPage: true });
   await page.click('.modal.show .btn-secondary');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
 
   await page.selectOption('#LPB-prompt-dropdown', 'model-err');
-  await sleep(300);
+  await quiet(page);
   await resetLog();
   await page.click('#LPB-delete-prompt-button');
-  await page.waitForSelector('.modal.show .modal-body');
+  await dialogShown(page, '.modal.show');
   modalBody = await page.textContent('.modal.show .modal-body');
   assert(modalBody.includes('could not be verified'), 'fail-open warning shown when the relationships call fails');
   await waitUntil(
@@ -1861,15 +1868,15 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     'modal focus trap active (fade-in finished)'
   );
   await page.keyboard.press('Escape'); // probe: Esc counts as cancel
-  await page.waitForSelector('.modal.show', { state: 'detached' });
-  await sleep(200);
+  await dialogsGone(page);
+  await quiet(page);
   log = await getLog();
   assert(!log.some((e) => e.method === 'DELETE'), 'Esc dismissal issued no DELETE');
 
   // ---- project deletion: cancel mid-sequence deletes nothing -----------------
   await resetLog();
   await page.click('#LPB-delete-project-button');
-  await page.waitForSelector('.modal.show .modal-title');
+  await dialogShown(page, '.modal.show');
   let title = await page.textContent('.modal.show .modal-title');
   assert(title.includes('Used Prompt (1/3)'), `sequential confirm shows progress counter (got: ${title.trim()})`);
   // Every confirmation of a project deletion carries the usage note of its
@@ -1905,8 +1912,8 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     return t && t.includes('(2/3)');
   }, 'second confirmation modal');
   await page.click('.modal.show .btn-secondary'); // cancel at prompt 2
-  await page.waitForSelector('.modal.show', { state: 'detached' });
-  await sleep(200);
+  await dialogsGone(page);
+  await quiet(page);
   log = await getLog();
   assert(!log.some((e) => e.method === 'DELETE'), 'cancelling mid-sequence deleted nothing');
   await waitUntil(
@@ -2077,19 +2084,24 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // button is drawn disabled; the run that ends afterwards has to be drawn
   // with its answers, and the buttons have to come back.
   await page.selectOption('#app-obj-LPB-judge-model', 'second_llm');
+  // The judgment is answered once the calls of the run are out, and they
+  // once the judgment is shown.
   const timedCalls = '**/scr/**';
+  let runCalls = gate();
   await page.route(timedCalls, async (route) => {
     const judgment = (route.request().postData() || '').includes('impartial evaluator');
-    await sleep(judgment ? 1500 : 4500);
+    if (judgment) await waitUntil(async () => runCalls.held > 0, 'the calls of the run are out', 120000).catch(() => {});
+    else await runCalls.pass();
     await route.continue().catch(() => {});
   });
   await page.click('#app-obj-LPB-pet-0-judge');
   assert(await judgeDisabled(0), 'the Judge button of a run is disabled while its judgment is out');
   await page.click('#app-obj-LPB-run-experiment');
-  await waitUntil(async () => Boolean(await page.$('#app-obj-LPB-pet-0 .pb-judge-banner')), 'the judgment of the first run is shown', 15000);
+  await waitUntil(async () => Boolean(await page.$('#app-obj-LPB-pet-0 .pb-judge-banner')), 'the judgment of the first run is shown', 60000);
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the calls of the run are still out when the judgment is back');
-  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run has ended', 20000);
-  await sleep(300);
+  runCalls.open();
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run has ended', 60000);
+  await quiet(page);
   runResults = await runModels(2);
   assert(
     runResults.map((r) => r.model).join(',') === 'demo_llm,second_llm,contrarian_judge',
@@ -2106,11 +2118,15 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // The judgment that comes back redraws every run. The Judge button of the
   // run whose judgment is still out is drawn anew: it has to show that it is
   // waiting, not stand there disabled with its icon and no hint.
+  // The first judgment is answered once both buttons were looked at, the
+  // second once the first one is back and looked at.
   let judgmentsAsked = 0;
+  const firstJudgment = gate();
+  const secondJudgment = gate();
   await page.route(timedCalls, async (route) => {
     if ((route.request().postData() || '').includes('impartial evaluator')) {
       judgmentsAsked += 1;
-      await sleep(judgmentsAsked === 1 ? 1000 : 5000);
+      await (judgmentsAsked === 1 ? firstJudgment : secondJudgment).pass();
     }
     await route.continue().catch(() => {});
   });
@@ -2122,13 +2138,15 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     (await judgeButton(0)).spinner && (await judgeButton(2)).spinner,
     'two runs are being judged: both Judge buttons show a spinner'
   );
-  await waitUntil(async () => !(await judgeDisabled(0)), 'the judgment of the first of them is back', 15000);
+  firstJudgment.open();
+  await waitUntil(async () => !(await judgeDisabled(0)), 'the judgment of the first of them is back', 60000);
   const waiting = await judgeButton(2);
   assert(
     waiting.disabled && waiting.spinner,
     `the Judge button of the run whose judgment is still out keeps its spinner through the redraw (disabled: ${waiting.disabled}, spinner: ${waiting.spinner})`
   );
-  await waitUntil(async () => !(await judgeDisabled(2)), 'the second judgment is back', 20000);
+  secondJudgment.open();
+  await waitUntil(async () => !(await judgeDisabled(2)), 'the second judgment is back', 60000);
   assert(
     !(await judgeButton(2)).spinner && Boolean(await page.$('#app-obj-LPB-pet-2 .pb-judge-banner')),
     'when it is back the run shows its judgment and the button its icon again'
@@ -2138,20 +2156,22 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // -- a judgment that comes back while a run is out that nobody answers -------------
   // The redraw draws the run that is out, empty, and counts it. No model
   // answers, the run is taken back - and must not stay on the page.
+  runCalls = gate();
   await page.route(timedCalls, async (route) => {
     if ((route.request().postData() || '').includes('impartial evaluator')) {
-      await sleep(1500);
+      await waitUntil(async () => runCalls.held > 0, 'the calls of the run are out', 120000).catch(() => {});
       return route.continue().catch(() => {});
     }
-    await sleep(4500);
+    await runCalls.pass();
     return route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"no container answers"}' }).catch(() => {});
   });
   await page.click('#app-obj-LPB-pet-0-judge');
   await page.click('#app-obj-LPB-run-experiment');
-  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'the judgment came back while the run was out, and the redraw drew the run that is out', 15000);
+  await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 4, 'the judgment came back while the run was out, and the redraw drew the run that is out', 60000);
   assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'the calls of that run are still out');
-  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run nobody answered has ended', 20000);
-  await sleep(300);
+  runCalls.open();
+  await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the run nobody answered has ended', 60000);
+  await quiet(page);
   assert((await runErrorLines()).length === 3, `every model of the run is named with its failure (got: ${(await runErrorLines()).join(' | ')})`);
   const runsShown = await runHeaderTexts();
   assert(
@@ -2169,9 +2189,11 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // when someone moves on). Their answers belong to the prompt-test the run
   // was started on: they must neither take a run from the tracker of the
   // prompt-test that is open by then, nor be written into it.
+  // ... answered once the other prompt-test was opened and looked at.
   const slowCalls = '**/scr/**';
+  const lateCalls = gate();
   await page.route(slowCalls, async (route) => {
-    await sleep(4000);
+    await lateCalls.pass();
     await route.continue().catch(() => {});
   });
   // The calls of the run the mock has answered so far (a held call is not in its log yet).
@@ -2180,6 +2202,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     // Opening a run selects its models, so the number of calls is read here.
     const calls = await page.$$eval('input[type=checkbox]', (boxes) => boxes.filter((box) => /^model\d+$/.test(box.id) && box.checked).length);
     await resetLog();
+    lateCalls.close();
     await page.click('#app-obj-LPB-run-experiment');
     await goStep('setup');
     await page.selectOption('#LPB-prompt-dropdown', promptId);
@@ -2187,10 +2210,11 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     await goStep('build');
     assert((await answeredCalls()) === 0, 'the calls of the run are still out when the other prompt-test is open');
     assert(await page.isDisabled('#app-obj-LPB-run-experiment'), 'Run Experiments stays disabled on the other prompt-test while they are');
+    lateCalls.open();
     // What follows is about the page AFTER the answers have come in.
-    await waitUntil(async () => calls > 0 && (await answeredCalls()) === calls, `the ${calls} call(s) of the run have been answered`, 20000);
-    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the Run button is released when the calls have ended');
-    await sleep(300);
+    await waitUntil(async () => calls > 0 && (await answeredCalls()) === calls, `the ${calls} call(s) of the run have been answered`, 60000);
+    await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-run-experiment')), 'the Run button is released when the calls have ended', 60000);
+    await quiet(page);
   };
   // Every model fails, on a prompt-test that is no longer the open one.
   for (const name of ['demo_llm', 'second_llm', 'contrarian_judge']) await failModel(name, 503);
@@ -2232,7 +2256,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await page.check('#model0');
   const errorsBefore = pageErrors.length;
   await openPromptDuringRun('model-used', 3);
-  await sleep(400);
+  await quiet(page);
   assert(pageErrors.length === errorsBefore, `late answers for another prompt-test raise no error (got: ${pageErrors.slice(errorsBefore).join(' | ')})`);
   assert((await page.textContent('#app-obj-LPB-run-experiment')).trim() === 'Run Experiments', 'the Run button is not left on Running Experiments');
   assert((await page.$$('.pet-run-delete')).length === 3, 'and the open prompt-test keeps exactly its three runs');
@@ -2245,7 +2269,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 4, 'prompts listed before the create');
   await resetLog();
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
-  await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+  await dialogShown(page, '#promptBuilderCreatePromptModal');
   await page.fill('#promptBuilderCreatePromptName', 'Created Prompt');
   await page.fill('#promptBuilderCreatePromptDescription', 'made by the verify suite');
   await page.click('#promptBuilderCreatePromptModal .btn-primary');
@@ -2260,7 +2284,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     createBody.name === 'Created Prompt' && createBody.projectId === 'proj-1' && createBody.algorithm === 'Prompt-Template',
     `the create request names the prompt, its project and its kind (got: ${createBody.name}, ${createBody.projectId}, ${createBody.algorithm})`
   );
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   await waitUntil(
     async () => (await page.inputValue('#LPB-prompt-dropdown')) === 'model-new-1',
     'the new prompt-test is selected'
@@ -2270,7 +2294,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // dialog stays open and says so; nothing called "undefined" is listed.
   await resetLog();
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreatePromptModal"]');
-  await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+  await dialogShown(page, '#promptBuilderCreatePromptModal');
   await page.fill('#promptBuilderCreatePromptName', 'Created Prompt');
   await page.click('#promptBuilderCreatePromptModal .btn-primary');
   await waitUntil(
@@ -2296,7 +2320,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const strayRequests = (await getLog()).filter((e) => e.url.includes('/models/undefined'));
   assert(strayRequests.length === 0, `no request goes to a model "undefined" (got: ${strayRequests.map((e) => `${e.method} ${e.url}`).join(' | ')})`);
   await page.click('#promptBuilderCreatePromptModal .btn-secondary');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   // A dialog whose name is empty, or blanks only, asks SAS Model Manager for
   // nothing. Sent on, the empty name was refused there, and the dialog said
   // that a project of this name may already exist. The creation request is
@@ -2318,7 +2342,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     });
     await markToastsSeen();
     await page.click(`#LPB-modal-button-container button[data-bs-target="#${dialog}Modal"]`);
-    await page.waitForSelector(`#${dialog}Modal.show`);
+    await dialogShown(page, `#${dialog}Modal`);
     const state = () =>
       page.evaluate((id) => {
         const error = document.getElementById(`${id}Error`);
@@ -2343,7 +2367,8 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       await page.fill(`#${dialog}Name`, name);
       await page.fill(`#${dialog}Description`, 'described, but not named');
       await page.click(`#${dialog}Modal .btn-primary`);
-      await sleep(800);
+      // The dialog answers at the click; a request would be the page's.
+      await quiet(page);
       const seen = await state();
       assert(sent.length === 0, `${label} with ${what}: no creation request is sent to SAS Model Manager (sent: ${sent.length})`);
       assert(
@@ -2366,7 +2391,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     await page.fill(`#${dialog}Description`, '');
     await page.unroute(creation);
     await page.click(`#${dialog}Modal .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
   };
   await assertNameIsNeeded('promptBuilderCreateProject', '**/modelRepository/projects', 'A project name is required.', 'Create a new Project');
   await assertNameIsNeeded('promptBuilderCreatePrompt', '**/modelRepository/models', 'A prompt name is required.', 'Create a new Prompt');
@@ -2379,7 +2404,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   const projectsBefore = await page.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value).join(','));
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
-  await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  await dialogShown(page, '#promptBuilderCreateProjectModal');
   await page.fill('#promptBuilderCreateProjectName', 'Refused Project');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
   await waitUntil(
@@ -2397,13 +2422,13 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   );
   await page.unroute(projectCreation);
   await page.click('#promptBuilderCreateProjectModal .btn-secondary');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   // Opened again, the dialog does not repeat the message of the last attempt.
   await page.click('#LPB-modal-button-container button[data-bs-target="#promptBuilderCreateProjectModal"]');
-  await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  await dialogShown(page, '#promptBuilderCreateProjectModal');
   assert(!(await page.isVisible('#promptBuilderCreateProjectError')), 'a create dialog that is opened again shows no message of the attempt before');
   await page.click('#promptBuilderCreateProjectModal .btn-secondary');
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   // What the dialog checked at the click is what is created. Create a new
   // Project asks for the repository first, and read the name field again
   // after that answer: a name cleared in between was sent as "". The dialog
@@ -2412,24 +2437,31 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // request that takes its time - the repository, or the creation itself.
   const assertCreatesWhatWasChecked = async (dialog, creation, slow, label) => {
     const sent = [];
+    // The request that takes its time is answered once the dialog was looked
+    // at while the creation is out.
+    const held = { out: 0, looked: false };
+    const hold = async () => {
+      held.out += 1;
+      await waitUntil(async () => held.looked, 'the dialog is looked at while the creation is out', 120000).catch(() => {});
+    };
     await page.route(creation, async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       sent.push(JSON.parse(route.request().postData() || '{}'));
-      if (!slow) await sleep(900);
+      if (!slow) await hold();
       return route.fulfill({ status: 403, contentType: 'application/json', body: '{"errorCode":1003,"message":"Forbidden","httpStatusCode":403}' });
     });
     if (slow) {
       await page.route(slow, async (route) => {
-        await sleep(900);
+        await hold();
         await route.continue().catch(() => {});
       });
     }
     await page.click(`#LPB-modal-button-container button[data-bs-target="#${dialog}Modal"]`);
-    await page.waitForSelector(`#${dialog}Modal.show`);
+    await dialogShown(page, `#${dialog}Modal`);
     await page.fill(`#${dialog}Name`, 'ZZ Named At The Click');
     await page.fill(`#${dialog}Description`, 'described at the click');
     await page.click(`#${dialog}Modal .btn-primary`);
-    await sleep(250);
+    await waitUntil(async () => held.out > 0, `${label}: the creation is out`, 60000).catch(() => {});
     // What a person could type now a script can always set: the fields are
     // emptied, whether or not they can be edited.
     const pending = await page.evaluate((id) => {
@@ -2440,6 +2472,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       description.value = '';
       return state;
     }, dialog);
+    held.looked = true;
     await waitUntil(async () => sent.length >= 1 && !(await page.isDisabled(`#${dialog}Modal .btn-primary`)), `${label}: the creation request is sent and answered`);
     const after = await page.evaluate((id) => ({ name: document.getElementById(`${id}Name`).disabled, description: document.getElementById(`${id}Description`).disabled }), dialog);
     assert(
@@ -2454,7 +2487,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     await page.unroute(creation);
     if (slow) await page.unroute(slow);
     await page.click(`#${dialog}Modal .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
   };
   await assertCreatesWhatWasChecked('promptBuilderCreateProject', '**/modelRepository/projects', '**/modelRepository/repositories/**', 'Create a new Project');
   await assertCreatesWhatWasChecked('promptBuilderCreatePrompt', '**/modelRepository/models', null, 'Create a new Prompt');
@@ -2480,14 +2513,13 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   const openCreateDialog = async (dialog) => {
     if (!(await page.isVisible(`#${dialog}Modal.show`))) {
       await page.click(`#LPB-modal-button-container button[data-bs-target="#${dialog}Modal"]`);
-      await page.waitForSelector(`#${dialog}Modal.show`);
     }
     // Faded in: Bootstrap has put the focus on the dialog.
-    await sleep(500);
+    await dialogShown(page, `#${dialog}Modal`);
   };
   const closeCreateDialog = async (dialog) => {
     if (await page.isVisible(`#${dialog}Modal.show`)) await page.click(`#${dialog}Modal .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
   };
   const refusal = (status, message) => ({ status, contentType: 'application/json', body: JSON.stringify({ errorCode: 0, message, httpStatusCode: status }) });
   // A name is a name by what it shows. White space and the characters of
@@ -2529,7 +2561,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       sent.length = 0;
       await page.fill(`#${dialog}Name`, name);
       await page.click(`#${dialog}Modal .btn-primary`);
-      await sleep(600);
+      await quiet(page);
       const seen = await createDialogState(dialog);
       assert(
         sent.length === 0 && seen.error === message && seen.focus === 'name' && seen.marked && !seen.createOff,
@@ -2578,7 +2610,11 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     const errorsBefore = pageErrors.length;
     await page.fill('#promptBuilderCreateProjectName', 'ZZ No Repository');
     await page.click('#promptBuilderCreateProjectModal .btn-primary');
-    await sleep(1200);
+    await waitUntil(async () => {
+      const state = await createDialogState('promptBuilderCreateProject');
+      return state.error !== '' && !state.createOff;
+    }, 'the creation has ended', 60000).catch(() => {});
+    await quiet(page);
     const seen = await createDialogState('promptBuilderCreateProject');
     const newToasts = (await page.$$('.toast-body:not([data-verify-seen])')).length;
     await page.unroute(repositoryRequest);
@@ -2611,7 +2647,11 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     });
     await page.fill('#promptBuilderCreatePromptName', 'ZZ Unexpected');
     await page.click('#promptBuilderCreatePromptModal .btn-primary');
-    await sleep(800);
+    await waitUntil(async () => {
+      const state = await createDialogState('promptBuilderCreatePrompt');
+      return state.error !== '' && !state.createOff;
+    }, 'the creation has ended', 60000).catch(() => {});
+    await quiet(page);
     const seen = await createDialogState('promptBuilderCreatePrompt');
     await page.evaluate(() => {
       document.getElementById('LPB-project-dropdown').value = 'proj-1';
@@ -2631,30 +2671,36 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // cannot be closed - by Escape, by its two closing buttons, by a click
   // beside it - and it can whenever none is, wherever the focus is.
   const assertCreateByKeyboard = async (dialog, creation, label) => {
+    // The creation is refused once the dialog was looked at while it is out.
+    const held = { out: 0, looked: false };
     await page.route(creation, async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
-      await sleep(1500);
+      held.out += 1;
+      await waitUntil(async () => held.looked, 'the dialog is looked at while the creation is out', 120000).catch(() => {});
       return route.fulfill(refusal(409, 'exists'));
     });
     for (const [key, keyName] of [['Enter', 'Enter'], ['Space', 'the space bar']]) {
       await openCreateDialog(dialog);
       await page.fill(`#${dialog}Name`, 'ZZ By Keyboard');
       await page.focus(`#${dialog}Modal .btn-primary`);
+      held.looked = false;
+      const before = held.out;
       await page.keyboard.press(key);
-      await sleep(250);
+      await waitUntil(async () => held.out > before, `${label}: the creation is out`, 60000).catch(() => {});
       const pending = await createDialogState(dialog);
+      // Escape and a click beside the dialog act at once: Bootstrap takes the
+      // dialog's show class when it starts to hide it.
       await page.keyboard.press('Escape');
-      await sleep(150);
       await page.mouse.click(5, 5);
-      await sleep(150);
       const openWhilePending = (await createDialogState(dialog)).open;
+      held.looked = true;
       let after = await createDialogState(dialog);
       for (let attempt = 0; attempt < 40 && (after.createOff || !after.error); attempt++) {
         await sleep(100);
         after = await createDialogState(dialog);
       }
       await page.keyboard.press('Escape');
-      await sleep(700);
+      await dialogsGone(page).catch(() => {});
       const openAfterEscape = (await createDialogState(dialog)).open;
       assert(
         pending.createOff && pending.fieldsOff && pending.closersOff && pending.focus === 'dialog' && openWhilePending,
@@ -2671,7 +2717,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     });
     const where = (await createDialogState(dialog)).focus;
     await page.keyboard.press('Escape');
-    await sleep(700);
+    await dialogsGone(page).catch(() => {});
     const openAfterEscape = (await createDialogState(dialog)).open;
     assert(
       where === 'body' && !openAfterEscape,
@@ -2699,7 +2745,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await resetLog();
   await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'choosing the placeholder of the prompt picker empties the tracker');
-  await sleep(600);
+  await quiet(page);
   let placeholderRequests = await viyaRequests();
   assert(
     placeholderRequests.length === 0,
@@ -2712,7 +2758,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await resetLog();
   await page.selectOption('#LPB-project-dropdown', { index: 0 });
   await waitUntil(async () => (await page.$$('#LPB-prompt-dropdown option')).length === 1, 'choosing the placeholder of the project picker empties the prompt list');
-  await sleep(600);
+  await quiet(page);
   placeholderRequests = await viyaRequests();
   assert(
     placeholderRequests.length === 0,
@@ -2742,37 +2788,39 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     documentationOff: await page.isDisabled(DOC_SAVE),
   });
   const promptsListed = async () => (await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value))).includes('model-used');
+  // Choose an entry, and come back once its loading is out.
+  const chooseWhileOut = async (select, value, path) => {
+    const out = page.waitForRequest((request) => request.url().includes(path), { timeout: 60000 });
+    await page.selectOption(select, value);
+    await out.catch(() => {});
+  };
   await page.selectOption('#LPB-project-dropdown', 'proj-1');
   await waitUntil(promptsListed, 'the prompt-tests of the project are listed, slowly');
   // Another prompt-test is chosen while the first one is still loading.
-  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
-  await sleep(150);
+  await chooseWhileOut('#LPB-prompt-dropdown', 'model-used', '/modelRepository/models/model-used');
   await page.selectOption('#LPB-prompt-dropdown', 'model-free');
   await waitUntil(async () => (await page.getAttribute('#LPB-openInMMButton', 'href')) !== null, 'the prompt-test chosen last is open');
-  await sleep(1500);
+  await quiet(page);
   let open = await openState();
   assert(
     open.picked === 'model-free' && open.runs === 0 && String(open.link).endsWith('/SASModelManager/models/model-free/files'),
     `a prompt-test that was still loading when another one was chosen is not drawn: the page shows the one the picker names (picker: ${open.picked}, runs drawn: ${open.runs}, link: ${open.link})`
   );
   // The placeholder is chosen while a prompt-test is still loading.
-  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
-  await sleep(100);
+  await chooseWhileOut('#LPB-prompt-dropdown', 'model-used', '/modelRepository/models/model-used');
   await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
-  await sleep(1800);
+  await quiet(page);
   open = await openState();
   assert(
     open.runs === 0 && open.link === null && open.deleteOff && open.documentationOff,
     `nor after the placeholder was chosen: no runs, no link, Delete Prompt and Save documentation off (runs drawn: ${open.runs}, link: ${open.link}, Delete off: ${open.deleteOff}, Save documentation off: ${open.documentationOff})`
   );
   // The same prompt-test chosen again while its first loading is out: drawn once.
-  await page.selectOption('#LPB-prompt-dropdown', 'model-used');
-  await sleep(100);
+  await chooseWhileOut('#LPB-prompt-dropdown', 'model-used', '/modelRepository/models/model-used');
   await page.selectOption('#LPB-prompt-dropdown', { index: 0 });
-  await sleep(100);
   await page.selectOption('#LPB-prompt-dropdown', 'model-used');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3, 'chosen, left and chosen again, the prompt-test opens');
-  await sleep(1200);
+  await quiet(page);
   open = await openState();
   assert(
     open.picked === 'model-used' && open.runs === 3 && !open.deleteOff && !open.documentationOff,
@@ -2783,16 +2831,15 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   // would write what is typed now to the prompt-test that was open before.
   await resetLog();
   await page.selectOption('#LPB-project-dropdown', { index: 0 });
-  await sleep(900);
+  await quiet(page);
   assert(
     (await page.isDisabled(DOC_SAVE)) && (await page.$$('.pet-run-delete')).length === 0,
     'with the placeholder of the project picker chosen, Save documentation is off and its fields no longer belong to the prompt-test that was open'
   );
   // A project whose prompt-tests are still being listed when the placeholder is chosen.
-  await page.selectOption('#LPB-project-dropdown', 'proj-1');
-  await sleep(100);
+  await chooseWhileOut('#LPB-project-dropdown', 'proj-1', '/modelRepository/projects/proj-1/models');
   await page.selectOption('#LPB-project-dropdown', { index: 0 });
-  await sleep(1200);
+  await quiet(page);
   const listedUnderPlaceholder = await page.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value));
   assert(
     listedUnderPlaceholder.length === 1,
@@ -2805,7 +2852,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 3 && !(await page.isDisabled(DOC_SAVE)), 'a prompt-test is open and its documentation can be saved');
   await page.click('#LPB-kind-decision');
   await waitUntil(async () => (await page.$$('.pet-run-delete')).length === 0, 'the other kind is shown, with nothing open');
-  await sleep(900);
+  await quiet(page);
   assert(await page.isDisabled(DOC_SAVE), 'after a change of kind Save documentation is off as well');
   await page.click('#LPB-kind-llm');
   await page.unroute('**/modelRepository/**', slowViya);
@@ -2845,9 +2892,10 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
     });
     await resetLog();
     await target.click('#app-obj-LPB-optimize-run');
-    await waitUntil(async () => injected === 1, `${what}: the upload of the experiments fails`, 20000);
-    await settles(async () => !(await target.isDisabled('#app-obj-LPB-pet-save-button')) && (await target.textContent('#app-obj-LPB-pet-save-button')).trim() === 'Save Experiments', 3000);
-    await sleep(1200);
+    await waitUntil(async () => injected === 1, `${what}: the upload of the experiments fails`, 60000);
+    await settles(async () => !(await target.isDisabled('#app-obj-LPB-pet-save-button')) && (await target.textContent('#app-obj-LPB-pet-save-button')).trim() === 'Save Experiments', 60000);
+    // A job launched after the failed save would be a request of the page.
+    await quiet(target);
     const launches = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/jobExecution/jobs').length;
     const said = ((await target.textContent('#app-obj-LPB-optimize-result')) || '').trim();
     const saveButton = `${(await target.textContent('#app-obj-LPB-pet-save-button')).trim()}${(await target.isDisabled('#app-obj-LPB-pet-save-button')) ? ', disabled' : ''}`;

@@ -23,7 +23,8 @@ node <path-to>/LLM-Prompt-Builder/.claude/skills/verify/run-all.cjs
 
 `run-all.cjs` copies the harness into the scratch folder as `.cjs` files
 (`source-census.js`, which reads the sources for the censuses of
-`verify-reads.js` and `verify-outcomes.js`, among them),
+`verify-reads.js` and `verify-outcomes.js`, and `page-waits.js`, the waits on
+the thing itself every browser suite takes, among them),
 starts a FRESH mock for each suite, runs it, and prints one line per suite
 (`verify: <n> OK, 0 FAIL`) plus every `FAIL` and `NOTE` line; the complete
 output is in `out-<suite>.log`, the mock's in `mock-<suite>.log`. Suite names
@@ -55,6 +56,7 @@ The committed `dist/index.html` must equal a fresh build, or the
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German); the box of a decision run reads "Best Decision Model" / "Bestes Entscheidungsmodell", every text the sources choose for a decision template that speaks of an experiment run names it, and no text of the decision side speaks of a best prompt or a best response | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
+| `verify-waits.js` | The harness itself: every call of `sleep`, `setTimeout` and `waitForTimeout` in a file of this folder is the definition of a sleep, a poll (inside a loop that looks again), or an answer a route holds back for a time that is itself a condition (named in `HELD`, with why) - no fixed-time wait guards a state - and no suite waits on the `show` class of a dialog | `npm ci` |
 
 The browser suites stop at their first failed check, so a run without the
 `===== SUMMARY =====` block did not run the checks after it. They repeat every
@@ -105,13 +107,13 @@ group still needs a look in a real report.
 
 ## By hand
 
-1. Copy `mock-server.js`, the suites, `source-census.js`, `python-check.cjs`
-   and `mock-fetch.cjs` into a scratch folder, the `.js` files renamed to
-   `.cjs` (`verify-round-trip.js` runs `optimize-job-writer.py` where it lies,
-   in this folder of the project): the harness is CommonJS, and
+1. Copy `mock-server.js`, the suites, `source-census.js`, `page-waits.js`,
+   `python-check.cjs` and `mock-fetch.cjs` into a scratch folder, the `.js`
+   files renamed to `.cjs` (`verify-round-trip.js` runs `optimize-job-writer.py`
+   where it lies, in this folder of the project): the harness is CommonJS, and
    `LLM-Prompt-Builder/package.json` declares `"type": "module"`, so running it
-   in place fails. (`verify-locales.js` and `verify-tokens.js` are the
-   exception - they run where they lie:
+   in place fails. (`verify-locales.js`, `verify-tokens.js` and
+   `verify-waits.js` are the exception - they run where they lie:
    `node .claude/skills/verify/verify-locales.js`.)
 2. Start the mock: `node mock-server.cjs <abs-path-to>/dist/index.html`. It
    serves http://localhost:4173, records every request (`GET /__log`) and
@@ -535,11 +537,14 @@ RAG side (stateful; the block sits before the generic routes):
   The Prompt Builder therefore has seven `.pb-section` cards with decision
   templates on and six with `enableDecision=false`, where the decision models,
   the designer and the decision manifest options are absent as well.
-- Bootstrap modals: the `.show` class disappears at the START of the hide
-  transition, but promise resolution / button re-enabling happens on
-  `hidden.bs.modal` (~300ms later) — poll instead of asserting immediately.
-  Escape only dismisses after the fade-in finished (focus trap active); wait for
-  `document.activeElement` to be the modal before pressing it.
+- Bootstrap modals: the `.show` class comes at the START of the fade-in and
+  goes at the START of the hide transition, but promise resolution / button
+  re-enabling happens on `hidden.bs.modal` (~300ms later), and a click on a
+  button of a dialog that still moves in waits for it to stand still. Wait on
+  the dialog itself: `dialogShown(page, selector)` (faded in, nothing of it
+  moving, the focus inside it - only then does Escape dismiss it) and
+  `dialogsGone(page)` (every dialog hidden, its backdrop gone) from
+  `page-waits.js`. `verify-waits.js` refuses a wait on the `show` class.
 - The run-header system prompt element id contains a pre-existing typo:
   `...-run-systenPrompt`.
 - Decision mode: each view lists its own projects (a POST to
@@ -581,8 +586,11 @@ RAG side (stateful; the block sits before the generic routes):
 - `verify.js` writes its screenshots (`shot-*.png`) into the working directory.
 - An item that is left takes with it what is still running for it. A check of
   that needs the answer to arrive AFTER the next item is on the page, so it
-  holds the answer back with a Playwright route (a `sleep` before
-  `route.continue()`) and reads the page only once the request was answered:
+  holds the answer back with a Playwright route - until the next item was read
+  (`nextItem` in `verify-new-item.js`), or at a `gate` of `page-waits.js` the
+  suite opens once it has looked - and reads the page only once the request
+  was answered and the page is `quiet` (no request of it out, also none a
+  route holds):
   the calls of an evaluation (`**/scr/**`; `evaluate-run` is disabled until
   they are in), the polls of an ingestion (`**/jobExecution/jobs/ragrun-*`,
   the second one finds the job completed), the reading of a setup

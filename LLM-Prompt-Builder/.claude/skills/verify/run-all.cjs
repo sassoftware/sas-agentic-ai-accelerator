@@ -32,9 +32,10 @@ const WORK = process.cwd();
 const DIST = path.resolve(process.env.VERIFY_DIST || path.join(PROJECT, 'dist', 'index.html'));
 const PORT = Number(process.env.MOCK_PORT) || 4173;
 const BASE = `http://localhost:${PORT}`;
-const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-new-item', 'verify-write-lock', 'verify-outcomes', 'verify-reads', 'verify-round-trip', 'verify-options', 'verify-locales', 'verify-tokens'];
-// The locale check and the token scan read files only: no mock, no browser.
-const NEEDS_MOCK = (suite) => suite !== 'verify-locales' && suite !== 'verify-tokens';
+const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-new-item', 'verify-write-lock', 'verify-outcomes', 'verify-reads', 'verify-round-trip', 'verify-options', 'verify-locales', 'verify-tokens', 'verify-waits'];
+// The locale check, the token scan and the census of the waits read files
+// only: no mock, no browser.
+const NEEDS_MOCK = (suite) => !['verify-locales', 'verify-tokens', 'verify-waits'].includes(suite);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const mockAnswers = () =>

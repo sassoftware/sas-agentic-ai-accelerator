@@ -48,6 +48,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -210,6 +211,7 @@ function writeButtonsInSource(text) {
     }
   }
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   const pageErrors = [];
   const dialogs = [];
   const newPage = async () => {
@@ -274,12 +276,14 @@ function writeButtonsInSource(text) {
     );
 
   /**
-   * Answer the requests that write late: the first one after `first`
-   * milliseconds, every further one after `rest`. `fault(request)` may name
-   * what a request gets instead of its answer: 'abort', or a status.
+   * Answer the requests that write late: the first one once the probe has
+   * made its attempt and looked at the page three times while it is out
+   * (`hold.first`, a gate the probe opens), every further one as it comes.
+   * `fault(request)` may name what a request gets instead of its answer:
+   * 'abort', or a status.
    */
-  const holdWrites = async (page, { first = 3000, rest = 150, fault = null } = {}) => {
-    const hold = { out: 0, seen: [] };
+  const holdWrites = async (page, { fault = null } = {}) => {
+    const hold = { out: 0, seen: [], first: gate() };
     hold.handler = async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
@@ -287,7 +291,7 @@ function writeButtonsInSource(text) {
       hold.out += 1;
       hold.seen.push(`${request.method()} ${path}`);
       try {
-        await sleep(hold.seen.length === 1 ? first : rest);
+        if (hold.seen.length === 1) await hold.first.pass();
         const instead = fault ? fault(request) : null;
         if (instead === 'abort') await route.abort('failed');
         else if (instead) await route.fulfill({ status: instead, contentType: 'application/json', body: JSON.stringify({ message: 'refused by the suite' }) });
@@ -346,6 +350,9 @@ function writeButtonsInSource(text) {
         quietSince = quietSince || Date.now();
         if (Date.now() - quietSince >= 600) break;
       }
+      // The first write is answered once the attempt was made and the page
+      // was looked at three times while it is out.
+      if (looks >= 3) hold.first.open();
       // Longer than the two minutes after which the page gives a request up,
       // which a loaded machine can reach.
       if (Date.now() - started > 300000) throw new Error('the write did not end');
@@ -460,10 +467,10 @@ function writeButtonsInSource(text) {
     await goStep(page, 'LPB', 'setup');
     const before = await valueOf(page, '#LPB-prompt-dropdown');
     await page.click('button[data-bs-target="#promptBuilderCreatePromptModal"]');
-    await page.waitForSelector('#promptBuilderCreatePromptModal.show');
+    await dialogShown(page, '#promptBuilderCreatePromptModal');
     await page.fill('#promptBuilderCreatePromptName', `Write lock ${++made}`);
     await page.click('#promptBuilderCreatePromptModal .btn-primary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => {
       const now = await valueOf(page, '#LPB-prompt-dropdown');
       return now !== before && now.startsWith('model-new-');
@@ -630,7 +637,7 @@ function writeButtonsInSource(text) {
     await choosePromptProject(page, 'proj-1');
     const created = await createPromptTest(page);
     await page.click('#LPB-delete-prompt-button');
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const seen = await probe(page, {
       controls: PROMPT_CONTROLS,
       start: async (hold) => {
@@ -660,16 +667,16 @@ function writeButtonsInSource(text) {
     await openPromptBuilder(page);
     await goStep(page, 'LPB', 'setup');
     await page.click('button[data-bs-target="#promptBuilderCreateProjectModal"]');
-    await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+    await dialogShown(page, '#promptBuilderCreateProjectModal');
     await page.fill('#promptBuilderCreateProjectName', 'Write lock project');
     await page.click('#promptBuilderCreateProjectModal .btn-primary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await valueOf(page, '#LPB-project-dropdown')) === 'proj-new', 'the new project is selected');
     await atRest();
     const created = await createPromptTest(page);
     await page.click('#LPB-delete-project-button');
     // One dialog per prompt-test of the project; the delete follows the last.
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const openProject = () => valueOf(page, '#LPB-project-dropdown');
     const seen = await probe(page, {
       controls: PROMPT_CONTROLS,
@@ -706,7 +713,7 @@ function writeButtonsInSource(text) {
     await page.waitForSelector(`${lpb('optimize-history')} .pb-optimize-history-delete`);
     const before = await page.$$eval(`${lpb('optimize-history')} .pb-optimize-history-delete`, (buttons) => buttons.length);
     await page.click(`${lpb('optimize-history')} .pb-optimize-history-delete`);
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const seen = await probe(page, {
       controls: PROMPT_CONTROLS,
       start: async (hold) => {
@@ -761,7 +768,7 @@ function writeButtonsInSource(text) {
     await choose(lpb('optimize-cas-table'), 'BIG_DATA');
     await atRest();
     await page.click(lpb('optimize-compare'));
-    await page.waitForSelector('.modal.show .btn-primary');
+    await dialogShown(page, '.modal.show');
     for (const candidate of await page.$$('.modal.show input[type="checkbox"]')) await candidate.check();
     const seen = await probe(page, {
       controls: PROMPT_CONTROLS,
@@ -836,10 +843,10 @@ function writeButtonsInSource(text) {
     const name = `Write lock setup ${++made}`;
     await goStep(page, 'RGB', 'setup');
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     await page.fill(rgb('create-setupName'), name);
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     let id = '';
     await waitUntil(async () => {
       const model = (await ragState()).models.find((candidate) => candidate.name === name);
@@ -977,7 +984,7 @@ function writeButtonsInSource(text) {
     await chooseRagProject(page, 'rag-proj');
     const created = await createRagSetup(page);
     await page.click(rgb('delete-setup'));
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const seen = await probe(page, {
       controls: RAG_CONTROLS,
       start: async (hold) => {
@@ -1006,16 +1013,16 @@ function writeButtonsInSource(text) {
     await openRagBuilder(page);
     await goStep(page, 'RGB', 'setup');
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
-    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await dialogShown(page, rgb('create-projectModal'));
     await page.fill(rgb('create-projectName'), 'Write lock RAG project');
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await valueOf(page, rgb('project'))).startsWith('rag-proj-new-'), 'the new RAG project is selected');
     await atRest();
     const project = await valueOf(page, rgb('project'));
     const created = await createRagSetup(page);
     await page.click(rgb('delete-project'));
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const openProject = () => valueOf(page, rgb('project'));
     const seen = await probe(page, {
       controls: RAG_CONTROLS,

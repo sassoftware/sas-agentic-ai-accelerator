@@ -90,6 +90,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet } = require('./page-waits.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const VERBOSE = process.env.VERIFY_VERBOSE === '1';
@@ -792,6 +793,18 @@ async function openSession(context, { nested = false } = {}) {
       return session.envelopes(resultName);
     },
     /**
+     * A message of a new resultName, answered: the object answers its
+     * messages in the order they came, so every message sent before it has
+     * been answered - or not - by then. Returns the name.
+     */
+    async marker() {
+      const name = nextResultName();
+      await session.send(dataMessage(name));
+      await session.waitEnvelopes(name, 30000);
+      if (nested) await eventually(async () => (await session.receivedByTop()).some((message) => message.data && message.data.resultName === name), 30000);
+      return name;
+    },
+    /**
      * Reload the object the way Visual Analytics does after an option changed:
      * the stored values go into the URL, and the data message follows at the
      * load event. Returns what came back and the frame to look at.
@@ -800,7 +813,7 @@ async function openSession(context, { nested = false } = {}) {
       // An empty document first, so requests of the previous one have reached
       // the mock before its log is cleared.
       await host.evaluate(() => window.vaHost.load('about:blank'));
-      await sleep(150);
+      await quiet(page);
       await resetLog();
       await host.evaluate(() => window.vaHost.clear());
       if (nested) await page.evaluate(() => window.vaTop.clear());
@@ -811,14 +824,14 @@ async function openSession(context, { nested = false } = {}) {
       let answeredName = resultName;
       // The answer is posted from the message handler, so it is there within
       // milliseconds or not at all; the wait only covers a busy machine.
-      let envelopes = await session.waitEnvelopes(resultName, 3000);
+      let envelopes = await session.waitEnvelopes(resultName, 30000);
       await waitBooted(app);
       const answeredAtLoad = envelopes.length > 0;
       if (!answeredAtLoad) {
         // Tell "listens too late" from "does not listen": ask again now that the page is up.
         answeredName = nextResultName();
         await session.send(dataMessage(answeredName));
-        envelopes = await session.waitEnvelopes(answeredName, 3000);
+        envelopes = await session.waitEnvelopes(answeredName, 30000);
       }
       if (settle) await requestsWentQuiet();
       const optionsConfig = envelopes.length ? envelopes[0].data.optionsConfig : null;
@@ -1049,6 +1062,7 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
   }
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   // English, because a few checks read a sentence of the page.
   const context = await browser.newContext({ viewport: { width: 1500, height: 1100 }, locale: 'en-US' });
   const mockOrigin = new URL(BASE).origin;
@@ -1080,16 +1094,16 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     );
 
     await session.send(dataMessage(name));
-    await sleep(400);
+    await session.marker();
     check((await session.envelopes(name)).length === 1, 'the same resultName a second time, as an object: still one envelope');
     await session.send(JSON.stringify(dataMessage(name)));
-    await sleep(400);
+    await session.marker();
     check((await session.envelopes(name)).length === 1, 'the same resultName again, as a JSON string: still one envelope');
 
     const second = nextResultName();
     await session.send(JSON.stringify(dataMessage(second)));
-    const secondEnvelopes = await session.waitEnvelopes(second, 2000);
-    await sleep(300);
+    const secondEnvelopes = await session.waitEnvelopes(second, 30000);
+    await session.marker();
     check((await session.envelopes(second)).length === 1, `a new resultName sent as a JSON string is answered once (got ${(await session.envelopes(second)).length})`);
     check(
       secondEnvelopes.length > 0 && JSON.stringify(secondEnvelopes[0].data.optionsConfig) === JSON.stringify(first.data.optionsConfig),
@@ -1101,13 +1115,15 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     const errorsBeforeNoise = session.pageErrors.length;
     const noise = ['not json at all', '{"broken":', 42, true, null, { hello: 'world' }, JSON.stringify({ hello: 'world' }), { resultName: 7 }, { resultName: '' }, [], '[]', '"text"', '7'];
     for (const message of noise) await session.send(message);
-    await sleep(500);
-    check((await session.received()).length === beforeNoise, 'messages without a usable resultName are not answered');
+    const markers = [await session.marker()];
+    // What came back, apart from the answers to the markers.
+    const receivedBesides = async () => (await session.received()).filter((message) => !(message.data && markers.includes(message.data.resultName))).length;
+    check((await receivedBesides()) === beforeNoise, 'messages without a usable resultName are not answered');
     check(session.pageErrors.length === errorsBeforeNoise, 'and none of them raises an error');
     await session.send('null');
-    await sleep(300);
+    markers.push(await session.marker());
     check(
-      (await session.received()).length === beforeNoise && session.pageErrors.length === errorsBeforeNoise,
+      (await receivedBesides()) === beforeNoise && session.pageErrors.length === errorsBeforeNoise,
       'a JSON string that parses to null is ignored without an error'
     );
     const strangers = (await session.received()).filter((message) => !(message.kind === 'object' && message.data && 'optionsConfig' in message.data));
@@ -1138,7 +1154,7 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     async ({ session, check, need }) => {
       const view = await session.load(promptSide(), { settle: false });
       need(view.optionsConfig, 'the options message is answered when the object has a parent and a different top window');
-      await sleep(300);
+      await session.marker();
       const toParent = (await session.envelopes(view.answeredName)).length;
       const toTop = (await session.receivedByTop()).filter(
         (message) => message.kind === 'object' && message.data && message.data.resultName === view.answeredName && 'optionsConfig' in message.data
@@ -1571,7 +1587,7 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
       const radio = document.getElementById('LPB-kind-rag');
       if (radio) radio.click();
     });
-    await sleep(800);
+    await quiet(session.page);
     const afterClick = await snapshot(app);
     check(
       !afterClick.rgb && afterClick.lpb.visible && afterClick.kinds.LPB.cards.llm.checked && ragRequests(await appRequests(), stored).length === 0,

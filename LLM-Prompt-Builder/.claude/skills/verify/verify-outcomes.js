@@ -66,6 +66,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 const { parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -325,6 +326,7 @@ function writesCensus() {
 (async () => {
   writesCensus();
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   let pageErrors = [];
   const newPage = async ({ clock = false, probeClicks = false } = {}) => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
@@ -427,20 +429,18 @@ function writesCensus() {
     await goStep(page, prefix, 'setup');
     const before = await page.inputValue(picker);
     await page.click(`button[data-bs-target="#${modal}Modal"]`);
-    await page.waitForSelector(`#${modal}Modal.show`);
-    await page.waitForTimeout(400);
+    await dialogShown(page, `#${modal}Modal`);
     const opened = { name: await page.inputValue(`#${modal}Name`), description: await page.inputValue(`#${modal}Description`) };
     await page.fill(`#${modal}Name`, name);
     await page.fill(`#${modal}Description`, description);
     await page.click(`#${modal}Modal .btn-primary`);
-    await page.waitForSelector('.modal.show', { state: 'detached', timeout: 15000 });
+    await dialogsGone(page);
     await waitUntil(async () => (await page.inputValue(picker)) !== before, `${name} is selected`);
     await atRest();
     return { id: await page.inputValue(picker), opened };
   };
   const confirmDialog = async (page) => {
-    await page.waitForSelector('.modal.show .btn-danger', { timeout: 15000 });
-    await page.waitForTimeout(450);
+    await dialogShown(page, '.modal.show');
     await page.click('.modal.show .btn-danger');
   };
 
@@ -678,9 +678,9 @@ function writesCensus() {
     await waitUntil(async () => (await page.$$eval(entries, (e) => e.length)) === 2, 'the history lists two runs');
     await page.click(`${lpb('pane-optimize')} .pb-optimize-history-delete[aria-label$="#1"]`);
     await confirmDialog(page);
-    await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000);
+    await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 60000);
     await atRest();
-    await page.waitForTimeout(500);
+    await quiet(page);
     return { said: await toasts(page), after: await page.$$eval(entries, (e) => e.length) };
   };
 
@@ -793,15 +793,21 @@ function writesCensus() {
     await openPage(page);
     await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
     const victim = (await createInDialog(page, 'LPB', '#LPB-prompt-dropdown', 'promptBuilderCreatePrompt', 'Outcome victim')).id;
+    // The usage is answered once the other prompt-test was chosen.
+    const usage = { asked: 0, answered: 0, picked: false };
     await page.route('**/relationships/relationships**', async (route) => {
-      await sleep(3000);
+      usage.asked += 1;
+      await waitUntil(async () => usage.picked, 'the other prompt-test is chosen', 120000).catch(() => {});
       await route.continue().catch(() => {});
+      usage.answered += 1;
     });
     await resetLog();
     await page.click('#LPB-delete-prompt-button');
-    await page.waitForTimeout(300);
+    await waitUntil(async () => usage.asked > 0, 'the usage is asked', 60000);
     await pickAsAPerson(page, '#LPB-prompt-dropdown', 'model-free');
-    await page.waitForTimeout(4000);
+    usage.picked = true;
+    await waitUntil(async () => usage.answered === usage.asked, 'the usage is answered', 60000);
+    await quiet(page);
     await atRest();
     const dialog = (await page.$$('.modal.show')).length;
     const deletes = (await getLog()).filter((entry) => entry.method === 'DELETE').length;
@@ -814,15 +820,21 @@ function writesCensus() {
   await road('Delete project while another one is chosen', async (page) => {
     await openPage(page);
     const project = (await createInDialog(page, 'LPB', '#LPB-project-dropdown', 'promptBuilderCreateProject', 'Outcome project')).id;
+    // The prompt-tests of the project are listed once another project was chosen.
+    const listing = { asked: 0, answered: 0, picked: false };
     await page.route(`**/modelRepository/projects/${project}/models**`, async (route) => {
-      await sleep(3000);
+      listing.asked += 1;
+      await waitUntil(async () => listing.picked, 'the other project is chosen', 120000).catch(() => {});
       await route.continue().catch(() => {});
+      listing.answered += 1;
     });
     await resetLog();
     await page.click('#LPB-delete-project-button');
-    await page.waitForTimeout(300);
+    await waitUntil(async () => listing.asked > 0, 'the prompt-tests of the project are asked for', 60000);
     await pickAsAPerson(page, '#LPB-project-dropdown', 'proj-1');
-    await page.waitForTimeout(4000);
+    listing.picked = true;
+    await waitUntil(async () => listing.answered === listing.asked, 'the listing is answered', 60000);
+    await quiet(page);
     await atRest();
     const dialog = (await page.$$('.modal.show')).length;
     const deletes = (await getLog()).filter((entry) => entry.method === 'DELETE').length;
@@ -885,9 +897,10 @@ function writesCensus() {
         });
         await page.click(what === 'project' ? '#LPB-delete-project-button' : '#LPB-delete-prompt-button');
         await confirmDialog(page);
-        if (lost === 'not carried out') await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 15000).catch(() => {});
+        if (lost === 'not carried out') await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 60000).catch(() => {});
+        else await waitUntil(async () => !(await listed(page, picker, id)), `the ${what} leaves the list`, 60000).catch(() => {});
         await atRest();
-        await page.waitForTimeout(800);
+        await quiet(page);
         const said = await toasts(page);
         const listedNow = await page.$$eval(`${picker} option`, (options) => options.map((option) => option.value));
         const open = await page.inputValue(picker);
@@ -930,7 +943,7 @@ function writesCensus() {
       const asked = (await (await fetch(`${BASE}/modelRepository/projects/${project}/models`)).json()).items.length;
       for (let dialog = 0; dialog < asked; dialog++) {
         await confirmDialog(page);
-        await page.waitForSelector('.modal.show', { state: 'detached', timeout: 15000 });
+        await dialogsGone(page);
       }
       await waitUntil(async () => (await toasts(page)).length > 0, 'a toast', 20000);
       await atRest();
@@ -993,11 +1006,10 @@ function writesCensus() {
     });
     await goStep(page, 'LPB', 'setup');
     await page.click('button[data-bs-target="#promptBuilderCreatePromptModal"]');
-    await page.waitForSelector('#promptBuilderCreatePromptModal.show');
-    await page.waitForTimeout(400);
+    await dialogShown(page, '#promptBuilderCreatePromptModal');
     await page.fill('#promptBuilderCreatePromptName', name);
     await page.click('#promptBuilderCreatePromptModal .btn-primary');
-    await page.waitForSelector('.modal.show', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await dialogsGone(page).catch(() => {});
     await atRest();
     const created = ((await (await fetch(`${BASE}/modelRepository/projects/proj-1/models`)).json()).items || []).find((model) => model.name === name);
     const open = await page.inputValue('#LPB-prompt-dropdown');
@@ -1057,16 +1069,23 @@ function writesCensus() {
     await openPromptTest(page, 'proj-1', 'model-used');
     const stored = (await (await fetch(BASE + '/files/files/trk-1/content')).json()).length;
     await goStep(page, 'LPB', 'build');
+    // The writes are answered once the change was sent.
+    const writes = gate();
     await page.route('**/modelRepository/models/model-used/**', async (route) => {
-      if (route.request().method() !== 'GET') await sleep(2500);
+      if (route.request().method() !== 'GET') await writes.pass();
       await route.continue().catch(() => {});
     });
     await resetLog();
     await page.click(lpb('pet-save-button'));
-    await page.waitForTimeout(400);
+    await waitUntil(async () => page.$eval('#LPB-selection', (block) => block.disabled), 'the save is out', 60000);
     await pickByScript(page, '#LPB-prompt-dropdown', 'model-free');
     const during = await page.inputValue('#LPB-prompt-dropdown');
-    await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 30000);
+    writes.open();
+    await waitUntil(
+      async () => !(await page.$eval('#LPB-selection', (block) => block.disabled)) && (await textOf(page, lpb('pet-save-only-result'))) !== '',
+      'the save has ended',
+      180000
+    );
     await atRest();
     const uploads = (await getLog()).filter((entry) => entry.method === 'POST' && entry.body.includes('filename="Prompt-Experiment-Tracker.json"'));
     const rows = uploads.map((entry) => {
@@ -1094,7 +1113,7 @@ function writesCensus() {
     });
     await page.click(lpb('pet-save-button'));
     await waitUntil(async () => held > 0, 'the first write is out');
-    await page.waitForTimeout(1000);
+    await waitUntil(async () => page.$eval('#LPB-selection', (block) => block.disabled), 'the selection is locked', 60000).catch(() => {});
     const lockedBefore = await page.$eval('#LPB-selection', (block) => block.disabled);
     await page.clock.fastForward(121000);
     await waitUntil(async () => !(await page.$eval('#LPB-selection', (block) => block.disabled)), 'the selection is usable again', 15000).catch(() => {});
@@ -1224,11 +1243,12 @@ function writesCensus() {
     const whileRead = await off();
     await page.click(rgb('manifest'), { timeout: 800, force: true }).catch(() => {});
     await page.click(rgb('save'), { timeout: 800, force: true }).catch(() => {});
-    await page.waitForTimeout(500);
-    const writesWhileRead = (await getLog()).filter((entry) => entry.method !== 'GET').length;
     release();
-    await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))), 'the setup is read', 15000).catch(() => {});
+    await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))), 'the setup is read', 60000).catch(() => {});
     await atRest();
+    await quiet(page);
+    // Nothing else was clicked: a write in the log is one of those clicks.
+    const writesWhileRead = (await getLog()).filter((entry) => entry.method !== 'GET').length;
     const afterRead = await off();
     step(
       Object.values(whileRead).every(Boolean) && writesWhileRead === 0 && !Object.values(afterRead).some(Boolean),
@@ -1252,7 +1272,6 @@ function writesCensus() {
     await waitUntil(async () => versions === 1, 'the model version is asked for', 60000);
     const off = await page.isDisabled(rgb('manifest'));
     await page.click(rgb('manifest'), { timeout: 800 }).catch(() => {});
-    await page.waitForTimeout(800);
     release();
     await waitUntil(() => manifestEnded(page), 'the manifest has ended', 60000);
     await atRest();
@@ -1309,16 +1328,18 @@ function writesCensus() {
     await openPage(page, 'rag');
     await openSetup(page, 'rag-setup-1');
     await goStep(page, 'RGB', 'store');
+    const writes = gate();
     await page.route('**/modelRepository/models/**', async (route) => {
-      if (route.request().method() !== 'GET') await sleep(1500);
+      if (route.request().method() !== 'GET') await writes.pass();
       await route.continue().catch(() => {});
     });
     await resetLog();
     await page.click(rgb('save'));
-    await page.waitForTimeout(300);
+    await waitUntil(async () => page.$eval(rgb('selection'), (block) => block.disabled), 'the save is out', 60000);
     await pickByScript(page, rgb('setup'), 'rag-setup-ss');
     const during = await page.inputValue(rgb('setup'));
-    await waitUntil(async () => !(await page.isDisabled(rgb('save'))) && !(await page.$eval(rgb('selection'), (block) => block.disabled)), 'the save has ended', 30000);
+    writes.open();
+    await waitUntil(async () => !(await page.isDisabled(rgb('save'))) && !(await page.$eval(rgb('selection'), (block) => block.disabled)), 'the save has ended', 180000);
     await atRest();
     const writtenTo = [...new Set((await getLog()).filter((entry) => entry.method !== 'GET').map((entry) => (/^\/modelRepository\/models\/([^/?]+)/.exec(entry.url) || [])[1]).filter(Boolean))];
     step(
@@ -1429,34 +1450,42 @@ function writesCensus() {
   await road('a setup opened twice while its question about a running ingestion is out', async (page) => {
     await openPage(page, 'rag');
     await choose(page, 'RGB', rgb('project'), 'rag-proj');
+    // The first question is answered once the second is out, the second once
+    // the save has ended.
     const asked = [];
     const answered = [];
+    let saveEnded = false;
     await page.route('**/jobExecution/jobs?*', async (route) => {
       const url = route.request().url();
       if (!/filter=/.test(url)) return route.continue();
       const index = asked.length;
       asked.push(Date.now());
-      await sleep(index === 0 ? 4000 : 12000);
+      await waitUntil(async () => (index === 0 ? asked.length === 2 : saveEnded), index === 0 ? 'the second question is out' : 'the save has ended', 180000).catch(() => {});
       await route.continue().catch(() => {});
       answered.push(index);
     });
     await goStep(page, 'RGB', 'setup');
     await page.selectOption(rgb('setup'), 'rag-setup-1');
-    await waitUntil(async () => asked.length === 1, 'the first question is out', 15000);
+    await waitUntil(async () => asked.length === 1, 'the first question is out', 60000);
     await page.selectOption(rgb('setup'), 'rag-setup-2');
-    await page.waitForTimeout(500);
+    await waitUntil(
+      async () => (await getLog()).some((entry) => entry.method === 'GET' && entry.url.startsWith('/modelRepository/models/rag-setup-2') && entry.status !== null),
+      'the other setup is read',
+      60000
+    );
     await page.selectOption(rgb('setup'), 'rag-setup-1');
-    await waitUntil(async () => asked.length === 2, 'two questions are out', 15000);
-    await waitUntil(async () => answered.includes(0), 'the first question is answered', 15000);
+    await waitUntil(async () => asked.length === 2, 'two questions are out', 60000);
+    await waitUntil(async () => answered.includes(0), 'the first question is answered', 60000);
     // A change of the lock asks the Launch button again.
-    await waitUntil(async () => !(await page.isDisabled(rgb('save'))), 'Save setup can be used', 15000);
+    await waitUntil(async () => !(await page.isDisabled(rgb('save'))), 'Save setup can be used', 60000);
     await goStep(page, 'RGB', 'store');
     await page.click(rgb('save'));
-    await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
+    await waitUntil(async () => !(await page.isDisabled(rgb('project'))) && Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 180000);
     const offWhileAsked = !answered.includes(1) && (await page.isDisabled(rgb('launch')));
     const secondOut = !answered.includes(1);
-    await waitUntil(async () => answered.includes(1), 'the second question is answered', 20000);
-    await page.waitForTimeout(500);
+    saveEnded = true;
+    await waitUntil(async () => answered.includes(1), 'the second question is answered', 60000);
+    await waitUntil(async () => !(await page.isDisabled(rgb('launch'))), 'Launch can be used', 60000).catch(() => {});
     const onAfter = !(await page.isDisabled(rgb('launch')));
     step(
       secondOut && offWhileAsked && onAfter,
@@ -1481,7 +1510,7 @@ function writesCensus() {
       return route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"refused by the suite"}' });
     });
     const { id } = await createInDialog(page, 'RGB', rgb('setup'), 'app-obj-RGB-create-setup', 'RS read late');
-    await page.waitForTimeout(1500);
+    await waitUntil(async () => failed && /could not be read back/.test(await textOf(page, rgb('status'))), 'the warning of a setup that was not read back', 60000).catch(() => {});
     const usable = async () => {
       const names = [];
       for (const [name, selector] of [['Save setup', rgb('save')], ['Manifest setup', rgb('manifest')], ['Save documentation', rgb('save-documentation')]]) {
@@ -1542,7 +1571,8 @@ function writesCensus() {
           if (others.length) reached.push(`${name}: ${others.map((listener) => listener.where).join(', ')}`);
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      // Bootstrap marks the page at once when it starts to show a dialog
+      // (modal-open on the body, the backdrop appended).
       const dialogs = [...document.querySelectorAll('.modal')].filter((modal) => modal.classList.contains('show') || modal.style.display === 'block').map((modal) => modal.id);
       if (document.body.classList.contains('modal-open') || document.querySelector('.modal-backdrop')) dialogs.push('a backdrop');
       return { off: controls.length, targets, texts, stoppedFirst, reached, dialogs };
@@ -1553,14 +1583,21 @@ function writesCensus() {
     await openPage(page);
     await openPromptTest(page, 'proj-1', 'model-used');
     await goStep(page, 'LPB', 'build');
+    // The writes of the save are answered once the clicks were sent.
+    const writes = gate();
     await page.route('**/modelRepository/models/model-used/**', async (route) => {
-      if (route.request().method() !== 'GET') await sleep(2500);
+      if (route.request().method() !== 'GET') await writes.pass();
       await route.continue().catch(() => {});
     });
     await page.click(lpb('pet-save-button'));
-    await waitUntil(async () => page.$eval('#LPB-selection', (block) => block.disabled), 'the selection is locked', 5000);
+    await waitUntil(async () => page.$eval('#LPB-selection', (block) => block.disabled), 'the selection is locked', 60000);
     const writing = await scriptedClicks(page);
-    await waitUntil(async () => (await textOf(page, lpb('pet-save-only-result'))) !== '', 'the save has ended', 30000);
+    writes.open();
+    await waitUntil(
+      async () => !(await page.$eval('#LPB-selection', (block) => block.disabled)) && (await textOf(page, lpb('pet-save-only-result'))) !== '',
+      'the save has ended',
+      180000
+    );
     await atRest();
     step(
       noneReached(writing),
@@ -1574,8 +1611,9 @@ function writesCensus() {
     await page.click(rgb('test'));
     await page.waitForSelector(rgb('test-question'), { state: 'visible' });
     await page.fill(rgb('test-question'), 'What does the handbook say about travel?');
+    const polls = gate();
     await page.route('**/jobExecution/jobs/ragtest-*', async (route) => {
-      await sleep(2500);
+      await polls.pass();
       await route.continue().catch(() => {});
     });
     await resetLog();
@@ -1583,9 +1621,10 @@ function writesCensus() {
     await page.keyboard.press('Enter');
     await page.keyboard.press('Enter');
     await page.keyboard.press('Enter');
-    await waitUntil(async () => page.isDisabled(rgb('test-run')), 'Run test is off', 5000);
+    await waitUntil(async () => page.isDisabled(rgb('test-run')), 'Run test is off', 60000);
     const during = await scriptedClicks(page);
     await page.keyboard.press('Enter');
+    polls.open();
     await waitUntil(async () => (await getLog()).some((entry) => entry.method === 'DELETE' && entry.url.startsWith('/jobDefinitions/definitions/') && entry.status !== null), 'the test has ended', 60000);
     await atRest();
     const log = await getLog();
@@ -1601,15 +1640,19 @@ function writesCensus() {
     );
     // While a save of the setup is out the selection and every button that
     // writes are off.
+    const uploads = gate();
     await page.route('**/modelRepository/models/rag-setup-1/contents?*', async (route) => {
-      if (route.request().method() === 'POST') await sleep(2500);
+      if (route.request().method() === 'POST') await uploads.pass();
       await route.continue().catch(() => {});
     });
     await goStep(page, 'RGB', 'store');
     await page.click(rgb('save'));
-    await waitUntil(async () => page.isDisabled(rgb('project')), 'the selection is locked', 5000);
+    await waitUntil(async () => page.isDisabled(rgb('project')), 'the selection is locked', 60000);
     const writing = await scriptedClicks(page);
-    await waitUntil(async () => Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 30000);
+    uploads.open();
+    // The save has ended when its writes are answered and the selection is
+    // given back, with its line beside the button.
+    await waitUntil(async () => !(await page.isDisabled(rgb('project'))) && Boolean(await page.$(`${rgb('save-result')} .alert`)), 'the save has ended', 180000);
     await atRest();
     step(
       noneReached(writing),
@@ -1782,11 +1825,14 @@ function writesCensus() {
       return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ httpStatusCode: 404, message: 'no such job' }) });
     });
     await page.click(rgb('launch'));
-    await waitUntil(async () => polls >= 3, 'three polls', 30000);
-    await page.waitForTimeout(800);
+    await waitUntil(async () => polls >= 3, 'three polls', 60000);
+    await waitUntil(async () => /no longer followed/.test((await runState(page)).text), 'the run is no longer followed', 60000).catch(() => {});
     const card = await runState(page);
     const pollsThen = polls;
-    await page.waitForTimeout(6000);
+    // A poll still planned would be due within the minute the clock of the
+    // page is moved on.
+    await page.clock.fastForward(60000);
+    await quiet(page);
     step(
       !card.launchOff && /no longer followed/.test(card.text) && polls === pollsThen,
       `an ingestion whose state cannot be read three times in a row is no longer followed: the card says so, Launch is offered again and no further poll is made (${JSON.stringify(card).slice(0, 260)}; polls: ${pollsThen} then ${polls})`
@@ -1797,7 +1843,7 @@ function writesCensus() {
     const id = jobs[jobs.length - 1].id;
     await fetch(`${BASE}/jobExecution/jobs/${id}`);
     await fetch(`${BASE}/jobExecution/jobs/${id}`);
-  });
+  }, { clock: true });
 
   await browser.close();
 

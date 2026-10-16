@@ -14,6 +14,7 @@
 const crypto = require('crypto');
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 const { resolvePython, compilePython, callScoreModel, withoutTlsDefault, expectedTlsVerify, tlsVerifyOf } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -77,6 +78,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   assert(python, `a Python interpreter is available for the score code checks (${python ? `${python.command} ${python.args.join(' ')} = ${python.version}` : 'none found - set VERIFY_PYTHON'})`);
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
   const pageErrors = [];
   page.on('pageerror', (e) => {
@@ -311,9 +313,11 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   await page.selectOption('#app-obj-LPB-evaluate-cas-table', 'DEC_CASES');
   // While the models are asked about the rows of the table the kind cannot be
   // changed, as during a run: the change would empty the page under the calls.
+  // The calls are answered once the change of kind was tried.
   const slowDecisionCalls = '**/scr/**';
+  let kindTried = false;
   await page.route(slowDecisionCalls, async (route) => {
-    await sleep(2500);
+    await waitUntil(async () => kindTried, 'the change of kind was tried', 120000).catch(() => {});
     await route.continue().catch(() => {});
   });
   await resetLog();
@@ -322,7 +326,8 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   await page.click('#LPB-kind-llm');
   await waitUntil(
     async () => (await page.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).some((t) => t.includes('cannot be changed while a run, an evaluation')),
-    'a toast says that the kind cannot be changed during an evaluation'
+    'a toast says that the kind cannot be changed during an evaluation',
+    60000
   );
   step(true, 'a change of kind during a CAS evaluation is refused with the reason');
   assert(
@@ -330,8 +335,9 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     'the decision kind, its project, its template and its steps stay as they were'
   );
   assert(!(await page.$$eval('#app-obj-LPB-evaluate-results .pb-evaluation', (els) => els.length)), 'the evaluation was still in flight at that moment');
+  kindTried = true;
   await goStep('evaluate');
-  await waitUntil(async () => (await page.$$('#app-obj-LPB-evaluate-results .pb-evaluation')).length >= 1, 'CAS evaluation rendered', 15000);
+  await waitUntil(async () => (await page.$$('#app-obj-LPB-evaluate-results .pb-evaluation')).length >= 1, 'CAS evaluation rendered', 60000);
   await page.unroute(slowDecisionCalls);
   log = await getLog();
   const casCalls = log.filter((e) => e.url === '/scr/jev_mock/jev_mock' && e.method === 'POST');
@@ -352,8 +358,9 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   assert(!(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), 'Manifest is enabled (a correct run exists)');
   await resetLog();
   await page.click('#app-obj-LPB-pet-create-model-button');
-  await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), 'the manifest was written', 20000);
-  await sleep(500);
+  await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), 'the manifest was written', 60000);
+  // The writes after it are requests of the page.
+  await quiet(page);
   log = await getLog();
   const outputVars = multipartJson(findPart(log, 'outputVar.json').body);
   const outputNames = outputVars.map((v) => v.name);
@@ -599,8 +606,8 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     );
     assert(ended, `${label}: the manifest has ended and its button is usable again (button: ${(await target.textContent(MANIFEST_BUTTON)).trim()}${(await target.isDisabled(MANIFEST_BUTTON)) ? ', disabled' : ''})`);
     // The click saves the experiments first, through the Save button.
-    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 3000);
-    await sleep(400);
+    await settles(async () => !(await target.isDisabled(SAVE_BUTTON)) && (await target.textContent(SAVE_BUTTON)).trim() === 'Save Experiments', 60000);
+    await quiet(target);
     const entries = await getLog();
     const modelWrite = entries.find((e) => e.method === 'PUT' && e.url === '/modelRepository/models/model-dec');
     const toasts = await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''));
@@ -747,19 +754,22 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // while it is out: the button is taken at the click, not after the save.
   {
     const { target, errors } = await openTemplate(APP_URL, 'a double click on Manifest');
+    // The upload of the save is answered once both clicks have landed.
+    const clicked = gate();
     await target.route('**/modelRepository/models/model-dec/contents?*', async (route) => {
       const request = route.request();
-      if (request.method() === 'POST' && (request.postData() || '').includes('filename="Prompt-Experiment-Tracker.json"')) await sleep(700);
+      if (request.method() === 'POST' && (request.postData() || '').includes('filename="Prompt-Experiment-Tracker.json"')) await clicked.pass();
       await route.continue().catch(() => {});
     });
     await resetLog();
     await target.dblclick(MANIFEST_BUTTON);
     const disabledAtOnce = await target.isDisabled(MANIFEST_BUTTON);
+    clicked.open();
     const manifestedToasts = async () => (await target.$$eval('.toast-body', (els) => els.map((e) => e.textContent || ''))).filter((text) => text.includes('has been manifested')).length;
-    await waitUntil(async () => (await manifestedToasts()) >= 1, 'a double click on Manifest: a decision manifest goes through', 20000);
+    await waitUntil(async () => (await manifestedToasts()) >= 1, 'a double click on Manifest: a decision manifest goes through', 60000);
     await settles(async () => !(await target.isDisabled(MANIFEST_BUTTON)) && (await target.textContent(MANIFEST_BUTTON)).trim() === MANIFEST_LABEL, 12000);
-    // A second run, where there is one, ends within this.
-    await sleep(2000);
+    // A second run, where there is one, is a request of the page.
+    await quiet(target);
     const entries = await getLog();
     const trackers = entries.filter((e) => e.method === 'POST' && e.body.includes('filename="Prompt-Experiment-Tracker.json"')).length;
     const scoreCodes = entries.filter((e) => e.method === 'POST' && e.body.includes('def scoreModel(')).length;
@@ -973,8 +983,8 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await waitUntil(async () => !(await page.isDisabled('#app-obj-LPB-pet-create-model-button')), `${label}: Manifest enabled`);
     await resetLog();
     await page.click('#app-obj-LPB-pet-create-model-button');
-    await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), `${label}: manifest written`, 20000);
-    await sleep(500);
+    await waitUntil(async () => Boolean(findPart(await getLog(), 'requirements.json')), `${label}: manifest written`, 60000);
+    await quiet(page);
     const manifestLog = await getLog();
     const code = multipartText(findPartMatching(manifestLog, /filename="[a-z_]+\.py"/).body);
     const outputs = multipartJson(findPart(manifestLog, 'outputVar.json').body).map((v) => v.name);
@@ -1089,7 +1099,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // A project created in the decision view carries the decision tag.
   await resetLog();
   await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]');
-  await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+  await dialogShown(page, '#promptBuilderCreateProjectModal');
   // Without a name the dialog asks SAS Model Manager for nothing, in this
   // kind as in the other. The request is answered here the way the service
   // answers an empty name, so that a page that does send it creates nothing.
@@ -1102,7 +1112,8 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   });
   await page.fill('#promptBuilderCreateProjectName', '  ');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
-  await sleep(800);
+  // The dialog answers at the click; a request would be the page's.
+  await quiet(page);
   const unnamed = await page.evaluate(() => {
     const error = document.getElementById('promptBuilderCreateProjectError');
     return {
@@ -1120,7 +1131,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // the word joiner and a blank, got past trim().
   await page.fill('#promptBuilderCreateProjectName', '\u200B\u2060 ');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
-  await sleep(800);
+  await quiet(page);
   const invisibleError = await page.evaluate(() => {
     const error = document.getElementById('promptBuilderCreateProjectError');
     return error && !error.hidden ? error.textContent.trim() : '';
@@ -1160,7 +1171,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   ]) {
     await page.fill('#promptBuilderCreateProjectName', name);
     await page.click('#promptBuilderCreateProjectModal .btn-primary');
-    await sleep(800);
+    await quiet(page);
     const blankLooking = await createProjectDialog();
     assert(
       blankLookingProjects === 0 && blankLooking.error === 'A project name is required.' && blankLooking.focus === 'promptBuilderCreateProjectName',
@@ -1176,7 +1187,11 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   const errorsBeforeLookup = pageErrors.length;
   await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
-  await sleep(1200);
+  await waitUntil(async () => {
+    const state = await createProjectDialog();
+    return state.error !== '' && !state.createOff;
+  }, 'the creation has ended', 60000).catch(() => {});
+  await quiet(page);
   const afterLookup = await createProjectDialog();
   await page.unroute(repositoryRefused);
   await page.unroute(projectCreation);
@@ -1187,25 +1202,29 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // Created by keyboard and refused: the focus waits on the dialog while the
   // creation is out - where Escape closes nothing - and is back on the
   // button afterwards, where Escape closes the dialog.
+  // The creation is refused once the dialog was looked at while it is out.
+  const held = { out: 0, looked: false };
   await page.route(projectCreation, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
-    await sleep(1500);
+    held.out += 1;
+    await waitUntil(async () => held.looked, 'the dialog is looked at while the creation is out', 120000).catch(() => {});
     return route.fulfill({ status: 409, contentType: 'application/json', body: '{"errorCode":0,"message":"exists","httpStatusCode":409}' });
   });
   await page.focus('#promptBuilderCreateProjectModal .btn-primary');
   await page.keyboard.press('Enter');
-  await sleep(250);
+  await waitUntil(async () => held.out > 0, 'the creation is out', 60000).catch(() => {});
   const whileOut = await createProjectDialog();
+  // Escape acts at once: Bootstrap takes the show class when it starts to hide.
   await page.keyboard.press('Escape');
-  await sleep(250);
   const openWhileOut = (await createProjectDialog()).open;
+  held.looked = true;
   let afterRefusal = await createProjectDialog();
   for (let attempt = 0; attempt < 40 && (afterRefusal.createOff || !afterRefusal.error); attempt++) {
     await sleep(100);
     afterRefusal = await createProjectDialog();
   }
   await page.keyboard.press('Escape');
-  await sleep(700);
+  await dialogsGone(page).catch(() => {});
   const openAfterEscape = (await createProjectDialog()).open;
   await page.unroute(projectCreation);
   assert(
@@ -1219,19 +1238,22 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   // Open again for the creation below.
   if (!(await page.isVisible('#promptBuilderCreateProjectModal.show'))) {
     await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]');
-    await page.waitForSelector('#promptBuilderCreateProjectModal.show');
+    await dialogShown(page, '#promptBuilderCreateProjectModal');
   }
   // The project is created under the name of the click. The repository is
   // asked first and takes its time here; the fields are emptied meanwhile.
   const repositoryLookup = '**/modelRepository/repositories/**';
+  // ... and is answered once the fields were looked at and emptied.
+  const lookup = { out: 0, looked: false };
   await page.route(repositoryLookup, async (route) => {
-    await sleep(900);
+    lookup.out += 1;
+    await waitUntil(async () => lookup.looked, 'the fields are looked at while the repository is asked', 120000).catch(() => {});
     await route.continue().catch(() => {});
   });
   await page.fill('#promptBuilderCreateProjectName', 'Routing Decisions');
   await page.fill('#promptBuilderCreateProjectDescription', 'decisions that route a request');
   await page.click('#promptBuilderCreateProjectModal .btn-primary');
-  await sleep(250);
+  await waitUntil(async () => lookup.out > 0, 'the repository is asked', 60000).catch(() => {});
   const pendingFields = await page.evaluate(() => {
     const name = document.getElementById('promptBuilderCreateProjectName');
     const description = document.getElementById('promptBuilderCreateProjectDescription');
@@ -1240,7 +1262,8 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     description.value = '';
     return state;
   });
-  await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'project created');
+  lookup.looked = true;
+  await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/projects'), 'project created', 60000);
   await page.unroute(repositoryLookup);
   const projectPost = (await getLog()).find((e) => e.method === 'POST' && e.url === '/modelRepository/projects');
   assert(JSON.parse(projectPost.body).tags.includes('Decision-Engineering'), 'a project made in the decision view is tagged Decision-Engineering');
@@ -1252,7 +1275,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     JSON.parse(projectPost.body).name === 'Routing Decisions' && JSON.parse(projectPost.body).description === 'decisions that route a request',
     `the decision project is created under the name and the description of the click, also with the fields emptied while the repository is asked (name sent: "${JSON.parse(projectPost.body).name}"; description sent: "${JSON.parse(projectPost.body).description}")`
   );
-  await page.waitForSelector('.modal.show', { state: 'detached' });
+  await dialogsGone(page);
   await waitUntil(async () => (await projectValues()) === 'proj-2,proj-new', `the new project joins the decision view (got ${await projectValues()})`);
   await page.click('#LPB-kind-llm');
   await waitUntil(async () => (await projectValues()) === 'proj-1', 'back in the LLM view the LLM project is listed');
@@ -1349,7 +1372,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   await waitUntil(async () => !(await deletePage.isDisabled('#LPB-delete-prompt-button')), 'Delete Prompt is enabled for the decision template');
   const openDeleteDialog = async (button) => {
     await deletePage.click(button);
-    await deletePage.waitForSelector('.modal.show .modal-body');
+    await dialogShown(deletePage, '.modal.show');
     return {
       title: (await deletePage.textContent('.modal.show .modal-title')).trim(),
       body: (await deletePage.textContent('.modal.show .modal-body')).trim(),
@@ -1358,7 +1381,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   };
   const closeDeleteDialog = async (button, confirm) => {
     await deletePage.click(confirm ? '.modal.show .btn-danger' : '.modal.show .btn-secondary');
-    await deletePage.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(deletePage);
     if (!confirm) await waitUntil(async () => !(await deletePage.isDisabled(button)), 'the delete button is enabled again after a cancel');
   };
   const BOTH_DECISIONS = `Loan Approval Decision -> ${BASE}/SASDecisionManager/decisions/flow-A, Fraud Check Decision -> ${BASE}/SASDecisionManager/decisions/flow-B`;

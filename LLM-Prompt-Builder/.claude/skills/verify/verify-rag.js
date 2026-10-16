@@ -34,6 +34,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
 const { resolvePython, compilePython, evaluateInModule } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -146,7 +147,8 @@ async function assertLinkOpensTab(target, selector, own, label) {
   });
   const href = await target.$eval(selector, (link) => link.href);
   await target.click(selector);
-  await sleep(500);
+  // The click asks for the tab, or does not, before it returns.
+  await target.waitForFunction(() => window.__verifyOpened.length > 0, null, { timeout: 30000 }).catch(() => {});
   const seen = await target.evaluate(() => ({ opened: window.__verifyOpened, cutOff: window.__verifyTab.opener === null }));
   const text = (await target.textContent(selector)).trim();
   await target.evaluate(() => {
@@ -198,6 +200,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   assert(python, `a Python interpreter is available for the score code check (${python ? `${python.command} ${python.args.join(' ')} = ${python.version}` : 'none found - set VERIFY_PYTHON'})`);
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  trackPagesOf(browser);
   const pageErrors = [];
   const newPage = async () => {
     const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
@@ -267,7 +270,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   const noSession = (service, how = {}) => fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify({ service, ...how }) });
   // The delete dialog that is open: its title, its text and the links in it.
   const shownDeleteDialog = async (page) => {
-    await page.waitForSelector('.modal.show .modal-body');
+    await dialogShown(page, '.modal.show');
     return {
       title: (await page.textContent('.modal.show .modal-title')).trim(),
       body: (await page.textContent('.modal.show .modal-body')).trim(),
@@ -276,7 +279,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   };
   const cancelDeleteDialogOf = async (page) => {
     await page.click('.modal.show .btn-secondary');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
   };
 
   // ---- offered: the RAG kind exists only when it is switched on ----------------
@@ -341,9 +344,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // Choosing RAG builds it and swaps the flow. While it is being built the
     // prompt flow stays on screen and cannot be used: a dialog opened now
     // would be hidden with the flow and leave its backdrop over the RAG steps.
+    // The embedding models are listed once the page was looked at meanwhile.
     const embeddingModels = '**/modelRepository/projects/emb-proj/models*';
+    const built = gate();
     await page.route(embeddingModels, async (route) => {
-      await sleep(2500);
+      await built.pass();
       await route.continue().catch(() => {});
     });
     await page.click('#LPB-kind-rag');
@@ -351,9 +356,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const whileLoading = await page.$eval('#app-area-prompt', (area) => ({ inert: area.inert === true, busy: area.getAttribute('aria-busy'), hidden: area.hidden }));
     assert(whileLoading.inert && whileLoading.busy === 'true' && !whileLoading.hidden, `the prompt flow stays on screen and takes no input meanwhile (got: ${JSON.stringify(whileLoading)})`);
     await page.click('[data-bs-target="#promptBuilderCreateProjectModal"]', { force: true, timeout: 1000 }).catch(() => {});
-    await sleep(400);
-    assert(!(await page.$('.modal.show')) && !(await page.$('#app-obj-RGB-stepper')), 'a click on Create a new Project opens no dialog while the RAG Builder loads');
-    await page.waitForSelector('#app-obj-RGB-stepper', { state: 'visible', timeout: 15000 });
+    // Bootstrap marks the page at once when it starts to show a dialog.
+    const dialogStarted = await page.evaluate(() => Boolean(document.querySelector('.modal.show, .modal-backdrop')) || document.body.classList.contains('modal-open'));
+    assert(!dialogStarted && !(await page.$('#app-obj-RGB-stepper')), 'a click on Create a new Project opens no dialog while the RAG Builder loads');
+    built.open();
+    await page.waitForSelector('#app-obj-RGB-stepper', { state: 'visible', timeout: 60000 });
     await page.unroute(embeddingModels);
     step(true, 'choosing the RAG kind shows the RAG flow');
     const afterSwap = await page.evaluate(() => ({
@@ -461,7 +468,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // -- a project ---------------------------------------------------------------
     await resetLog();
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
-    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await dialogShown(page, rgb('create-projectModal'));
     await page.fill(rgb('create-projectName'), 'ZZ Verify RAG');
     await page.fill(rgb('create-projectDescription'), 'Created by verify-rag');
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
@@ -474,12 +481,12 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `the project is created as a RAG project in the configured repository (got: ${projectPost.body.slice(0, 200)})`
     );
     assert(projectBody.tags.includes('RAG-Engineering') && projectBody.tags.includes('LLM'), 'it carries the tags the RAG view lists by');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
 
     // -- a setup -----------------------------------------------------------------
     await resetLog();
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     await page.fill(rgb('create-setupName'), 'ZZ Verify Setup');
     await page.fill(rgb('create-setupDescription'), 'A corpus made by the verify suite');
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
@@ -495,7 +502,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `the setup is created as a RAG model in that project (got: ${JSON.stringify(setupBody).slice(0, 260)})`
     );
     assert(setupBody.modeler === 'tester', `the setup records who made it (got modeler: ${setupBody.modeler})`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await page.waitForSelector(EDITOR, { state: 'visible' });
     step(true, 'the editor opens for the new setup');
 
@@ -879,7 +886,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await goRagStep(page, 'setup');
     await resetLog();
     await page.click(rgb('delete-setup'));
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const beforeConfirm = await getLog();
     assert(
       beforeConfirm.some((e) => e.method === 'POST' && e.url.startsWith('/relationships/relationships') && e.body.includes(`/modelRepository/models/${setupId}`)) && !beforeConfirm.some((e) => e.method === 'DELETE'),
@@ -888,19 +895,19 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const setupDialog = (await page.textContent('.modal.show .modal-body')).trim();
     assert(setupDialog.includes('No decision references this.'), `the dialog says that no decision uses the new setup (got: ${setupDialog})`);
     await page.click('.modal.show .btn-danger');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === `/modelRepository/models/${setupId}`), 'the setup is deleted in Model Manager');
     await waitUntil(async () => !(await optionValues(page, 'setup')).includes(setupId), 'the deleted setup leaves the list');
     assert(!(await page.isVisible(EDITOR)), 'the editor closes with it');
     await page.click(rgb('delete-project'));
-    await page.waitForSelector('.modal.show .btn-danger');
+    await dialogShown(page, '.modal.show');
     const emptyProjectDialog = (await page.textContent('.modal.show .modal-body')).trim();
     assert(
       emptyProjectDialog.includes('This project holds no setups.') && !/decision/i.test(emptyProjectDialog),
       `the dialog of a project without setups says so and carries no usage note (got: ${emptyProjectDialog})`
     );
     await page.click('.modal.show .btn-danger');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await getLog()).some((e) => e.method === 'DELETE' && e.url === `/modelRepository/projects/${projectId}`), 'the project is deleted in Model Manager');
     await waitUntil(async () => !(await optionValues(page, 'project')).includes(projectId), 'the deleted project leaves the list');
     step(true, 'the setup and its project are deleted');
@@ -1067,7 +1074,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     );
     assert((await usageAsked()) === 0, 'no setup of the project shown before is asked about');
     await page.click('.modal.show .btn-danger');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await waitUntil(async () => (await deletes()).length > 0, 'the confirmed delete reaches Model Manager');
     await waitUntil(async () => !(await optionValues(page, 'project')).includes(second.id), 'the deleted project leaves the list');
     assert((await deletes()).join(' | ') === `/modelRepository/projects/${second.id}`, `only the empty project is deleted (got: ${(await deletes()).join(' | ')})`);
@@ -1100,16 +1107,22 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // -- two listings that answer out of order --------------------------------------
     // The listing of the third project is held back; the first project is
     // chosen again meanwhile and answers first.
+    // ... until the first project has listed its setups again.
+    const lateListing = { asked: 0, answered: 0, first: false };
     await page.route(thirdModels, async (route) => {
-      await sleep(1200);
+      lateListing.asked += 1;
+      await waitUntil(async () => lateListing.first, 'the first project lists its setups again', 120000).catch(() => {});
       await route.continue().catch(() => {});
+      lateListing.answered += 1;
     });
     await selectInPage('project', 'rag-proj');
     await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'the first project lists its setups again');
     await selectInPage('project', third.id);
     await selectInPage('project', 'rag-proj');
     await waitUntil(async () => (await optionValues(page, 'setup')).length === 4, 'its setups are listed');
-    await sleep(1800);
+    lateListing.first = true;
+    await waitUntil(async () => lateListing.answered === lateListing.asked, 'the late listing is answered', 60000);
+    await quiet(page);
     assert(
       (await value(page, 'project')) === 'rag-proj' && (await optionValues(page, 'setup')).length === 4,
       `a listing that answers late for a project no longer selected is dropped (got: ${await optionValues(page, 'setup')})`
@@ -1129,7 +1142,9 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     });
     await waitUntil(async () => (await usageAsked()) >= 1, 'the usage of the setup the click was made on is asked');
     await waitUntil(async () => !(await page.isDisabled(rgb('delete-setup'))), 'Delete setup is available again');
-    await sleep(600);
+    await quiet(page);
+    // A dialog that has started to show is looked at once it is shown.
+    if (await page.$('.modal-backdrop')) await dialogShown(page, '.modal.show').catch(() => {});
     const strayDialog = (await page.$('.modal.show')) ? (await shownDeleteDialog(page)) : null;
     assert(
       !strayDialog,
@@ -1149,7 +1164,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // -- a setup SAS Model Manager refuses -------------------------------------------
     // A name the project already has: the answer is an error body without an id.
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     await page.fill(rgb('create-setupName'), 'Policy Handbook');
     await resetLog();
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
@@ -1163,7 +1178,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(createdToasts.length === 0 && (await value(page, 'setup')) === 'rag-setup-2', 'nothing says "created", and the selection is what it was');
     assert((await ragState()).models.filter((model) => model.name === 'Policy Handbook').length === 1, 'there is still one setup of that name');
     await page.click(`${rgb('create-setupModal')} .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
 
     // -- a project that was created although the listing after it failed -------------
     const projectListing = '**/modelRepository/projects?*';
@@ -1174,7 +1189,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     );
     await resetLog();
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
-    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await dialogShown(page, rgb('create-projectModal'));
     await page.fill(rgb('create-projectName'), 'ZZ Listed Late');
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
     await waitUntil(async () => (await ragState()).projects.some((project) => project.name === 'ZZ Listed Late'), 'the project is created in Model Manager');
@@ -1185,7 +1200,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       createdNote.includes('"ZZ Listed Late" was created') && createdNote.includes('could not be refreshed') && !createdNote.includes('Creating the RAG project failed'),
       `the page says that the project exists and the list could not be refreshed, not that creating failed (got: ${createdNote})`
     );
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     const late = (await ragState()).projects.find((project) => project.name === 'ZZ Listed Late');
     assert((await value(page, 'project')) === late.id && (await optionValues(page, 'setup')).length === 1, 'the new project is selected, with no setup listed');
     assert(!(await page.isVisible(EDITOR)), 'the setup that was open before is closed');
@@ -1218,12 +1233,12 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       );
       const errorsBefore = pageErrors.length;
       await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-      await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+      await dialogShown(page, rgb('create-setupModal'));
       await page.fill(rgb('create-setupName'), setupName);
       await page.click(`${rgb('create-setupModal')} .btn-primary`);
       await waitUntil(async () => (await ragState()).models.some((model) => model.name === setupName), `${what} fails: the setup is created in Model Manager all the same`);
-      await waitUntil(async () => !(await page.isDisabled(`${rgb('create-setupModal')} .btn-primary`)), `${what} fails: the creation has ended`);
-      await sleep(400);
+      await waitUntil(async () => !(await page.isDisabled(`${rgb('create-setupModal')} .btn-primary`)), `${what} fails: the creation has ended`, 60000);
+      await quiet(page);
       const setupNote = await statusAlert('warning');
       const stillOpen = await page.isVisible(`${rgb('create-setupModal')}.show`);
       const saidInDialog = stillOpen ? await dialogError('create-setup') : '';
@@ -1240,7 +1255,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       );
       if (stillOpen) {
         await page.click(`${rgb('create-setupModal')} .btn-secondary`);
-        await page.waitForSelector('.modal.show', { state: 'detached' });
+        await dialogsGone(page);
       }
       if (await page.$(rgb('retry-projects'))) await page.click(rgb('retry-projects'));
       await waitUntil(async () => (await page.$$(`${rgb('status')} .alert`)).length === 0, `${what} failed: trying again lists the setups and the alert goes`);
@@ -1338,7 +1353,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await resetLog();
     await page.click(rgb('retry-projects'));
     await waitUntil(async () => (await projectListings()) === 1, 'trying again asks for the projects again');
-    await sleep(300);
+    await quiet(page);
     assert(await page.isVisible(rgb('retry-projects')), 'while the listing still fails the alert stays');
     await armFailure({});
     await page.click(rgb('retry-projects'));
@@ -1358,7 +1373,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(await page.isDisabled('#LPB-kind-rag'), 'and cannot be chosen');
     assert(((await page.textContent('#LPB-kind-rag-reason')) || '').trim().length > 20, 'it says why');
     await page.click('label[for="LPB-kind-rag"]', { force: true });
-    await sleep(400);
+    await quiet(page);
     assert(await page.isChecked('#LPB-kind-llm') && !(await page.$('#app-obj-RGB')), 'a click on it builds nothing');
     const requested = (await getLog()).filter((e) => isRagRequest(e) || e.url.startsWith('/credentials/'));
     assert(requested.length === 0, `no credential and no RAG request is made (got: ${requested.map((e) => e.url).join(' | ')})`);
@@ -1443,7 +1458,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const dialogError = async (dialog) => ((await page.isVisible(`${rgb(`${dialog}Modal`)}.show ${rgb(`${dialog}Error`)}`)) ? (await page.textContent(rgb(`${dialog}Error`))).trim() : '');
     const bannerDanger = async () => ((await page.textContent(`${rgb('status')} .alert-danger`, { timeout: 300 }).catch(() => '')) || '').trim();
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     await page.fill(rgb('create-setupName'), 'ZZ No Project Yet');
     await page.click(`${rgb('create-setupModal')} .btn-primary`);
     await waitUntil(async () => (await dialogError('create-setup')) !== '', 'Create setup without a project: the dialog says something');
@@ -1452,9 +1467,9 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `Create setup without a project: the dialog says inside it that a project is needed, and the banner behind it stays empty (dialog: ${await dialogError('create-setup')}; banner: ${(await bannerDanger()) || 'empty'})`
     );
     await page.click(`${rgb('create-setupModal')} .btn-secondary`);
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await page.click(`[data-bs-target="${rgb('create-projectModal')}"]`);
-    await page.waitForSelector(`${rgb('create-projectModal')}.show`);
+    await dialogShown(page, rgb('create-projectModal'));
     await assertCreateDialogLayout(page, rgb('create-projectModal'), 'Create project');
     await resetLog();
     await page.click(`${rgb('create-projectModal')} .btn-primary`);
@@ -1479,7 +1494,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       await resetLog();
       await page.fill(rgb(`${dialog}Name`), '   ');
       await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
-      await sleep(700);
+      await quiet(page);
       const blanks = await dialogState(dialog);
       const sent = (await getLog()).filter((e) => e.method === 'POST' && e.url === creation).length;
       assert(
@@ -1522,7 +1537,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         invisibleSent = 0;
         await page.fill(rgb(`${dialog}Name`), name);
         await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
-        await sleep(700);
+        await quiet(page);
         const invisible = await dialogState(dialog);
         assert(
           (await dialogError(dialog)) === message && invisibleSent === 0 && invisible.focus === rgb(`${dialog}Name`) && invisible.marked && !invisible.createOff,
@@ -1594,37 +1609,42 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     const openAgain = async (dialog) => {
       if (!(await page.isVisible(`${rgb(`${dialog}Modal`)}.show`))) {
         await page.click(`[data-bs-target="${rgb(`${dialog}Modal`)}"]`);
-        await page.waitForSelector(`${rgb(`${dialog}Modal`)}.show`);
       }
       // Faded in: Bootstrap has put the focus on the dialog.
-      await sleep(500);
+      await dialogShown(page, rgb(`${dialog}Modal`));
     };
     const assertCreateByKeyboard = async (dialog, creation, label) => {
       const creationRoute = `**${creation}`;
+      // The creation is refused once the dialog was looked at while it is out.
+      const held = { out: 0, looked: false };
       await page.route(creationRoute, async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
-        await sleep(1500);
+        held.out += 1;
+        await waitUntil(async () => held.looked, 'the dialog is looked at while the creation is out', 120000).catch(() => {});
         return route.fulfill({ status: 409, contentType: 'application/json', body: '{"errorCode":0,"message":"exists","httpStatusCode":409}' });
       });
       for (const [key, keyName] of [['Enter', 'Enter'], ['Space', 'the space bar']]) {
         await openAgain(dialog);
         await page.fill(rgb(`${dialog}Name`), 'ZZ By Keyboard');
         await page.focus(`${rgb(`${dialog}Modal`)} .btn-primary`);
+        held.looked = false;
+        const before = held.out;
         await page.keyboard.press(key);
-        await sleep(250);
+        await waitUntil(async () => held.out > before, 'the creation is out', 60000).catch(() => {});
         const pending = await createDialog(dialog);
+        // Escape and a click beside the dialog act at once: Bootstrap takes
+        // the dialog's show class when it starts to hide it.
         await page.keyboard.press('Escape');
-        await sleep(150);
         await page.mouse.click(5, 5);
-        await sleep(150);
         const openWhilePending = (await createDialog(dialog)).open;
+        held.looked = true;
         let ended = await createDialog(dialog);
         for (let attempt = 0; attempt < 40 && (ended.createOff || !ended.error); attempt++) {
           await sleep(100);
           ended = await createDialog(dialog);
         }
         await page.keyboard.press('Escape');
-        await sleep(700);
+        await dialogsGone(page).catch(() => {});
         const openAfterEscape = (await createDialog(dialog)).open;
         assert(
           pending.createOff && pending.fieldsOff && pending.closersOff && pending.focus === 'dialog' && openWhilePending,
@@ -1641,7 +1661,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       });
       const where = (await createDialog(dialog)).focus;
       await page.keyboard.press('Escape');
-      await sleep(700);
+      await dialogsGone(page).catch(() => {});
       const openAfterEscape = (await createDialog(dialog)).open;
       assert(
         where === 'body' && !openAfterEscape,
@@ -1671,7 +1691,15 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       await page.fill(rgb('create-projectName'), 'ZZ No Repository');
       await page.focus(`${rgb('create-projectModal')} .btn-primary`);
       await page.keyboard.press('Enter');
-      await sleep(1200);
+      await waitUntil(
+        async () => {
+          const state = await createDialog('create-project');
+          return state.error !== '' && !state.createOff;
+        },
+        'the creation has ended',
+        60000
+      ).catch(() => {});
+      await quiet(page);
       const seen = await createDialog('create-project');
       await page.unroute(repositoryRequest);
       await page.unroute(creationRoute);
@@ -1683,9 +1711,11 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     }
     // A double click on Create while SAS Model Manager takes its time: one
     // project, not two of the same name.
+    // ... answered once the dialog was looked at while the creation is out.
     const slowCreation = '**/modelRepository/projects';
+    const projectLooked = gate();
     await page.route(slowCreation, async (route) => {
-      if (route.request().method() === 'POST') await sleep(800);
+      if (route.request().method() === 'POST') await projectLooked.pass();
       await route.continue().catch(() => {});
     });
     await page.fill(rgb('create-projectName'), 'ZZ Manifest RAG');
@@ -1695,14 +1725,14 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       'while the project is being created the Create button is disabled, and the message of the attempt before is gone'
     );
     const projectFieldsPending = await fieldsOff('create-project');
+    projectLooked.open();
     assert(
       projectFieldsPending.name && projectFieldsPending.description,
       `while the project is being created its name and description cannot be edited (name: ${projectFieldsPending.name}, description: ${projectFieldsPending.description})`
     );
     await waitUntil(async () => (await value(page, 'project')).startsWith('rag-proj-new-'), 'the project of this section is selected');
     const projectId = await value(page, 'project');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
-    await sleep(1000);
+    await dialogsGone(page);
     await page.unroute(slowCreation);
     // The dialog gives its fields back when the creation has ended, which
     // includes the listings after it.
@@ -1722,7 +1752,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `a double click on Create creates one project (requests: ${projectPosts}, projects of that name: ${projectsOfThatName})`
     );
     await page.click(`[data-bs-target="${rgb('create-setupModal')}"]`);
-    await page.waitForSelector(`${rgb('create-setupModal')}.show`);
+    await dialogShown(page, rgb('create-setupModal'));
     assert(!(await dialogError('create-setup')), 'the setup dialog, opened again, shows no message of the attempt before');
     await assertCreateDialogLayout(page, rgb('create-setupModal'), 'Create setup');
     // The fields keep what was typed at the attempt before.
@@ -1735,13 +1765,15 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await resetLog();
     // The creation of the setup takes its time, so the dialog is seen while it is out.
     const slowSetup = '**/modelRepository/models';
+    const setupLooked = gate();
     await page.route(slowSetup, async (route) => {
-      if (route.request().method() === 'POST') await sleep(800);
+      if (route.request().method() === 'POST') await setupLooked.pass();
       await route.continue().catch(() => {});
     });
     await page.fill(rgb('create-setupName'), 'ZZ Manifest Setup');
     await page.dblclick(`${rgb('create-setupModal')} .btn-primary`);
     const setupFieldsPending = await fieldsOff('create-setup');
+    setupLooked.open();
     assert(
       setupFieldsPending.name && setupFieldsPending.description,
       `while the setup is being created its name and description cannot be edited (name: ${setupFieldsPending.name}, description: ${setupFieldsPending.description})`
@@ -1750,7 +1782,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await waitUntil(async () => Boolean(await createdSetup()), 'the setup of this section is created');
     const setupId = (await createdSetup()).id;
     await waitUntil(async () => (await value(page, 'setup')) === setupId, 'and selected');
-    await page.waitForSelector('.modal.show', { state: 'detached' });
+    await dialogsGone(page);
     await page.unroute(slowSetup);
     await page.waitForSelector(EDITOR, { state: 'visible' });
     const setupPosts = (await getLog()).filter((e) => e.method === 'POST' && e.url === '/modelRepository/models');
