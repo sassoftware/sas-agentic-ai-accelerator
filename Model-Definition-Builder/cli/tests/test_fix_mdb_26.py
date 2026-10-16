@@ -98,17 +98,16 @@ RULE_CALLS = {"render_assets", "_render_options_json", "check_options_file", "im
 
 
 def _commands_that_reach_the_rule() -> set:
-    """Every command function of cli.py - a function under `@<app>.command`
-    - whose body calls one of RULE_CALLS, read from the source."""
+    """Every function of cli.py whose body calls one of RULE_CALLS, read from
+    the source - each a command (a function under `@<app>.command`), or a
+    helper that DRIVEN does not know and that fails the census."""
     found = set()
     for node in ast.walk(ast.parse(CLI_SOURCE.read_text(encoding="utf-8"))):
         if not isinstance(node, ast.FunctionDef):
             continue
-        decorated = any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "command"
-                        for d in node.decorator_list)
         calls = {call.func.id for call in ast.walk(node)
                  if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)}
-        if decorated and calls & RULE_CALLS:
+        if calls & RULE_CALLS:
             found.add(node.name)
     return found
 
