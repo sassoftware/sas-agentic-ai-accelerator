@@ -36,7 +36,13 @@
 /* A session _optbuild that is connected - left by an earlier run that did
    not reach its end, say - is used and left as it is: a second cas _optbuild
    only makes SAS warn that the session exists, and the end of the program
-   would end a session it did not start. */
+   would end a session it did not start. PROC CASUTIL halts with 'ERROR: No
+   active Cloud Analytic Services session.' while the option SESSREF names a
+   session that was ended, also with SESSION=_optbuild (measured on SAS Viya on
+   2026-10-16), so the option is then set to a connected _optbuild. */
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(_optbuild)) EQ 1 %then %do;
+    options sessref=_optbuild;
+%end;
 %let _opt_clean_cas_session = 0;
 %if %sysfunc(sessfound(_optbuild)) NE 1 %then %do;
     %let _opt_clean_cas_session = 1;

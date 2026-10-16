@@ -35,7 +35,7 @@ END = re.compile(r"^[ \t]*cas[ \t]+(\w+)[ \t]+terminate[ \t]*;", flags=re.IGNORE
 SESSREF = re.compile(r"^[ \t]*options[ \t]+sessref[ \t]*=[ \t]*(\w+)[ \t]*;", flags=re.IGNORECASE | re.MULTILINE)
 IF = re.compile(r"^%if (.+) %then %do;$", flags=re.IGNORECASE)
 
-# The programs that run every CAS statement in a session they name themselves, and do not go by the option SESSREF
+# The programs that name their session in every CAS statement, and still need the option SESSREF on a connected session
 NAMES_ITS_SESSION = {"Prompt-Optimization/Create-Optimization-Dataset.sas"}
 # Macro variables a condition of the check reads that the program sets before it, with each value they can have
 SET_BEFORE = {"_lat_ready": ("0", "1")}
@@ -229,7 +229,8 @@ def test_a_session_of_the_name_the_program_starts_that_is_connected_is_used_and_
                 assert session.started == set(), state
                 continue
             if name in NAMES_ITS_SESSION:
-                assert during is not None and "_OPTBUILD" in during[1], state
+                # PROC CASUTIL SESSION=_optbuild halts while the option names a session that was ended (round 26)
+                assert during is not None and "_OPTBUILD" in during[1] and during[0] in during[1], state
             else:
                 # the CAS steps run in a session that is connected: none halts for want of one
                 assert during is not None and during[0] in during[1], state
@@ -252,8 +253,9 @@ def test_the_state_round_22_measured():
 
 
 def test_the_program_that_names_its_session_names_it_in_every_cas_statement():
-    """Create-Optimization-Dataset.sas does not go by the option SESSREF: every statement of it that reaches CAS names
-    _optbuild, so the session check of the other programs is not needed there."""
+    """Every statement of Create-Optimization-Dataset.sas that reaches CAS names _optbuild. PROC CASUTIL still halts
+    while the option SESSREF names a session that was ended (live pass of round 26), so the program has the guard of the
+    other programs in front of its session check."""
     code = _code(_programs()["Prompt-Optimization/Create-Optimization-Dataset.sas"])
 
     assert re.findall(r"^caslib .*;$", code, flags=re.MULTILINE) == ["caslib _all_ assign sessref=_optbuild;"]
