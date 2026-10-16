@@ -21,10 +21,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 function trackRequests(page) {
   if (page.__verifyRequests) return page.__verifyRequests;
-  const tracked = { open: new Set(), sent: 0 };
+  // recent: the last requests sent, with when - named when a wait gives up.
+  const tracked = { open: new Set(), sent: 0, recent: [] };
   page.on('request', (request) => {
     tracked.open.add(request);
     tracked.sent += 1;
+    tracked.recent.push({ at: Date.now(), what: `${request.method()} ${request.url().replace(/^https?:\/\/[^/]+/, '')}` });
+    if (tracked.recent.length > 40) tracked.recent.shift();
   });
   const ended = (request) => tracked.open.delete(request);
   page.on('requestfinished', ended);
@@ -64,7 +67,9 @@ async function quiet(page, label = 'the page has no request out', timeout = 1200
     seen = tracked.open.size === 0 ? tracked.sent : -1;
     await sleep(150);
   }
-  throw new Error(`timeout waiting for: ${label} (${tracked.open.size} out)`);
+  const lately = tracked.recent.filter((entry) => entry.at > Date.now() - 10000).map((entry) => entry.what);
+  const out = [...tracked.open].map((request) => `${request.method()} ${request.url().replace(/^https?:\/\/[^/]+/, '')}`);
+  throw new Error(`timeout waiting for: ${label} (${tracked.open.size} out${out.length ? `: ${out.join(', ')}` : ''}; sent in the last 10 s: ${lately.join(', ') || 'none'})`);
 }
 
 /**

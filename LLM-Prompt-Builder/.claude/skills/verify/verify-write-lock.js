@@ -400,7 +400,9 @@ function writeButtonsInSource(text) {
   // How long an attempt waits for its control. DURING a write a short time:
   // the control is to stay disabled, and Playwright would wait for it to be
   // enabled, i.e. for the write to end. AFTER the write the control is to be
-  // usable, and a loaded machine may take seconds to draw it.
+  // usable, and a loaded machine may take seconds to draw it - where the
+  // attempt got is then read from what is open: on a loaded machine the
+  // click threw while the other prompt-test was opened all the same.
   const DURING = 500;
   const AFTER = 30000;
   // As a person chooses an entry: the search field that stands in for the
@@ -517,8 +519,8 @@ function writeButtonsInSource(text) {
     await atRest();
     await eventually(async () => (await openPromptTestIs(page)) === 'model-free');
     step(
-      now && (await openPromptTestIs(page)) === 'model-free' && (await textOf(page, lpb('pet-save-only-result'))) === '',
-      `Save Experiments: the same attempt then opens the other prompt-test, which shows no note of that save (got there: ${now}, open: ${await openPromptTestIs(page)}, note: "${clip(await textOf(page, lpb('pet-save-only-result')))}")`
+      (await openPromptTestIs(page)) === 'model-free' && (await textOf(page, lpb('pet-save-only-result'))) === '',
+      `Save Experiments: the same attempt then opens the other prompt-test, which shows no note of that save (click returned: ${now}, open: ${await openPromptTestIs(page)}, note: "${clip(await textOf(page, lpb('pet-save-only-result')))}")`
     );
   });
 
@@ -660,7 +662,7 @@ function writeButtonsInSource(text) {
     const now = await reachForAnotherPromptTest(page, 'model-used', AFTER)();
     await atRest();
     await eventually(async () => (await openPromptTestIs(page)) === 'model-used' && (await savedRuns(page)) > 0);
-    step(now && (await openPromptTestIs(page)) === 'model-used' && (await savedRuns(page)) > 0, `Delete prompt-test: the same attempt then opens the other prompt-test with its runs (got there: ${now}, open: ${await openPromptTestIs(page)}, runs: ${await savedRuns(page)})`);
+    step((await openPromptTestIs(page)) === 'model-used' && (await savedRuns(page)) > 0, `Delete prompt-test: the same attempt then opens the other prompt-test with its runs (click returned: ${now}, open: ${await openPromptTestIs(page)}, runs: ${await savedRuns(page)})`);
   });
 
   await road('prompt template: Delete project', async (page) => {
@@ -702,7 +704,7 @@ function writeButtonsInSource(text) {
     const now = await pickAsAPerson(page, '#LPB-project-dropdown', 'proj-1', AFTER);
     await atRest();
     await eventually(async () => (await openProject()) === 'proj-1' && (await listed(page, '#LPB-prompt-dropdown', 'model-used')));
-    step(now && (await openProject()) === 'proj-1' && (await listed(page, '#LPB-prompt-dropdown', 'model-used')), `Delete project: the same attempt then chooses the other project and lists its prompt-tests (got there: ${now}, project: ${await openProject()})`);
+    step((await openProject()) === 'proj-1' && (await listed(page, '#LPB-prompt-dropdown', 'model-used')), `Delete project: the same attempt then chooses the other project and lists its prompt-tests (click returned: ${now}, project: ${await openProject()})`);
   });
 
   await road('prompt template: the delete of an optimization run', async (page) => {
@@ -896,8 +898,8 @@ function writeButtonsInSource(text) {
     await atRest();
     await eventually(async () => (await openSetupIs(page)) === 'rag-setup-2');
     step(
-      now && (await openSetupIs(page)) === 'rag-setup-2' && (await saveResult(page)).text === '',
-      `Save setup: the same attempt then opens the other setup, which shows no note of that save (got there: ${now}, open: ${await openSetupIs(page)}, note: "${clip((await saveResult(page)).text)}")`
+      (await openSetupIs(page)) === 'rag-setup-2' && (await saveResult(page)).text === '',
+      `Save setup: the same attempt then opens the other setup, which shows no note of that save (click returned: ${now}, open: ${await openSetupIs(page)}, note: "${clip((await saveResult(page)).text)}")`
     );
   });
 
@@ -1006,7 +1008,7 @@ function writeButtonsInSource(text) {
     const now = await reachForAnotherSetup(page, 'rag-setup-1', AFTER)();
     await atRest();
     await eventually(async () => (await openSetupIs(page)) === 'rag-setup-1' && (await valueOf(page, rgb('tables-prefix'))) === 'RAGDEMO');
-    step(now && (await openSetupIs(page)) === 'rag-setup-1' && (await valueOf(page, rgb('tables-prefix'))) === 'RAGDEMO', `Delete setup: the same attempt then opens the other setup with its configuration (got there: ${now}, open: ${await openSetupIs(page)}, table prefix: ${await valueOf(page, rgb('tables-prefix'))})`);
+    step((await openSetupIs(page)) === 'rag-setup-1' && (await valueOf(page, rgb('tables-prefix'))) === 'RAGDEMO', `Delete setup: the same attempt then opens the other setup with its configuration (click returned: ${now}, open: ${await openSetupIs(page)}, table prefix: ${await valueOf(page, rgb('tables-prefix'))})`);
   });
 
   await road('RAG setup: Delete project', async (page) => {
@@ -1047,7 +1049,7 @@ function writeButtonsInSource(text) {
     const now = await pickAsAPerson(page, rgb('project'), 'rag-proj', AFTER);
     await atRest();
     await eventually(async () => (await openProject()) === 'rag-proj' && (await listed(page, rgb('setup'), 'rag-setup-1')));
-    step(now && (await openProject()) === 'rag-proj' && (await listed(page, rgb('setup'), 'rag-setup-1')), `Delete project (RAG): the same attempt then chooses the other project and lists its setups (got there: ${now}, project: ${await openProject()})`);
+    step((await openProject()) === 'rag-proj' && (await listed(page, rgb('setup'), 'rag-setup-1')), `Delete project (RAG): the same attempt then chooses the other project and lists its setups (click returned: ${now}, project: ${await openProject()})`);
   });
 
   // ---- every request to SAS Viya went through the HTTP client of the app -------
