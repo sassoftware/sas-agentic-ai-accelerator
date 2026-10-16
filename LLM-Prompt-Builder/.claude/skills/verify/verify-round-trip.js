@@ -22,7 +22,11 @@
  *     that names one of those files in quotes, with what it does with it; a
  *     writer has its round trip below;
  *   - every name of STORED_JSON_FILES has a writer, and every writer's round
- *     trip ran.
+ *     trip ran;
+ *   - SENDERS: every call of callSCRLLM, callSCRDecision and
+ *     resolveJudgeOptions in a .ts file under src, by the function it stands
+ *     in, with what it sends of an options.json; each that sends an option
+ *     of the file has its road.
  * The round trips, each written by its writer and read back by the check of
  * the page (on the page served by the mock, and with src/api/stored-json.ts
  * itself):
@@ -54,7 +58,9 @@
  *     supports, the provider key of AuthBlock, and base_url of a self-hosted
  *     model): each file mdb writes is taken by the check of the page, and
  *     each option of it is drawn - on one page, an LLM per kind of file - and
- *     sent in a run as it is written; a shape mdb refuses writes nothing.
+ *     sent in a run as it is written, and each LLM of a kind, as a member of
+ *     a council, is sent its provider key and temperature 0 only where its
+ *     temperature is a number; a shape mdb refuses writes nothing.
  *     And options of every name an element of the page has, of every field
  *     of an object and of names around the way the id of a control is made
  *     of a name, written by mdb: each file is taken, and on the page each
@@ -75,7 +81,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { PROJECT, parse, walk, sourceFiles, loadStoredJson } = require('./source-census.cjs');
+const { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson } = require('./source-census.cjs');
 const { resolvePython } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -272,6 +278,36 @@ function writersCensus(storedNames) {
   return writers;
 }
 
+/**
+ * Every call that sends options to a model, by "<file> <function> -> <callee>",
+ * with what it sends of an options.json. resolveJudgeOptions builds the
+ * options of a judge, a member of a council and the chairman.
+ */
+const SENDERS = {
+  'objects/prompt-builder.ts promptBuilderRunExperiment -> callSCRLLM': 'a run: each option as its control holds it - the roads of every kind of options.json and of every name',
+  'api/judge-api.ts judgeRun -> callSCRLLM': 'a judge or a member of a council: the options of resolveJudgeOptions',
+  'api/judge-api.ts chairmanBreakTie -> callSCRLLM': 'the chairman of a council: the options of resolveJudgeOptions',
+  'objects/prompt-builder.ts runOneJudge -> resolveJudgeOptions': 'the provider key, and temperature 0 where the temperature is a number - the road of every kind of options.json, judged by a council of all of them',
+  'objects/prompt-builder.ts promptBuilderJudgeRun -> resolveJudgeOptions': 'the same function, for the chairman',
+  'objects/prompt-builder.ts promptBuilderRunDecisionExperiment -> callSCRDecision': 'a decision model: decisionCallOptions, the provider key of API_KEY.default alone (isDecisionModelOptions)',
+  'objects/prompt-builder.ts evaluationButton.onclick -> callSCRDecision': 'a decision model in an evaluation: decisionCallOptions, as in a run',
+};
+
+function sendersCensus() {
+  const found = {};
+  for (const [file, text] of Object.entries(sourceFiles())) {
+    for (const [call, count] of Object.entries(callsInSource(file, text, ['callSCRLLM', 'callSCRDecision', 'resolveJudgeOptions']))) found[`${file} ${call}`] = count;
+  }
+  const differences = [
+    ...Object.keys(found).filter((key) => !SENDERS[key]).map((key) => `${key}, not named here`),
+    ...Object.keys(SENDERS).filter((key) => !found[key]).map((key) => `${key} is named, and is no call`),
+  ];
+  step(
+    Object.keys(found).length > 0 && differences.length === 0,
+    `every call that sends options to a model is named with what it sends of an options.json (${Object.keys(found).length} calls; differences: ${differences.join('; ') || 'none'})`
+  );
+}
+
 (async () => {
   let stored = null;
   try {
@@ -286,6 +322,11 @@ function writersCensus(storedNames) {
     writers = writersCensus(storedNames);
   } catch (error) {
     step(false, `the writers of the stored files are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
+  }
+  try {
+    sendersCensus();
+  } catch (error) {
+    step(false, `the calls that send options to a model are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
   }
 
   // ==========================================================================
@@ -336,7 +377,8 @@ function writersCensus(storedNames) {
       }
       const kind = JSON.stringify(
         Object.entries(file).map(([key, option]) => [
-          key === 'API_KEY' ? 'API_KEY' : numberFields.includes(key) ? 'a number field of the page' : 'an option',
+          // temperature is read by its name by the judge as well (resolveJudgeOptions).
+          key === 'API_KEY' ? 'API_KEY' : key === 'temperature' ? 'temperature' : numberFields.includes(key) ? 'a number field of the page' : 'an option',
           Object.fromEntries(Object.entries(option).filter(([field]) => field !== 'range').map(([field, value]) => [field, field === 'label' || field === 'description' ? typeof value : value]).sort()),
         ])
       );
@@ -542,6 +584,9 @@ function writersCensus(storedNames) {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(kind ? kind.file : null) });
       });
       const sent = new Map();
+      // The calls of the run, then those of the council.
+      const judged = new Map();
+      let judging = false;
       await page.route('**/scr/**', (route) => {
         const model = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[2] || '');
         if (!model.startsWith('rto_')) return route.continue();
@@ -551,7 +596,7 @@ function writersCensus(storedNames) {
         } catch {
           body = {};
         }
-        sent.set(model, ((body.inputs || []).find((input) => input.name === 'options') || {}).value);
+        (judging ? judged : sent).set(model, ((body.inputs || []).find((input) => input.name === 'options') || {}).value);
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { response: 'r', run_time: 1, prompt_length: 1, output_length: 1 } }) });
       });
       await openPage(page);
@@ -639,6 +684,37 @@ function writersCensus(storedNames) {
       step(
         usable.length > 0 && wrongSent.length === 0,
         `a run of every kind of options.json mdb writes sends each option as it is written (${usable.length} LLMs called: ${sent.size}; sent otherwise: ${wrongSent.length}${wrongSent.length ? ` - ${clip(wrongSent.slice(0, 6).join('; '))}` : ''})`
+      );
+      // The run judged by a council of every LLM of a kind: each member is
+      // sent its provider key, and temperature 0 only where its temperature
+      // is a number (resolveJudgeOptions) - of an enum of texts or a text,
+      // 0 is no value it can have.
+      await atRest();
+      judging = true;
+      // The council is offered once a judge is chosen.
+      await page.selectOption(lpb('judge-model'), usable[0]);
+      await page.check(lpb('judge-council-toggle'));
+      await page.evaluate((names) => {
+        for (const box of document.querySelectorAll('#app-obj-LPB-judge-panel input.pb-judge-panel-item')) {
+          if (names.includes(box.value) !== box.checked) box.click();
+        }
+      }, usable);
+      await page.click(lpb('pet-0-judge'));
+      await waitUntil(async () => judged.size >= usable.length, 'every member of the council is called', 120000);
+      await waitUntil(async () => !(await page.isDisabled(lpb('pet-0-judge'))), 'the judgment has ended', 120000);
+      await atRest();
+      const wrongJudged = [];
+      for (const kind of kinds.filter(({ name }) => usable.includes(name))) {
+        const expected = [];
+        if (kind.file.API_KEY) expected.push(`API_KEY:${secretOf(kind.file.API_KEY.default)}`);
+        if (kind.file.temperature && stored.isNumberOption(kind.file.temperature)) expected.push('temperature:0');
+        const want = `{${expected.join(',')}}`;
+        if (judged.get(kind.name) !== want) wrongJudged.push(`${kind.shape}: sent ${JSON.stringify(judged.get(kind.name))}, expected ${want}`);
+      }
+      const temperatures = kinds.filter(({ name, file }) => usable.includes(name) && file.temperature);
+      step(
+        usable.length > 0 && judged.size === usable.length && wrongJudged.length === 0 && pageErrors.length === 0,
+        `a council of every kind of options.json mdb writes sends each member its provider key, and temperature 0 only where its temperature is a number (${judged.size} of ${usable.length} members called; with a temperature: ${temperatures.length}, of them a number: ${temperatures.filter(({ file }) => stored.isNumberOption(file.temperature)).length}; sent otherwise: ${wrongJudged.length}${wrongJudged.length ? ` - ${clip(wrongJudged.slice(0, 6).join('; '))}` : ''}; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }

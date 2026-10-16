@@ -4097,7 +4097,9 @@ export async function buildPromptBuilder(
     }
 
     // Resolve the SCR options for the judge call: its API key (when the judge
-    // model requires one) and temperature 0 for reproducibility when supported.
+    // model requires one) and temperature 0 for reproducibility where its
+    // temperature is a number - one of another kind (an enum of texts, a
+    // text) keeps the default of the score code.
     function resolveJudgeOptions(judgeMeta?: AvailableLLM): Record<string, unknown> {
       const judgeOptions: Record<string, unknown> = {};
       const options = judgeMeta?.options;
@@ -4106,7 +4108,7 @@ export async function buildPromptBuilder(
         const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;
         judgeOptions.API_KEY = apiKeys?.[options.API_KEY.default as string] ?? '';
       }
-      if (options.temperature) judgeOptions.temperature = 0;
+      if (options.temperature && isNumberOption(options.temperature)) judgeOptions.temperature = 0;
       return judgeOptions;
     }
 
