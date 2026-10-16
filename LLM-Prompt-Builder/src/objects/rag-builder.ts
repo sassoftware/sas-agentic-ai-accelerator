@@ -73,6 +73,7 @@ import {
 } from '../api/jobexec-api';
 import { getCasTableRows, getCaslibs } from '../api/cas-api';
 import { getAppState } from '../state/app-state';
+import { oneAtATime } from '../util/one-at-a-time';
 import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
@@ -3784,8 +3785,10 @@ export async function buildRagBuilder(
         );
       }
     };
-    pollTimer = window.setInterval(() => void poll(), 5000);
-    void poll();
+    // No poll while the one before is out (oneAtATime).
+    const pollOnce = oneAtATime(poll);
+    pollTimer = window.setInterval(() => void pollOnce(), 5000);
+    void pollOnce();
   }
 
   /**

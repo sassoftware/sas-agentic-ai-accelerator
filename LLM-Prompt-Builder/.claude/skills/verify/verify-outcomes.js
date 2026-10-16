@@ -6,8 +6,10 @@
  * Before the roads, two censuses read the sources (source-census.js): every
  * write of src/api reads back what is stored when it gets no usable answer
  * (API_REQUESTS names the requests that do not, with why), every call of a
- * write in src/objects is named in WRITES with what it comes to then, and
- * every listener of a key in src is named in KEYS with what it starts.
+ * write in src/objects is named in WRITES with what it comes to then,
+ * every listener of a key in src is named in KEYS with what it starts, and
+ * every timer of src that repeats is named in TIMERS - each that polls SAS
+ * Viya through a function made by oneAtATime.
  *
  * The roads, each on a page of its own:
  *
@@ -60,6 +62,8 @@
  *   - An ingestion that runs is shown when its setup is opened on a page that
  *     was loaded after the launch, and one whose state cannot be read three
  *     times in a row is no longer followed: Launch is offered again.
+ *   - A poll of an optimization job and of an ingestion whose answer is late:
+ *     while it is out, a minute of the page's clock sends no further one.
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173).
@@ -198,6 +202,21 @@ const KEYS = {
   'ui/kind-selector.ts createKindSelector radio:keydown': 'arrows move the focus to the neighbouring card and choose nothing',
 };
 
+// Every timer of src that repeats (setInterval), by "<file> <function>
+// <callback>": what it does each time. A poll of a job went out again every
+// five seconds while the one before was still out - on a slow answer each of
+// them acted on the end of the job once more (the result, the log and the
+// history read many times over). A poll goes through a function made by
+// oneAtATime (src/util/one-at-a-time.ts), which sends none while the one
+// before is out (road below).
+const POLL = 'polls the job in SAS Job Execution, through oneAtATime';
+const TIMERS = {
+  'objects/prompt-builder.ts startOptimizeRuntimeTicker paintOptimizeJob': 'paints the run time and the log the page holds of the optimization job; it sends no request',
+  'objects/prompt-builder.ts startOptimizeJobMonitor () => { void pollOptimizeJobOnce(); }': POLL,
+  'objects/rag-builder.ts startRunClock paintClock': 'paints the run time of the ingestion; it sends no request',
+  'objects/rag-builder.ts followIngestion () => void pollOnce()': POLL,
+};
+
 // Every click listener of the page, before any script of it runs: each one
 // added with addEventListener on any target (window, document, an element -
 // Bootstrap's data-api among them) and each one set as an element's
@@ -320,6 +339,31 @@ function writesCensus() {
   step(
     unknownKeys.length === 0 && goneKeys.length === 0 && refusedAlike && guarded,
     `every way to an action that is not a click is known: each listener of a key in src is named here with what it starts (not named here: ${unknownKeys.join('; ') || 'none'}; named but not found: ${goneKeys.join('; ') || 'none'}); the one that starts one, Enter in the question of the retrieval test, is refused by the condition its button is off for (${refusedAlike}); and a click a script sends to a control that is off is stopped before the builders are built (${guarded})`
+  );
+  // Every timer that repeats, and the polls among them.
+  const timers = {};
+  const unguarded = [];
+  for (const [file, text] of Object.entries(files)) {
+    const { program, source } = parse(file, text);
+    const once = [];
+    walk(program, source, (node) => {
+      if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init && node.init.type === 'CallExpression' && node.init.callee.type === 'Identifier' && node.init.callee.name === 'oneAtATime') once.push(node.id.name);
+    });
+    walk(program, source, (node, name, parents, outer) => {
+      if (node.type !== 'CallExpression' || !node.arguments[0]) return;
+      const callee = node.callee.type === 'Identifier' ? node.callee.name : node.callee.type === 'MemberExpression' ? node.callee.property.name : null;
+      if (callee !== 'setInterval') return;
+      const callback = source(node.arguments[0]).replace(/\s+/g, ' ');
+      const key = `${file} ${outer || '(module)'} ${callback}`;
+      timers[key] = (timers[key] || 0) + 1;
+      if (TIMERS[key] === POLL && !once.some((made) => new RegExp(`\\b${made}\\(\\)`).test(callback))) unguarded.push(key);
+    });
+  }
+  const unknownTimers = Object.keys(timers).filter((key) => !TIMERS[key]);
+  const goneTimers = Object.keys(TIMERS).filter((key) => !timers[key]);
+  step(
+    unknownTimers.length === 0 && goneTimers.length === 0 && unguarded.length === 0,
+    `every timer of src that repeats is named here with what it does, and each that polls SAS Viya calls a function made by oneAtATime, which sends no poll while the one before is out (${Object.keys(timers).length} timers; not named here: ${unknownTimers.join('; ') || 'none'}; named but not found: ${goneTimers.join('; ') || 'none'}; polls not through oneAtATime: ${unguarded.join('; ') || 'none'})`
   );
 }
 
@@ -1838,6 +1882,81 @@ function writesCensus() {
     const id = jobs[jobs.length - 1].id;
     await fetch(`${BASE}/jobExecution/jobs/${id}`);
     await fetch(`${BASE}/jobExecution/jobs/${id}`);
+  }, { clock: true });
+
+  // A poll of a job whose answer is late: the timer of the page goes on - the
+  // clock of the page is stopped and run on by a minute, twelve of its five
+  // seconds - and no further poll is sent while the first is out (TIMERS).
+  // The polls are counted where the page sends them (fetch), so that no
+  // request on its way is missed.
+  const countPolls = (page) =>
+    page.addInitScript(() => {
+      window.__polls = [];
+      const send = window.fetch;
+      window.fetch = function (input, init) {
+        const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+        const method = String((init && init.method) || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+        if (method === 'GET' && /\/jobExecution\/jobs\/[^/?]+$/.test(url.split('?')[0])) window.__polls.push(url);
+        return send.apply(this, arguments);
+      };
+    });
+  const pollsSent = (page) => page.evaluate(() => window.__polls.length);
+  const holdPolls = async (page) => {
+    const held = gate();
+    await page.route(/\/jobExecution\/jobs\/[^/?]+(\?.*)?$/, async (route) => {
+      if (route.request().method() === 'GET') await held.pass();
+      await route.continue().catch(() => {});
+    });
+    return held;
+  };
+  const stopClock = async (page) => page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await road('an optimization job whose poll is answered late', async (page) => {
+    await countPolls(page);
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    await page.selectOption(lpb('optimize-target'), 'demo_llm');
+    await waitUntil(async () => !(await page.isDisabled(lpb('optimize-run'))), 'the optimization can be started', 60000);
+    const held = await holdPolls(page);
+    await page.click(lpb('optimize-run'));
+    // The log is shown when the job is followed - in the step that sets its timer.
+    await page.waitForSelector(lpb('optimize-log'), { state: 'visible', timeout: 60000 });
+    await stopClock(page);
+    await page.clock.runFor(5000);
+    await waitUntil(async () => held.held >= 1, 'the first poll is out', 60000);
+    const first = await pollsSent(page);
+    await page.clock.runFor(60000);
+    const after = await pollsSent(page);
+    step(
+      first === 1 && after === 1,
+      `an optimization job whose poll is answered late: while that poll is out, a minute of the page's clock sends no further one (polls sent: ${first} with the first, ${after} a minute later)`
+    );
+    await page.clock.resume();
+    held.open();
+    await waitUntil(async () => (await textOf(page, lpb('optimize-run'))) === 'Run optimization', 'the optimization job has ended', 120000).catch(() => {});
+    await atRest();
+  }, { clock: true });
+  await road('an ingestion whose poll is answered late', async (page) => {
+    await countPolls(page);
+    await openPage(page, 'rag');
+    await openSetup(page, 'rag-setup-1');
+    await goStep(page, 'RGB', 'run');
+    const held = await holdPolls(page);
+    await page.click(rgb('launch'));
+    // The first poll is sent at the launch.
+    await waitUntil(async () => held.held >= 1, 'the first poll is out', 60000);
+    await stopClock(page);
+    const first = await pollsSent(page);
+    await page.clock.runFor(60000);
+    const after = await pollsSent(page);
+    step(
+      first === 1 && after === 1,
+      `an ingestion whose poll is answered late: while that poll is out, a minute of the page's clock sends no further one (polls sent: ${first} with the first, ${after} a minute later)`
+    );
+    await page.clock.resume();
+    held.open();
+    await waitUntil(async () => /completed/.test((await runState(page)).text), 'the run has ended', 120000).catch(() => {});
+    await atRest();
   }, { clock: true });
 
   await browser.close();

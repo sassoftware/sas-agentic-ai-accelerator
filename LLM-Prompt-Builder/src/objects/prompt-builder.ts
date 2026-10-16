@@ -9,6 +9,7 @@ import type { PromptBuilderConfig, InterfaceText, PromptBuilderText } from '../t
 import type { DropdownOption } from '../types/models';
 import type { DependentDecision } from '../types/relationships';
 import { getAppState } from '../state/app-state';
+import { oneAtATime } from '../util/one-at-a-time';
 import {
   isDecisionModelOptions,
   isNumberOption,
@@ -7164,8 +7165,10 @@ ${scoreCodeReturn}`;
       }
       paintOptimizeJob();
       startOptimizeRuntimeTicker();
+      // No poll while the one before is out (oneAtATime).
+      const pollOptimizeJobOnce = oneAtATime(pollOptimizeJob);
       optimizePollHandle = window.setInterval(() => {
-        void pollOptimizeJob();
+        void pollOptimizeJobOnce();
       }, 5000);
     }
 
