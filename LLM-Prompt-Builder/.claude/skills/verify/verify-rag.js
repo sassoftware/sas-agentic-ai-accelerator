@@ -119,13 +119,13 @@ async function assertLinkCopies(target, selector, own, label) {
   const href = await target.$eval(selector, (link) => link.href);
   const tabs = target.context().pages().length;
   await target.click(selector);
-  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
+  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 60000);
   const opened = await target.evaluate(() => window.__verifyOpened);
   assert(
     opened.length === 1 && opened[0] === href && target.context().pages().length === tabs,
     `${label}: asks for a new tab once, through window.open, and follows no plain target="_blank" link (asked for: ${opened.join(', ') || 'nothing'})`
   );
-  await waitUntil(async () => (await target.textContent(selector)).trim() === own, `${label}: shows its own text again afterwards ("${own}")`, 5000);
+  await waitUntil(async () => (await target.textContent(selector)).trim() === own, `${label}: shows its own text again afterwards ("${own}")`, 60000);
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
   });
@@ -1562,7 +1562,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         sentNames.length = 0;
         await page.fill(rgb(`${dialog}Name`), name);
         await page.click(`${rgb(`${dialog}Modal`)} .btn-primary`);
-        for (let attempt = 0; attempt < 40 && (sentNames.length === 0 || (await page.isDisabled(`${rgb(`${dialog}Modal`)} .btn-primary`))); attempt++) await sleep(100);
+        for (let attempt = 0; attempt < 600 && (sentNames.length === 0 || (await page.isDisabled(`${rgb(`${dialog}Modal`)} .btn-primary`))); attempt++) await sleep(100);
         if (sentNames.length !== 1 || sentNames[0] !== name.trim()) notAsTyped.push(`${what} (requests: ${sentNames.length})`);
       }
       assert(
@@ -1639,7 +1639,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
         const openWhilePending = (await createDialog(dialog)).open;
         held.looked = true;
         let ended = await createDialog(dialog);
-        for (let attempt = 0; attempt < 40 && (ended.createOff || !ended.error); attempt++) {
+        for (let attempt = 0; attempt < 600 && (ended.createOff || !ended.error); attempt++) {
           await sleep(100);
           ended = await createDialog(dialog);
         }
@@ -1737,7 +1737,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     // The dialog gives its fields back when the creation has ended, which
     // includes the listings after it.
     let projectFieldsAfter = await fieldsOff('create-project');
-    for (let attempt = 0; attempt < 30 && (projectFieldsAfter.name || projectFieldsAfter.description); attempt++) {
+    for (let attempt = 0; attempt < 300 && (projectFieldsAfter.name || projectFieldsAfter.description); attempt++) {
       await sleep(200);
       projectFieldsAfter = await fieldsOff('create-project');
     }

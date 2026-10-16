@@ -1219,7 +1219,7 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   const openWhileOut = (await createProjectDialog()).open;
   held.looked = true;
   let afterRefusal = await createProjectDialog();
-  for (let attempt = 0; attempt < 40 && (afterRefusal.createOff || !afterRefusal.error); attempt++) {
+  for (let attempt = 0; attempt < 600 && (afterRefusal.createOff || !afterRefusal.error); attempt++) {
     await sleep(100);
     afterRefusal = await createProjectDialog();
   }

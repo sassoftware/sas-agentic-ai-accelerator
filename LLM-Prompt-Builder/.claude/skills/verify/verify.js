@@ -94,13 +94,13 @@ async function assertLinkCopies(target, selector, label, own) {
   const shown = await ownLinkText(target, selector, own);
   const tabs = target.context().pages().length;
   await target.click(selector);
-  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 3000);
+  await waitUntil(async () => /link copied/i.test(await target.textContent(selector)), `${label}: says that the link was copied when no tab can be opened`, 60000);
   const opened = await target.evaluate(() => window.__verifyOpened);
   assert(
     opened.length === 1 && opened[0] === href && target.context().pages().length === tabs,
     `${label}: asks for a new tab once, through window.open, and follows no plain target="_blank" link (asked for: ${opened.join(', ') || 'nothing'})`
   );
-  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: shows its text again afterwards`, 5000);
+  await waitUntil(async () => (await target.textContent(selector)).trim() === shown, `${label}: shows its text again afterwards`, 60000);
   await target.evaluate(() => {
     window.open = window.__verifyRealOpen;
   });
@@ -2573,7 +2573,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       sent.length = 0;
       await page.fill(`#${dialog}Name`, name);
       await page.click(`#${dialog}Modal .btn-primary`);
-      for (let attempt = 0; attempt < 40 && (sent.length === 0 || (await page.isDisabled(`#${dialog}Modal .btn-primary`))); attempt++) await sleep(100);
+      for (let attempt = 0; attempt < 600 && (sent.length === 0 || (await page.isDisabled(`#${dialog}Modal .btn-primary`))); attempt++) await sleep(100);
       if (sent.length !== 1 || sent[0] !== name) notAsTyped.push(`${what} (requests: ${sent.length})`);
     }
     assert(
@@ -2695,7 +2695,7 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
       const openWhilePending = (await createDialogState(dialog)).open;
       held.looked = true;
       let after = await createDialogState(dialog);
-      for (let attempt = 0; attempt < 40 && (after.createOff || !after.error); attempt++) {
+      for (let attempt = 0; attempt < 600 && (after.createOff || !after.error); attempt++) {
         await sleep(100);
         after = await createDialogState(dialog);
       }

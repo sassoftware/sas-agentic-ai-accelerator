@@ -374,7 +374,7 @@ function same(got, wanted, label, fieldsOnly = false) {
   };
   const atRest = async () => {
     let seen = -1;
-    for (let round = 0; round < 60; round++) {
+    for (let round = 0; round < 480; round++) {
       const log = await getLog();
       const open = log.filter((entry) => entry.status === null).length;
       if (open === 0 && log.length === seen) return;
@@ -1451,7 +1451,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await openRagSetup(page, 'rag-setup-1');
     await goStep(page, 'RGB', 'run');
     try {
-      await waitUntil(async () => (await runCard(page)).state === 'running', 'the run is shown again', 8000);
+      await waitUntil(async () => (await runCard(page)).state === 'running', 'the run is shown again', 60000);
     } catch {
       /* said by the check below */
     }

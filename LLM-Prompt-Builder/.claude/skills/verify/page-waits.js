@@ -99,7 +99,7 @@ async function clickInDialog(page, button, timeout = 60000) {
   await dialogShown(page, '.modal.show', timeout);
   const dialog = await page.$('.modal.show');
   await page.click(`.modal.show ${button}`);
-  await dialog.waitForElementState('hidden', { timeout }).catch(() => {});
+  await dialog.waitForElementState('hidden', { timeout });
 }
 
 /**

@@ -50,13 +50,20 @@ const mockAnswers = () =>
       resolve(false);
     });
   });
-const waitFor = async (wanted) => {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await mockAnswers()) === wanted) return true;
+// Until the mock answers, or its process has ended - then it did not start.
+// A loaded machine takes its time to start one: the bound is the one of a
+// navigation of the suites.
+const mockStarted = async (mock) => {
+  const start = Date.now();
+  while (Date.now() - start < 180000) {
+    if (mock.exitCode !== null || mock.signalCode !== null) return false;
+    if (await mockAnswers()) return true;
     await sleep(200);
   }
   return false;
 };
+// Until the process of the mock has ended, which frees its port.
+const mockEnded = (mock) => new Promise((resolve) => (mock.exitCode !== null || mock.signalCode !== null ? resolve() : mock.once('exit', resolve)));
 
 (async () => {
   const wanted = process.argv.slice(2).map((name) => name.replace(/\.(c?js)$/, ''));
@@ -97,7 +104,7 @@ const waitFor = async (wanted) => {
         env: { ...process.env, MOCK_PORT: String(PORT), MOCK_REPO_ROOT: REPOSITORY },
         stdio: ['ignore', mockLog, mockLog],
       });
-      if (!(await waitFor(true))) throw new Error(`the mock did not start on ${BASE} (see mock-${suite}.log)`);
+      if (!(await mockStarted(mock))) throw new Error(`the mock did not start on ${BASE} (see mock-${suite}.log)`);
     }
     const started = Date.now();
     const run = spawnSync(process.execPath, [path.join(WORK, `${suite}.cjs`), ...(NEEDS_MOCK(suite) ? [] : [PROJECT])], {
@@ -108,8 +115,9 @@ const waitFor = async (wanted) => {
       maxBuffer: 1 << 28,
     });
     if (mock) {
+      const ended = mockEnded(mock);
       mock.kill();
-      await waitFor(false);
+      await ended;
     }
     const output = `${run.stdout || ''}${run.stderr || ''}`;
     fs.writeFileSync(path.join(WORK, `out-${suite}.log`), output);

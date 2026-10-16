@@ -25,7 +25,9 @@ node <path-to>/LLM-Prompt-Builder/.claude/skills/verify/run-all.cjs
 (`source-census.js`, which reads the sources for the censuses of
 `verify-reads.js` and `verify-outcomes.js`, and `page-waits.js`, the waits on
 the thing itself every browser suite takes, among them),
-starts a FRESH mock for each suite, runs it, and prints one line per suite
+starts a FRESH mock for each suite (it waits until the mock answers, or its
+process has ended, and after the suite until that process has ended), runs
+it, and prints one line per suite
 (`verify: <n> OK, 0 FAIL`) plus every `FAIL` and `NOTE` line; the complete
 output is in `out-<suite>.log`, the mock's in `mock-<suite>.log`. Suite names
 as arguments run a subset (`run-all.cjs verify-rag verify-options`). The exit
@@ -56,7 +58,7 @@ The committed `dist/index.html` must equal a fresh build, or the
 | `verify-options.js` | The Options contract: a stand-in for Visual Analytics embeds the app in an iframe, checks the one options group (the checkbox `sslVerify` included: posted, mirrored, read strictly, without effect on the page) and loads every combination of the three switches, asserting what is built and what is requested | mock |
 | `verify-locales.js` | `en.json` against `de.json` and both against the sources (keys, placeholders, unused keys, formal address in German); the box of a decision run reads "Best Decision Model" / "Bestes Entscheidungsmodell", every text the sources choose for a decision template that speaks of an experiment run names it, and no text of the decision side speaks of a best prompt or a best response | nothing |
 | `verify-tokens.js` | The built `dist/index.html` (or `VERIFY_DIST`): every inline script is stored base64-encoded, and no text outside a comment has the shape `$name$`, which SAS Job Execution substitutes as a token before it serves the page | nothing |
-| `verify-waits.js` | The harness itself: every call of `sleep`, `setTimeout` and `waitForTimeout` in a file of this folder is the definition of a sleep, a poll (inside a loop that looks again), or an answer a route holds back for a time that is itself a condition (named in `HELD`, with why) - no fixed-time wait guards a state - and no suite waits on the `show` class of a dialog | `npm ci` |
+| `verify-waits.js` | The harness itself: every call of `sleep` and `setTimeout` (as functions) and of `waitForTimeout` (as a method) in a file of this folder is the definition of a sleep, a poll (inside a loop that looks again), or an answer a route holds back for a time that is itself a condition (named in `HELD`, with why) - no fixed-time wait guards a state - and no suite waits on the `show` class of a dialog | `npm ci` |
 
 The browser suites stop at their first failed check, so a run without the
 `===== SUMMARY =====` block did not run the checks after it. They repeat every

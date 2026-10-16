@@ -468,22 +468,6 @@ function promptSideRequests(entries) {
 const optimizationRequests = (entries) =>
   entries.filter((entry) => /^\/(jobExecution|jobDefinitions|folders)\//.test(pathOf(entry)));
 
-/** Wait until the app stopped asking: the log has not grown for `quietFor` ms. */
-async function requestsWentQuiet(quietFor = 600, timeout = 8000) {
-  const start = Date.now();
-  let count = -1;
-  let since = Date.now();
-  while (Date.now() - start < timeout) {
-    const now = (await getLog()).length;
-    if (now !== count) {
-      count = now;
-      since = Date.now();
-    } else if (Date.now() - since >= quietFor) {
-      return;
-    }
-    await sleep(150);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Reading the options group
@@ -833,7 +817,8 @@ async function openSession(context, { nested = false } = {}) {
         await session.send(dataMessage(answeredName));
         envelopes = await session.waitEnvelopes(answeredName, 30000);
       }
-      if (settle) await requestsWentQuiet();
+      // Every request of the app answered, and none sent since.
+      if (settle) await quiet(page);
       const optionsConfig = envelopes.length ? envelopes[0].data.optionsConfig : null;
       return {
         app,
@@ -987,7 +972,7 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     }, 20000),
     'choosing RAG on the Setup card shows the RAG flow'
   );
-  await requestsWentQuiet();
+  await quiet(app.page());
   let snap = await snapshot(app);
   check(sameList(shownSteps(snap.rgb), RAG_STEPS), `the RAG flow has the steps ${RAG_STEPS.join(', ')} (got ${shownSteps(snap.rgb).join(', ') || 'none'})`);
   check(snap.rgb.currentPane === 'setup', `the RAG flow opens on its Setup step (got ${snap.rgb.currentPane || 'none'})`);
@@ -1645,7 +1630,7 @@ async function checkRagRoundTrip({ check, need }, app, stored, flags) {
     check(toast, `opening it is refused with a toast (toast: "${toastText.slice(0, 140)}")`);
     const backOnPlaceholder = await eventually(() => app.$eval('#LPB-prompt-dropdown', (dropdown) => dropdown.selectedIndex === 0), 4000);
     check(backOnPlaceholder, 'the prompt dropdown is back on its placeholder');
-    await requestsWentQuiet();
+    await quiet(session.page);
     const snap = await snapshot(app);
     check(sameList(shownSteps(snap.lpb), promptStepsLlm(flags)), `the page stays an LLM page: ${promptStepsLlm(flags).join(', ')} (got ${shownSteps(snap.lpb).join(', ')})`);
     check(!snap.built.evaluateStep && !snap.built.decisionModels && !snap.built.decisionDesigner, 'nothing of the decision side was built for it');

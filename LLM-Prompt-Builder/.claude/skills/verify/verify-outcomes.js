@@ -366,7 +366,7 @@ function writesCensus() {
   };
   const atRest = async () => {
     let seen = -1;
-    for (let round = 0; round < 80; round++) {
+    for (let round = 0; round < 480; round++) {
       const log = await getLog();
       const open = log.filter((entry) => entry.status === null).length;
       if (open === 0 && log.length === seen) return;

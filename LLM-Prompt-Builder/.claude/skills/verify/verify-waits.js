@@ -9,7 +9,8 @@
  * shown or gone, a gate a held answer waits at until the suite has looked).
  *
  * This check reads every .js and .cjs file of this folder with the parser of
- * rolldown and finds every call of sleep, setTimeout and waitForTimeout. Each
+ * rolldown and finds every call of sleep and setTimeout as functions and of
+ * waitForTimeout as a method (not the timeout of a request). Each
  * has to be one of the kinds that guard no state:
  *   - the definition of a sleep (a setTimeout inside `new Promise`);
  *   - a poll: inside a for, while or do-while loop, which looks again until
@@ -76,7 +77,11 @@ Promise.all([import('node:fs'), import('node:path'), import('node:module')]).the
       if (node.type === 'CallExpression') {
         const callee = node.callee;
         const name = callee.type === 'Identifier' ? callee.name : callee.type === 'MemberExpression' && !callee.computed ? callee.property.name : null;
-        if (WAITS.includes(name)) {
+        // sleep and setTimeout called as functions, waitForTimeout as the
+        // method of a page: not the timeout of a request (request.setTimeout),
+        // which waits for nothing.
+        const isWait = callee.type === 'Identifier' ? name !== 'waitForTimeout' : name === 'waitForTimeout';
+        if (WAITS.includes(name) && isWait) {
           const where = `${file}:${lineOf(node.start)} ${text.slice(node.start, node.end).slice(0, 70)}`;
           let kind = 'other';
           for (let index = parents.length - 1; index >= 0; index--) {
