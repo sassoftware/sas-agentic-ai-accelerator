@@ -251,7 +251,10 @@ def _break_manifest(folder: Path) -> None:
 
 
 def _files(folder: Path) -> dict:
-    return {path.name: path.read_bytes() for path in sorted(folder.iterdir())}
+    """Every file below the folder; a folder such as a __pycache__ that git
+    ignores and a used checkout holds is no file."""
+    return {path.relative_to(folder).as_posix(): path.read_bytes()
+            for path in sorted(folder.rglob("*")) if path.is_file()}
 
 
 def test_generate_refuses_a_manifest_that_breaks_the_rule_and_writes_nothing(tmp_path, monkeypatch, repo_root):
