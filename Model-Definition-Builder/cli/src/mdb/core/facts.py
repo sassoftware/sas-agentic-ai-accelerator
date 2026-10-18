@@ -16,7 +16,7 @@ import io
 import time
 from pathlib import Path
 
-from .manifest import ModelManifest
+from .manifest import ModelManifest, described
 
 # Fact-sheet columns per kind, in order
 COLUMNS_BY_KIND = {
@@ -70,7 +70,7 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
         "model_id": manifest.model_id,
         "model": manifest.display_name,
         "provider": manifest.tags.provider_tag,
-        "description": md.description,
+        "description": described(manifest),
         "size": _fmt_number(md.size),
         "deployment_type": md.deployment_type,
         "license": manifest.tags.license_class,

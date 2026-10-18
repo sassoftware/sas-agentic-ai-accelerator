@@ -255,6 +255,19 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             )
             break
 
+    # A folder generated in auth.mode env has no API_KEY option: its score code
+    # names the container variable it reads the key from (partials/
+    # _env_api_key.py.j2). Without this the import would make it mode none and
+    # regenerate a scorer that reads options['API_KEY'], which no call holds.
+    auth = AuthBlock(mode="api_key", key_name=key_name) if key_name else AuthBlock(mode="none")
+    from .generator import KEY_OPTION_TEMPLATES
+    env_match = re.search(r"^API_KEY_ENV = '([A-Z_][A-Z0-9_]*)'$", score_text, re.MULTILINE)
+    if (not key_name and env_match and template in KEY_OPTION_TEMPLATES
+            and "DEPLOYMENT_ENV = " not in score_text):
+        auth = AuthBlock(mode="env", env_var=env_match.group(1))
+        notes.append(f"The score code reads the key from the container environment variable "
+                     f"{env_match.group(1)} - auth.mode env, no API_KEY option.")
+
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(
         kind=kind,
@@ -265,7 +278,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             model_version=model_version or model_id,
             endpoint=endpoint,
             params=params,
-            auth=AuthBlock(mode="api_key", key_name=key_name) if key_name else AuthBlock(mode="none"),
+            auth=auth,
         ),
         runtime=RuntimeBlock(template=template, requirements_profile=requirements_profile),
         options=option_specs,

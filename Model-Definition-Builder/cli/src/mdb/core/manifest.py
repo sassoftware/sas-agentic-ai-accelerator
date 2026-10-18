@@ -68,6 +68,28 @@ def default_key_env(adapter: str) -> Optional[str]:
     return DEFAULT_KEY_ENV.get(adapter)
 
 
+#: The sentence that says where an `auth.mode: env` definition's key comes
+#: from. The description the fact sheet, modelConfiguration.json and the model
+#: card show ends with it (described()), derived from auth at every generate.
+KEY_ENV_SENTENCE = "The key comes from the container environment variable {env_var}."
+_KEY_ENV_SENTENCE = re.compile(r"\s*The key comes from the container environment variable [A-Z_][A-Z0-9_]*\.")
+
+
+def described(manifest: "ModelManifest") -> str:
+    """metadata.description as the generated files show it: for auth.mode env
+    with the sentence that names the variable at its end; any such sentence
+    the description holds from an earlier mode or variable is taken out. A
+    description without the sentence in any other mode is returned as it is."""
+    text = manifest.metadata.description
+    auth = manifest.provider.auth
+    if auth.mode != "env" and not _KEY_ENV_SENTENCE.search(text):
+        return text
+    text = _KEY_ENV_SENTENCE.sub("", text).strip()
+    if auth.mode == "env" and auth.env_var:
+        text = (text + " " if text else "") + KEY_ENV_SENTENCE.format(env_var=auth.env_var)
+    return text
+
+
 class AuthBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -234,6 +256,18 @@ class ModelManifest(BaseModel):
                 "container image name and ingress path."
             )
         return v
+
+    @model_validator(mode="after")
+    def _no_key_option_in_env_mode(self) -> "ModelManifest":
+        # The score code takes a non-empty API_KEY option before the container's
+        # variable, so a declared one - its default lands in options.json and in
+        # the scorer's defaults - would switch env mode off for every call.
+        if self.provider.auth.mode == "env" and "API_KEY" in self.options:
+            raise ValueError(
+                "options.API_KEY is not declared when provider.auth.mode is 'env' - the key comes from the "
+                f"container environment variable {self.provider.auth.env_var}, and an API_KEY default would "
+                "take its place in every call; remove the option")
+        return self
 
     # -- serialization ----------------------------------------------------
 

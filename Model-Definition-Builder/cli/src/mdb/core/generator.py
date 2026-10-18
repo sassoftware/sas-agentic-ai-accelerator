@@ -18,7 +18,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .. import __version__
-from .manifest import ModelManifest, OptionSpec
+from .manifest import ModelManifest, OptionSpec, described
 
 SCORE_TEMPLATE_SUFFIX = ".py.j2"
 # Score templates that address a model by Azure DEPLOYMENT NAME and build their
@@ -55,7 +55,7 @@ def key_env_var(manifest: ModelManifest) -> str:
         return ""
     if manifest.runtime.template not in KEY_OPTION_TEMPLATES:
         raise GenerationError(
-            f"{manifest.model_id}: auth.mode 'env' needs a score template that sends a provider key, "
+            "auth.mode 'env' needs a score template that sends a provider key, "
             f"and '{manifest.runtime.template}' sends none from the API_KEY option - use auth.mode "
             "'none' (or 'api_key' with a template that takes one).")
     return auth.env_var or ""
@@ -528,7 +528,7 @@ def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> st
     values: dict[str, Any] = {
         "name": manifest.model_id,
         "scoreCodeFile": effective_score_file(manifest),
-        "description": manifest.metadata.description,
+        "description": described(manifest),
         "modeler": manifest.modeler,
         "tags": manifest.tags.as_list(),
         **core.boilerplate["constants"],
@@ -808,7 +808,7 @@ def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -
     context = {
         "model_id": manifest.model_id,
         "display_name": manifest.display_name,
-        "description": manifest.metadata.description,
+        "description": described(manifest),
         "provider_display": manifest.tags.provider_tag,
         "model_version": manifest.provider.model_version,
         "deployment_type": manifest.metadata.deployment_type,

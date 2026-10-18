@@ -12,6 +12,9 @@ variable of the SCR container instead of the API_KEY scoring option.
   variable
 - mdb add --auth env / --key-env, mdb test, mdb deploy --key-secret /
   --tls-secret / --namespace
+- the review of 2026-10-18: the description derived from auth, an API_KEY
+  option refused, mdb import keeps the mode, the Secret patch line, the TLS
+  Secret and PV namespace notes, the refusal texts, and what the guides say
 """
 import dataclasses
 import difflib
@@ -20,6 +23,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,14 +32,17 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from conftest import PROCESS_TIMEOUT
+
 from mdb import cli
 from mdb.core import radar
 from mdb.core.generator import (
     KEY_OPTION_TEMPLATES, GenerationError, effective_score_file, render_assets,
 )
 from mdb.core.manifest import (
-    DEFAULT_KEY_ENV, MANIFEST_FILENAME, AuthBlock, ModelManifest, export_json_schema, load_manifest,
+    DEFAULT_KEY_ENV, MANIFEST_FILENAME, AuthBlock, ModelManifest, described, export_json_schema, load_manifest,
 )
+from mdb.core.validator import validate_folder
 from mdb.core.paths import DEFINITION_DIRS, FACT_SHEETS
 from mdb.providers import load_adapters
 from mdb.providers.base import CatalogModel
@@ -329,8 +336,10 @@ def test_add_auth_env_offline(args, kind, folder, env_var, tmp_path, monkeypatch
         "env", env_var, None)
     assert "API_KEY" not in json.loads((target / "options.json").read_text(encoding="utf-8"))
     assert f"API_KEY_ENV = '{env_var}'" in (target / effective_score_file(manifest)).read_text(encoding="utf-8")
-    assert manifest.metadata.description.endswith(f" The key comes from the container environment variable {env_var}.")
-    assert f"container environment variable {env_var}" in (target / "modelConfiguration.json").read_text(encoding="utf-8")
+    sentence = f"The key comes from the container environment variable {env_var}."
+    assert "environment variable" not in manifest.metadata.description
+    assert json.loads((target / "modelConfiguration.json").read_text(encoding="utf-8"))["description"].endswith(
+        " " + sentence)
     assert f"environment variable {env_var}" in (defs / DEFINITION_DIRS[kind] / FACT_SHEETS[kind]).read_text(
         encoding="utf-8")
     out.truncate(0)
@@ -369,6 +378,10 @@ def test_add_auth_api_key_is_what_add_wrote_before(tmp_path, monkeypatch, repo_r
     (["openai", "gpt-x", "--key-env", "MY_KEY"], "--key-env names the variable of --auth env - pass --auth env with it."),
     (["openai", "gpt-x", "--auth", "env", "--key-env", "my-key"], "--key-env 'my-key' is not an environment variable name"),
     (["ollama", "llama3.2", "--auth", "env"], "take no provider key - --auth env does not apply."),
+    (["azure-foundry-env", "gpt-x-deploy", "--resource", "res", "--deployment", "gpt-x-deploy", "--api-version", "v1",
+      "--auth", "env"],
+     "Azure AI Foundry (environment-configured) llm definitions (azure_openai_env) read their key from the container "
+     "environment variable AZURE_OPENAI_API_KEY already - --auth env does not apply."),
 ])
 def test_add_refusals(args, line, tmp_path, monkeypatch, repo_root):
     defs = _relocate(tmp_path, monkeypatch, repo_root)
@@ -383,8 +396,8 @@ def test_apply_auth_refuses_an_adapter_without_a_default():
     manifest = _manifest("openai_chat")
     adapter = SimpleNamespace(id="acme", display_name="Acme", env_key_var=None)
     with pytest.raises(ValueError, match="Provider 'acme' has no default key variable - pass --key-env NAME."):
-        cli._apply_auth(manifest, adapter, "env", None, described=False)
-    cli._apply_auth(manifest, adapter, "env", "ACME_KEY", described=False)
+        cli._apply_auth(manifest, adapter, "env", None)
+    cli._apply_auth(manifest, adapter, "env", "ACME_KEY")
     assert manifest.provider.auth == AuthBlock(mode="env", env_var="ACME_KEY")
 
 
@@ -463,6 +476,13 @@ def test_deploy_env_mode_reads_the_key_from_a_secret(tmp_path, monkeypatch, repo
     assert ('kubectl create secret generic llm-api-keys --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" -n models'
             in printed)
     assert "key from Secret llm-api-keys/OPENAI_API_KEY" in printed
+    # a Secret that exists gets a merge patch, never an apply that drops the keys this run does not list
+    assert ("kubectl patch secret llm-api-keys -n models --type merge "
+            """-p '{"stringData":{"OPENAI_API_KEY":"'"$OPENAI_API_KEY"'"}}'""") in printed
+    assert "kubectl apply -f -" not in printed and "--dry-run" not in printed
+    # the TLS Secret is read in the namespace of the Ingress
+    assert ("The Ingress reads the TLS Secret sas-ingress-certificate from the namespace models - an Ingress takes "
+            "no Secret of another namespace") in printed
 
 
 def test_deploy_keeps_an_api_key_definition_as_it_was(tmp_path, monkeypatch, repo_root):
@@ -478,6 +498,7 @@ def test_deploy_keeps_an_api_key_definition_as_it_was(tmp_path, monkeypatch, rep
     assert {doc["metadata"]["namespace"] for doc in documents if doc} == {"llm"}
     assert "secretName: llm-tls-certs" in text
     assert "kubectl apply -f" in printed and printed.rstrip().endswith("-n llm")
+    assert "TLS Secret" not in printed and "kubectl patch" not in printed
 
 
 def test_deploy_env_mode_on_azure_replaces_the_templates_key_entry(tmp_path, monkeypatch, repo_root, core):
@@ -506,3 +527,193 @@ def test_deploy_refuses_a_name_kubernetes_does_not_take(option, value, tmp_path,
     assert result.exit_code == 2
     assert f"{option} '{value}' is not a Kubernetes" in printed
     assert not (tmp_path / "yaml").exists()
+
+
+# -- the review of 2026-10-18 ----------------------------------------------------
+
+def test_the_description_follows_auth(tmp_path, monkeypatch, repo_root):
+    """The sentence that names the variable is derived from auth at every generate: switching definition.yaml to
+    env by hand, naming another variable and going back to api_key each give the fact sheet, modelConfiguration.json
+    and the model card the description that holds."""
+    defs = _relocate(tmp_path, monkeypatch, repo_root)
+    out = _printed(monkeypatch)
+    assert CliRunner().invoke(cli.app, ["add", "openai", "gpt-x", "--yes", "--offline"]).exit_code == 0, out.getvalue()
+    folder = defs / "LLM-Definitions" / "gpt_x"
+    plain = load_manifest(folder).metadata.description
+    original = (folder / MANIFEST_FILENAME).read_text(encoding="utf-8")
+    keyed = "  auth:\n    mode: api_key\n    key_name: OpenAI\n"
+    assert original.count(keyed) == 1
+
+    def shown(auth_text):
+        (folder / MANIFEST_FILENAME).write_text(original.replace(keyed, auth_text), encoding="utf-8")
+        out.truncate(0)
+        assert CliRunner().invoke(cli.app, ["generate", "gpt_x"]).exit_code == 0, out.getvalue()
+        assert CliRunner().invoke(cli.app, ["sync", "gpt_x"]).exit_code == 0, out.getvalue()
+        configuration = json.loads((folder / "modelConfiguration.json").read_text(encoding="utf-8"))["description"]
+        card = (folder / "Model-Card.md").read_text(encoding="utf-8")
+        sheet = (defs / "LLM-Definitions" / FACT_SHEETS["llm"]).read_text(encoding="utf-8")
+        return configuration, card, sheet
+
+    configuration, card, sheet = shown("  auth:\n    mode: env\n")
+    assert configuration == plain + " The key comes from the container environment variable OPENAI_API_KEY."
+    assert configuration in card and configuration in sheet
+    configuration, card, sheet = shown("  auth:\n    mode: env\n    env_var: TEAM_KEY\n")
+    assert configuration == plain + " The key comes from the container environment variable TEAM_KEY."
+    assert "OPENAI_API_KEY." not in sheet and configuration in sheet and configuration in card
+    configuration, card, sheet = shown(keyed)
+    assert configuration == plain and "environment variable" not in sheet
+    # a description that still holds the sentence of an earlier mode or variable gets the one that holds now
+    manifest = load_manifest(folder)
+    manifest.metadata.description = plain + " The key comes from the container environment variable OLD_KEY."
+    assert described(manifest) == plain
+    manifest.provider.auth = AuthBlock(mode="env", env_var="NEW_KEY")
+    assert described(manifest) == plain + " The key comes from the container environment variable NEW_KEY."
+
+
+def test_every_existing_description_is_shown_as_it_is(repo_root):
+    """api_key and none mode: the description of every definition of the repository reaches the generated files
+    unchanged."""
+    for kind, directory in DEFINITION_DIRS.items():
+        for folder in sorted((repo_root / directory).iterdir()):
+            if (folder / MANIFEST_FILENAME).is_file():
+                manifest = load_manifest(folder)
+                assert manifest.provider.auth.mode != "env"
+                assert described(manifest) == manifest.metadata.description, folder.name
+
+
+def test_an_api_key_option_is_refused_in_env_mode():
+    data = _manifest("openai_chat", "env").model_dump(by_alias=True)
+    data["options"]["API_KEY"] = {"default": "SENTINEL-LITERAL-KEY", "type": "string", "description": "key"}
+    with pytest.raises(ValueError, match="options.API_KEY is not declared when provider.auth.mode is 'env'"):
+        ModelManifest.model_validate(data)
+    # the other modes keep what they had: none takes such an option as before
+    data["provider"]["auth"] = {"mode": "none"}
+    assert "API_KEY" in ModelManifest.model_validate(data).options
+
+
+def test_an_api_key_option_in_env_mode_fails_validate_and_generate(tmp_path, monkeypatch, repo_root):
+    folder = _env_definition(tmp_path, monkeypatch, repo_root, "https://api.openai.com/v1/chat/completions")
+    text = (folder / MANIFEST_FILENAME).read_text(encoding="utf-8")
+    (folder / MANIFEST_FILENAME).write_text(
+        text.replace("options:\n", "options:\n  API_KEY:\n    default: SENTINEL-LITERAL-KEY\n    type: string\n", 1),
+        encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in folder.iterdir() if path.name != MANIFEST_FILENAME}
+    out = _printed(monkeypatch)
+    assert CliRunner().invoke(cli.app, ["generate", "gpt_x"]).exit_code != 0
+    assert "options.API_KEY is not declared when provider.auth.mode is 'env'" in out.getvalue()
+    assert {path.name: path.read_bytes() for path in folder.iterdir() if path.name != MANIFEST_FILENAME} == before
+    assert not any(b"SENTINEL-LITERAL-KEY" in content for content in before.values())
+
+
+def test_the_template_refusal_names_the_model_once(repo_root, core, tmp_path):
+    folder = tmp_path / "qwen_25_05b"
+    shutil.copytree(repo_root / "LLM-Definitions" / "qwen_25_05b", folder)
+    manifest = load_manifest(folder)
+    data = manifest.model_dump(by_alias=True)
+    data["provider"]["auth"] = {"mode": "env", "env_var": "SOME_KEY"}
+    ModelManifest.model_validate(data).save(folder)
+    issues = [issue for issue in validate_folder(folder, core, repo_root / "LLM-Definitions" / FACT_SHEETS["llm"])
+              if issue.rule == "V003"]
+    assert len(issues) == 1 and issues[0].model_id == "qwen_25_05b"
+    assert issues[0].message.startswith("auth.mode 'env' needs a score template that sends a provider key")
+
+
+def test_import_keeps_env_mode(tmp_path, monkeypatch, repo_root):
+    """A folder generated in env mode, imported without its definition.yaml (mdb import, mdb pull --import), keeps
+    the mode and the variable: the score code names it. Before, the import made it auth.mode none and regenerated
+    a scorer that read options['API_KEY'], which no call held."""
+    defs = _relocate(tmp_path, monkeypatch, repo_root)
+    out = _printed(monkeypatch)
+    for args in (["openai", "gpt-x", "--auth", "env", "--key-env", "TEAM_KEY"],
+                 ["openrouter", "typesafe/jev-1.13", "--id", "jev_x", "--auth", "env"]):
+        assert CliRunner().invoke(cli.app, ["add", *args, "--yes", "--offline"]).exit_code == 0, out.getvalue()
+    for kind, model_id, env_var in (("llm", "gpt_x", "TEAM_KEY"), ("decision", "jev_x", "OPENROUTER_API_KEY")):
+        folder = defs / DEFINITION_DIRS[kind] / model_id
+        generated = {path.name: path.read_bytes() for path in folder.iterdir() if path.name != MANIFEST_FILENAME}
+        (folder / MANIFEST_FILENAME).unlink()
+        out.truncate(0)
+        result = CliRunner().invoke(cli.app, ["import", model_id, "--apply"])
+        assert result.exit_code == 0, out.getvalue() + str(result.exception)
+        assert f"container environment variable {env_var} - auth.mode env" in out.getvalue()
+        manifest = load_manifest(folder)
+        assert (manifest.provider.auth.mode, manifest.provider.auth.env_var) == ("env", env_var)
+        score = effective_score_file(manifest)
+        assert (folder / score).read_bytes() == generated[score]
+        assert json.loads((folder / "options.json").read_text(encoding="utf-8")) == json.loads(generated["options.json"])
+        assert "API_KEY" not in json.loads((folder / "options.json").read_text(encoding="utf-8"))
+
+
+def test_import_of_the_environment_configured_azure_template_is_unchanged(repo_root, tmp_path):
+    """azure_openai_env names API_KEY_ENV too, and is no key-option template: its import stays what it was."""
+    from mdb.core.importer import import_folder
+    folder = tmp_path / "azure_openai_env"
+    shutil.copytree(repo_root / "LLM-Definitions" / "azure_openai_env", folder)
+    (folder / MANIFEST_FILENAME).unlink()
+    result = import_folder(folder, repo_root / "LLM-Definitions" / FACT_SHEETS["llm"])
+    assert result.manifest.provider.auth.mode == "none"
+    assert not any("auth.mode env" in note for note in result.notes)
+
+
+def test_the_secret_patch_line_puts_the_value_the_shell_holds(tmp_path, monkeypatch, repo_root):
+    """The line `mdb deploy` prints for a Secret that exists, run by bash with kubectl stood in for: the merge
+    patch carries each variable's value from the shell's environment, as JSON."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash")
+    _env_definition(tmp_path, monkeypatch, repo_root, "https://api.openai.com/v1/chat/completions")
+    result, printed = _deployed(tmp_path, monkeypatch, tmp_path / "yaml", "gpt_x")
+    assert result.exit_code == 0, printed
+    line = next(line.strip() for line in printed.splitlines() if line.strip().startswith("kubectl patch secret"))
+    script = 'kubectl() { printf "%s\\n" "$@"; }\n' + line + "\n"
+    environment = dict(__import__("os").environ, OPENAI_API_KEY="stand-in-key-1")
+    ran = subprocess.run([bash, "-c", script], capture_output=True, text=True, env=environment, check=True,
+                         timeout=PROCESS_TIMEOUT)
+    arguments = ran.stdout.splitlines()
+    assert arguments[:7] == ["patch", "secret", "llm-api-keys", "-n", "llm", "--type", "merge"]
+    assert arguments[7] == "-p" and json.loads(arguments[8]) == {"stringData": {"OPENAI_API_KEY": "stand-in-key-1"}}
+    assert "stand-in-key-1" not in printed
+
+
+def test_deploy_pv_into_another_namespace_names_the_templates_it_does_not_render(tmp_path, monkeypatch, repo_root):
+    monkeypatch.setenv("MDB_REPO", str(repo_root))
+    model_id = "qwen_25_05b"
+    shutil.copytree(repo_root / "LLM-Definitions" / model_id, tmp_path / "defs" / "LLM-Definitions" / model_id)
+    monkeypatch.setenv("MDB_DEFINITIONS", str(tmp_path / "defs"))
+    result, printed = _deployed(tmp_path, monkeypatch, tmp_path / "yaml", model_id, "--pv", "--namespace", "team-a")
+    assert result.exit_code == 0, printed
+    assert ("The PV variant mounts the claim llm-weights in team-a: llm-weights-pvc-template.yaml and "
+            "stage-weights-job-template.yaml name the namespace llm") in printed
+    result, printed = _deployed(tmp_path, monkeypatch, tmp_path / "yaml", model_id, "--pv")
+    assert result.exit_code == 0 and "The PV variant mounts" not in printed
+
+
+def _guide(repo_root, name) -> str:
+    return " ".join((repo_root / "website" / "docs" / "Administration-Guide" / name).read_text(encoding="utf-8").split())
+
+
+def test_the_guides_say_what_the_review_found_missing(repo_root):
+    builder = _guide(repo_root, "Model-Definition-Builder.md")
+    deployment = _guide(repo_root, "Container-Deployment.md")
+    credentials = _guide(repo_root, "Managing-Credentials.md")
+    calls = " ".join((repo_root / "SAS-Viya-Integrations" / "SAS-Code-LLM-Calls" / "README.md").read_text(
+        encoding="utf-8").split())
+    # the Secret: a merge patch, and why not apply
+    assert "--dry-run=client -o yaml | kubectl apply -f -`." not in builder
+    assert "kubectl patch secret llm-api-keys -n llm --type merge" in builder and "kubectl patch" in deployment
+    # the TLS Secret lives in the namespace of the Ingress
+    assert "--tls-secret sas-ingress-certificate" not in builder
+    assert "The TLS Secret has to exist in the namespace of `--namespace`" in builder
+    assert "for example the certificate secret of your SAS Viya ingress)" not in deployment
+    assert "The Secret has to exist in the namespace of the Ingress" in deployment
+    # the PV templates keep llm
+    assert "every object of a template names it; `mdb deploy --namespace <name>` renders another one." not in deployment
+    assert "`llm-weights-pvc-template.yaml` and `stage-weights-job-template.yaml` are not rendered by `mdb deploy`" in deployment
+    # the unauthenticated Ingress
+    for text in (builder, deployment):
+        assert "nginx.ingress.kubernetes.io/whitelist-source-range" in text and "has no authentication" in text
+    # the RAG maps
+    assert "python -m rag_core.providers --from" in credentials and "regenerate the maps" in credentials
+    assert "rag_core/providers.py" in builder
+    # generated SAS code that still sends API_KEY
+    assert "SAS code generated by `Create-LLM-Call.sas` or the custom step *LLM - Create LLM Call***" in builder
+    assert "`%let API_KEY=<entry name>;`" in calls and "the provider answers 401" in calls

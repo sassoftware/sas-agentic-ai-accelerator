@@ -187,8 +187,8 @@ def test_every_process_a_test_of_mdb_starts_has_the_one_limit():
                 limit = [ast.unparse(k.value) for k in node.keywords if k.arg == "timeout"]
                 calls.append((path.name, node.lineno, limit))
     assert {name for name, _, _ in calls} == {"test_mdb_22.py", "test_deploy_scripts.py", "test_content_manifest.py",
-                                              "test_mdb_fix_20.py", "test_mdb_release_20.py"}, calls
-    assert len(calls) == 9 and [call for call in calls if call[2] != ["PROCESS_TIMEOUT"]] == [], calls
+                                              "test_mdb_fix_20.py", "test_mdb_release_20.py", "test_env_api_keys.py"}, calls
+    assert len(calls) == 10 and [call for call in calls if call[2] != ["PROCESS_TIMEOUT"]] == [], calls
     assert PROCESS_TIMEOUT >= 1800
 
 

@@ -745,7 +745,7 @@ def add(
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
         if auth is not None:
-            _apply_auth(manifest, adapter, auth, key_env, described=bool(description))
+            _apply_auth(manifest, adapter, auth, key_env)
         # State the kind up front - it decides the score template, the folder
         # and the Model Manager project, and used to be visible only as an
         # easily-missed folder name near the end.
@@ -794,13 +794,19 @@ def add(
     console.print(f"  4. mdb publish {_plain(final_id)}             (publish to SCR - or mdb ship {_plain(final_id)} for register + publish)")
 
 
-def _apply_auth(manifest: ModelManifest, adapter: ProviderAdapter, auth: str, key_env: Optional[str],
-                described: bool) -> None:
+def _apply_auth(manifest: ModelManifest, adapter: ProviderAdapter, auth: str, key_env: Optional[str]) -> None:
     """`mdb add --auth`: keep the API_KEY option (api_key) or read the key from
     a container environment variable instead (env). Raises ValueError with
-    one line where the definition takes no provider key, or where neither
-    --key-env nor the adapter names the variable."""
+    one line where the definition takes no key option, or where neither
+    --key-env nor the adapter names the variable. The sentence that names the
+    variable is not written into the description: every generate derives it
+    from auth (manifest.described), so it follows a later switch of mode or
+    variable."""
     if manifest.provider.auth.mode == "none":
+        if manifest.runtime.template == AZURE_ENV_TEMPLATE:
+            raise ValueError(f"{adapter.display_name} {manifest.kind} definitions ({manifest.runtime.template}) "
+                             "read their key from the container environment variable AZURE_OPENAI_API_KEY "
+                             f"already - --auth {auth} does not apply.")
         raise ValueError(f"{adapter.display_name} {manifest.kind} definitions ({manifest.runtime.template}) "
                          f"take no provider key - --auth {auth} does not apply.")
     if auth == "api_key":
@@ -809,10 +815,6 @@ def _apply_auth(manifest: ModelManifest, adapter: ProviderAdapter, auth: str, ke
     if not env_var:
         raise ValueError(f"Provider '{adapter.id}' has no default key variable - pass --key-env NAME.")
     manifest.provider.auth = AuthBlock(mode="env", env_var=env_var)
-    if not described:
-        # The default description says where the key comes from: it is the
-        # text the fact sheet, modelConfiguration.json and the model card show.
-        manifest.metadata.description += f" The key comes from the container environment variable {env_var}."
 
 
 # ---------------------------------------------------------------------------
@@ -3629,6 +3631,7 @@ def deploy(
     out_dir = Path(_not_empty("--out", out, "folder"))
     out_dir.mkdir(parents=True, exist_ok=True)
     key_vars: list[str] = []  # the variables the Secret has to hold, in order
+    pv_rendered = False  # a manifest of the PV variant was written
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
@@ -3685,6 +3688,7 @@ def deploy(
         target = out_dir / f"deploy-{manifest.model_id}.yaml"
         target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         variant = " (PV variant)" if use_pv and not is_azure else ""
+        pv_rendered = pv_rendered or bool(variant)
         if is_env_configured:
             variant = " (environment-configured variant)"
         elif is_azure:
@@ -3701,7 +3705,24 @@ def deploy(
         # One line however long, so it can be copied as it is.
         console.print(f"  kubectl create secret generic {_plain(key_secret)} {_plain(literals)} -n {_plain(namespace)}",
                       soft_wrap=True)
-        console.print("  (to add a key to an existing Secret, append --dry-run=client -o yaml | kubectl apply -f -)")
+        # Where the Secret exists: a merge patch adds or replaces these keys
+        # and leaves every other one. `create --dry-run=client -o yaml |
+        # kubectl apply -f -` would not: apply drops each key of its last run
+        # that this run does not list - a single-model deploy names only its own.
+        # Each value leaves the single-quoted JSON for a double-quoted "$NAME"
+        # the shell expands: "NAME":"'"$NAME"'"
+        patch = ",".join('"' + name + '":"\'"$' + name + '"\'"' for name in key_vars)
+        console.print("  Where the Secret exists already, add or replace these keys - every other key it holds stays:")
+        console.print(f"  kubectl patch secret {_plain(key_secret)} -n {_plain(namespace)} --type merge "
+                      f"-p '{{\"stringData\":{{{_plain(patch)}}}}}'", soft_wrap=True)
+    if tls_secret != DEFAULT_TLS_SECRET:
+        console.print(f"The Ingress reads the TLS Secret {_plain(tls_secret)} from the namespace {_plain(namespace)} - an "
+                      "Ingress takes no Secret of another namespace, so copy one there first (the certificate Secret "
+                      "of the SAS Viya ingress lives in the namespace of SAS Viya).", soft_wrap=True)
+    if pv_rendered and namespace != DEFAULT_NAMESPACE:
+        console.print(f"The PV variant mounts the claim llm-weights in {_plain(namespace)}: llm-weights-pvc-template.yaml "
+                      f"and stage-weights-job-template.yaml name the namespace {_plain(DEFAULT_NAMESPACE)} - change their "
+                      f"namespace: lines to {_plain(namespace)} before applying them.", soft_wrap=True)
     console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n {_plain(namespace)}",
                   soft_wrap=True)
 
