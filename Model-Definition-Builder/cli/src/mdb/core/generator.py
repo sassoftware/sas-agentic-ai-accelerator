@@ -29,10 +29,36 @@ SCORE_TEMPLATE_SUFFIX = ".py.j2"
 AZURE_TEMPLATES = ("azure_openai_v1", "azure_openai_env", "emb_azure_openai_v1")
 AZURE_ENV_TEMPLATE = "azure_openai_env"
 AZURE_EMBEDDING_TEMPLATE = "emb_azure_openai_v1"
+# Score templates that send the provider key a call carries in the API_KEY
+# option - the ones `auth.mode: env` can feed from the container's environment
+# instead (partials/_env_api_key.py.j2). The others take no key (self-hosted
+# weights), read their own token variable (OpenAI-compatible servers) or the
+# AWS credential chain (sigv4), or already read the key from the environment
+# (azure_openai_env).
+KEY_OPTION_TEMPLATES = (
+    "openai_chat", "anthropic_messages", "gemini_generate", "bedrock_converse", "azure_openai_v1",
+    "dec_systemone_api", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
+    "emb_bedrock_cohere", "emb_azure_openai_v1",
+)
 
 
 class GenerationError(RuntimeError):
     pass
+
+
+def key_env_var(manifest: ModelManifest) -> str:
+    """The container environment variable an `auth.mode: env` definition
+    reads its key from, '' for any other mode. Refuses env mode on a score
+    template that sends no API_KEY - it would have no key to replace."""
+    auth = manifest.provider.auth
+    if auth.mode != "env":
+        return ""
+    if manifest.runtime.template not in KEY_OPTION_TEMPLATES:
+        raise GenerationError(
+            f"{manifest.model_id}: auth.mode 'env' needs a score template that sends a provider key, "
+            f"and '{manifest.runtime.template}' sends none from the API_KEY option - use auth.mode "
+            "'none' (or 'api_key' with a template that takes one).")
+    return auth.env_var or ""
 
 
 @dataclass
@@ -282,6 +308,9 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         "model_version": manifest.provider.model_version,
         "endpoint": manifest.provider.endpoint or "",
         "timeout_s": manifest.runtime.timeout_s,
+        # The NAME of the variable an auth.mode env definition reads its key
+        # from (partials/_env_api_key.py.j2); '' renders nothing.
+        "key_env_var": key_env_var(manifest),
         **_score_blocks(manifest, core),
     }
     if manifest.runtime.template in AZURE_TEMPLATES:
@@ -672,6 +701,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
     template = manifest.runtime.template
     params = manifest.provider.params
     lines: list[str] = []
+    # auth.mode env: the key is read from this variable of the container
+    # instead of arriving per call in the API_KEY option.
+    env_var = key_env_var(manifest)
+    from_env = (f"The key comes from the container environment variable `{env_var}` - set it from a "
+                "Kubernetes Secret (`mdb deploy` renders the reference) and never into the image; this "
+                "definition declares no `API_KEY` option, and one a caller passes anyway still wins")
     if template in AZURE_TEMPLATES:
         committed = params.get("resource", "") if params.get("commit_resource") else ""
         version = (params.get("api_version") or "").strip()
@@ -690,6 +725,8 @@ def deployment_notes(manifest: ModelManifest) -> str:
                          "wins) and `AZURE_OPENAI_DEPLOYMENT` the deployment, defaulting to "
                          f"`{manifest.provider.model_version}`. This definition declares no `API_KEY` option: "
                          "the container, not the caller, holds the key.")
+        elif env_var:
+            lines.append(f"- {from_env}.")
         else:
             lines.append("- The key arrives per call in the `API_KEY` option.")
     elif template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
@@ -705,8 +742,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
         lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
                      "`aws_bedrock_region` option overrides it per call.")
     elif "bedrock" in template:
-        lines.append("- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); "
-                     "no AWS SDK is needed in the container.")
+        if env_var:
+            lines.append(f"- {from_env}. It is a Bedrock API key (bearer token); no AWS SDK is needed in "
+                         "the container.")
+        else:
+            lines.append("- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); "
+                         "no AWS SDK is needed in the container.")
         lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
                      "`aws_bedrock_region` option overrides it per call.")
     elif template in ("hf_transformers", "hf_onnx", "emb_sentence_transformers"):
@@ -731,10 +772,15 @@ def deployment_notes(manifest: ModelManifest) -> str:
                          "provider connection and no key, and never contacts the Hugging Face Hub at run time.")
         lines.append("- Inference runs on the CPU; `VON_DEVICE` selects another device (`cuda`, `openvino`) "
                      "where the node offers one.")
+    elif template == "dec_systemone_api" and env_var:
+        lines.append(f"- {from_env}. The container posts the state and the questions to the provider's "
+                     "System One endpoint and needs network access to it.")
     elif template == "dec_systemone_api":
         lines.append("- The key arrives per call in the `API_KEY` option; the container posts the state and "
                      "the questions to the provider's System One endpoint and needs no environment "
                      "configuration beyond network access to it.")
+    elif env_var:
+        lines.append(f"- {from_env}. Beyond that the container needs network access to the provider.")
     else:
         lines.append("- The key arrives per call in the `API_KEY` option; the container needs no environment "
                      "configuration beyond network access to the provider.")

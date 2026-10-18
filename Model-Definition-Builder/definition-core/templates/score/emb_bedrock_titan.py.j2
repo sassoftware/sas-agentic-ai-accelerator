@@ -20,7 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger("scoreModel")
 
 {% include "partials/_options_parser.py.j2" %}
-
+{% if key_env_var %}{% include "partials/_env_api_key.py.j2" %}
+{% endif %}
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
@@ -33,7 +34,8 @@ def scoreModel(document, project, options):
         "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
     }
     options = {**optionsDefaults, **_parse_options(options)}
-    region = options["aws_bedrock_region"]
+{% if key_env_var %}    options["API_KEY"] = _api_key(options)
+{% endif %}    region = options["aws_bedrock_region"]
     modelEndpoint = (
         f"https://bedrock-runtime.{region}.amazonaws.com/model/"
         f"{urllib.parse.quote(modelId, safe='')}/invoke"

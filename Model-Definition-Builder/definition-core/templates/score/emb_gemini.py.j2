@@ -17,7 +17,8 @@ logging.basicConfig(
 logger = logging.getLogger("scoreModel")
 
 {% include "partials/_options_parser.py.j2" %}
-
+{% if key_env_var %}{% include "partials/_env_api_key.py.j2" %}
+{% endif %}
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
@@ -29,7 +30,8 @@ def scoreModel(document, project, options):
 {{ options_defaults_block }}
     }
     options = {**optionsDefaults, **_parse_options(options)}
-    payload = {
+{% if key_env_var %}    options["API_KEY"] = _api_key(options)
+{% endif %}    payload = {
         "content": {"parts": [{"text": document}]},
 {{ body_options_block }}
     }
