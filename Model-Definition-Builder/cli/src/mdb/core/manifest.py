@@ -40,17 +40,63 @@ class OptionSpec(BaseModel):
     informational: Optional[bool] = None
 
 
+#: The name of an environment variable as a container and a Kubernetes Secret
+#: key both take it.
+ENV_VAR_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+#: The variable an `auth.mode: env` definition reads its key from when it names
+#: none: the name .env.example (and the adapter's own env_key_var) uses for that
+#: provider's key. Every azure* adapter shares AZURE_OPENAI_API_KEY.
+DEFAULT_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "voyage": "VOYAGE_API_KEY",
+    "bedrock": "AWS_BEDROCK_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
+    "typesafe": "TYPESAFE_API_KEY",
+}
+
+
+def default_key_env(adapter: str) -> Optional[str]:
+    """The default key variable of an adapter id, None where it has none."""
+    if adapter.startswith("azure"):
+        return "AZURE_OPENAI_API_KEY"
+    return DEFAULT_KEY_ENV.get(adapter)
+
+
 class AuthBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["api_key", "none"] = "api_key"
+    # api_key: the key arrives per call in the API_KEY scoring option, which
+    #          names a credential-domain entry (key_name).
+    # env:     the key is read from an environment variable of the SCR
+    #          container (env_var); options.json has no API_KEY entry.
+    # none:    the model takes no provider key.
+    mode: Literal["api_key", "env", "none"] = "api_key"
     # Must equal the options.json API_KEY default and the LLM_API_KEYS CAS-table KeyName
     key_name: Optional[str] = None
+    # auth.mode env only: the container environment variable that holds the
+    # key. Absent, the adapter's default (DEFAULT_KEY_ENV) is used.
+    env_var: Optional[str] = Field(None, json_schema_extra={"pattern": ENV_VAR_PATTERN.pattern})
 
     @model_validator(mode="after")
     def _key_name_required(self) -> "AuthBlock":
         if self.mode == "api_key" and not self.key_name:
             raise ValueError("auth.key_name is required when auth.mode is 'api_key'")
+        if self.mode == "env" and self.key_name:
+            raise ValueError(
+                "auth.key_name is not used when auth.mode is 'env' - the key comes from the container "
+                "environment variable auth.env_var, not from a credential-domain entry; remove key_name")
+        if self.mode != "env" and self.env_var:
+            raise ValueError(f"auth.env_var is only read when auth.mode is 'env' (it is '{self.mode}')")
+        if self.env_var is not None and not ENV_VAR_PATTERN.fullmatch(self.env_var):
+            raise ValueError(
+                f"auth.env_var '{self.env_var}' is not an environment variable name "
+                "(upper-case letters, digits and underscores, not starting with a digit)")
         return self
 
 
@@ -62,6 +108,19 @@ class ProviderBlock(BaseModel):
     endpoint: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)
     auth: AuthBlock = Field(default_factory=lambda: AuthBlock(mode="none"))
+
+    @model_validator(mode="after")
+    def _env_var_resolved(self) -> "ProviderBlock":
+        # An env-mode definition always knows its variable after loading: the
+        # one it names, else its adapter's default.
+        if self.auth.mode == "env" and not self.auth.env_var:
+            default = default_key_env(self.adapter)
+            if not default:
+                raise ValueError(
+                    f"auth.env_var is required when auth.mode is 'env': adapter '{self.adapter}' has no "
+                    "default key variable")
+            self.auth.env_var = default
+        return self
 
 
 class RuntimeBlock(BaseModel):
