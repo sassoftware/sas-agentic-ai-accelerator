@@ -31,7 +31,10 @@ from .core.generator import (
     check_options_file, effective_score_file, list_custom_options, render_assets,
 )
 from .core.importer import import_folder
-from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
+from .core.manifest import (
+    ENV_VAR_PATTERN, MANIFEST_FILENAME, AuthBlock, ModelManifest, default_key_env, export_json_schema,
+    load_manifest,
+)
 from .core.netutil import env_flag, make_session
 from .core.paths import (
     RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
@@ -320,8 +323,13 @@ class Context:
         return folders
 
 
-def _env_api_key(adapter: ProviderAdapter) -> Optional[str]:
-    if not adapter.env_key_var:
+def _env_api_key(adapter: Optional[ProviderAdapter], manifest: Optional[ModelManifest] = None) -> Optional[str]:
+    """The provider key on this workstation, from the environment or .env: an
+    `auth.mode: env` definition's own variable first, then the adapter's."""
+    auth = manifest.provider.auth if manifest is not None else None
+    if auth is not None and auth.mode == "env" and auth.env_var and os.environ.get(auth.env_var):
+        return os.environ[auth.env_var]
+    if adapter is None or not adapter.env_key_var:
         return None
     for name in (adapter.env_key_var, *getattr(adapter, "env_key_fallbacks", ())):
         value = os.environ.get(name)
@@ -599,11 +607,32 @@ def add(
     kind: Optional[str] = typer.Option(None, help="Model kind: llm, embedding or decision (any provider whose adapter has a template for that kind)"),
     license_: Optional[str] = typer.Option(None, "--license", help="License class for self-hosted models (Open-Source/Proprietary)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
+    auth: Optional[str] = typer.Option(
+        None, "--auth",
+        help="Where the provider key comes from: api_key (the API_KEY scoring option, a credential-domain "
+             "entry - the default) or env (an environment variable of the SCR container; options.json "
+             "then has no API_KEY)",
+    ),
+    key_env: Optional[str] = typer.Option(
+        None, "--key-env",
+        help="With --auth env: the container environment variable that holds the key "
+             "(default: the provider's own, e.g. OPENAI_API_KEY)",
+    ),
 ):
     """Add a new model definition: pick a provider and model, answer a few questions,
     and every framework asset is generated."""
     ctx = Context()
     adapters = load_adapters()
+    if auth is not None and auth not in ("api_key", "env"):
+        console.print(f"[red]--auth must be api_key or env, not '{_plain(auth)}'.[/red]")
+        raise typer.Exit(2)
+    if key_env is not None and auth != "env":
+        console.print("[red]--key-env names the variable of --auth env - pass --auth env with it.[/red]")
+        raise typer.Exit(2)
+    if key_env is not None and not ENV_VAR_PATTERN.fullmatch(key_env):
+        console.print(f"[red]--key-env '{_plain(key_env)}' is not an environment variable name "
+                      "(upper-case letters, digits and underscores, not starting with a digit).[/red]")
+        raise typer.Exit(2)
 
     if provider is None:
         ids = list(adapters)
@@ -715,6 +744,8 @@ def add(
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        if auth is not None:
+            _apply_auth(manifest, adapter, auth, key_env, described=bool(description))
         # State the kind up front - it decides the score template, the folder
         # and the Model Manager project, and used to be visible only as an
         # easily-missed folder name near the end.
@@ -742,6 +773,9 @@ def add(
     for name in sorted(rendered):
         console.print(f"  {_plain(name)}")
     console.print(f"  + a row in {_plain(fact_sheet.name)} (pricing source: {_plain(manifest.generation.catalog_provenance)})")
+    if manifest.provider.auth.mode == "env":
+        console.print(f"  Provider key: the container environment variable {_plain(manifest.provider.auth.env_var)} "
+                      "(auth.mode env) - options.json has no API_KEY; mdb deploy renders the Secret reference.")
     if not yes and not Confirm.ask("Write these files?", default=True):
         raise typer.Exit(0)
 
@@ -758,6 +792,27 @@ def add(
     console.print(f"  2. mdb test {_plain(final_id)}                (run the generated scoreModel() locally - what SCR will execute)")
     console.print(f"  3. mdb register {_plain(final_id)}            (register in SAS Model Manager)")
     console.print(f"  4. mdb publish {_plain(final_id)}             (publish to SCR - or mdb ship {_plain(final_id)} for register + publish)")
+
+
+def _apply_auth(manifest: ModelManifest, adapter: ProviderAdapter, auth: str, key_env: Optional[str],
+                described: bool) -> None:
+    """`mdb add --auth`: keep the API_KEY option (api_key) or read the key from
+    a container environment variable instead (env). Raises ValueError with
+    one line where the definition takes no provider key, or where neither
+    --key-env nor the adapter names the variable."""
+    if manifest.provider.auth.mode == "none":
+        raise ValueError(f"{adapter.display_name} {manifest.kind} definitions ({manifest.runtime.template}) "
+                         f"take no provider key - --auth {auth} does not apply.")
+    if auth == "api_key":
+        return
+    env_var = key_env or adapter.env_key_var or default_key_env(adapter.id)
+    if not env_var:
+        raise ValueError(f"Provider '{adapter.id}' has no default key variable - pass --key-env NAME.")
+    manifest.provider.auth = AuthBlock(mode="env", env_var=env_var)
+    if not described:
+        # The default description says where the key comes from: it is the
+        # text the fact sheet, modelConfiguration.json and the model card show.
+        manifest.metadata.description += f" The key comes from the container environment variable {env_var}."
 
 
 # ---------------------------------------------------------------------------
@@ -852,7 +907,7 @@ def validate(
             if adapter is None:
                 console.print(f"[yellow]{_plain(folder.name)}: unknown adapter '{_plain(manifest.provider.adapter)}' - skipped.[/yellow]")
                 continue
-            result = adapter.smoke_test(manifest, _env_api_key(adapter), session)
+            result = adapter.smoke_test(manifest, _env_api_key(adapter, manifest), session)
             if result.skipped:
                 console.print(f"[dim]{_plain(folder.name)}: {_plain(result.detail)}[/dim]")
             elif result.ok:
@@ -1184,6 +1239,13 @@ def test(
                           "set it in the environment or .env.[/red]")
             raise typer.Exit(2)
         options["API_KEY"] = key
+    elif manifest.provider.auth.mode == "env":
+        # The score code reads the key from this variable itself - as the SCR
+        # container does - so nothing travels in the options string.
+        if not (os.environ.get(manifest.provider.auth.env_var or "") or "").strip():
+            console.print(f"[red]No {_plain(manifest.provider.auth.env_var)} found - the score code reads the key "
+                          "from that environment variable (auth.mode env); set it in the environment or .env.[/red]")
+            raise typer.Exit(2)
     score_path = folder / effective_score_file(manifest)
     import importlib.util
     spec = importlib.util.spec_from_file_location(f"mdb_score_{model_id}", score_path)
@@ -3465,7 +3527,7 @@ def ship(
     adapters = load_adapters()
     adapter = adapters.get(manifest.provider.adapter)
     if adapter is not None:
-        result = adapter.smoke_test(manifest, _env_api_key(adapter), make_session(verify_ssl))
+        result = adapter.smoke_test(manifest, _env_api_key(adapter, manifest), make_session(verify_ssl))
         if result.skipped:
             console.print(f"[dim]smoke test: {_plain(result.detail)}[/dim]")
         elif result.ok:
@@ -3512,6 +3574,16 @@ def endpoints(
     console.print(table)
 
 
+#: What `mdb deploy` writes unless told otherwise - the names the templates in
+#: SCR-LLM-Deployment-YAML carry.
+DEFAULT_NAMESPACE = "llm"
+DEFAULT_TLS_SECRET = "llm-tls-certs"
+DEFAULT_KEY_SECRET = "llm-api-keys"
+#: A namespace (DNS label) and a Secret (DNS subdomain) as Kubernetes takes them.
+K8S_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+
+
 @app.command()
 def deploy(
     ids: Optional[list[str]] = typer.Argument(None),
@@ -3520,10 +3592,27 @@ def deploy(
     host: Optional[str] = typer.Option(None, "--host", help="Ingress host (default: host of SAS_SCR_ENDPOINT)"),
     pv: bool = typer.Option(False, "--pv", help="Force the persistent-volume template variant"),
     out: str = typer.Option("deploy-yaml", "--out", help="Output directory for the rendered YAML"),
+    namespace: str = typer.Option(DEFAULT_NAMESPACE, "--namespace", help="Kubernetes namespace of the Deployment, Service and Ingress"),
+    tls_secret: str = typer.Option(DEFAULT_TLS_SECRET, "--tls-secret", help="TLS secret the Ingress serves its host with"),
+    key_secret: str = typer.Option(
+        DEFAULT_KEY_SECRET, "--key-secret",
+        help="Kubernetes Secret an auth.mode env definition reads its key from (one entry per variable name)"),
 ):
-    """Render ready-to-apply SCR deployment YAML (fills all template placeholders)."""
+    """Render ready-to-apply SCR deployment YAML (fills all template placeholders).
+
+    A definition with `auth.mode: env` gets its key variable from a Kubernetes
+    Secret (secretKeyRef, the key named like the variable); the command prints
+    the `kubectl create secret` line to create it - names only, never values."""
     import re
     from urllib.parse import urlparse
+    for option, value, what in (("--namespace", namespace, "namespace"), ("--tls-secret", tls_secret, "Secret"),
+                                ("--key-secret", key_secret, "Secret")):
+        pattern = K8S_LABEL if what == "namespace" else K8S_NAME
+        if not pattern.fullmatch(value) or len(value) > (63 if what == "namespace" else 253):
+            allowed = "digits and '-'" if what == "namespace" else "digits, '-' and '.'"
+            console.print(f"[red]{_plain(option)} '{_plain(value)}' is not a Kubernetes {_plain(what)} name "
+                          f"(lower-case letters, {_plain(allowed)}).[/red]")
+            raise typer.Exit(2)
     ctx = Context()
     registry = registry or os.environ.get("SAS_CONTAINER_REGISTRY")
     if not registry:
@@ -3539,6 +3628,7 @@ def deploy(
     template_dir = ctx.repo / "SCR-LLM-Deployment-YAML"
     out_dir = Path(_not_empty("--out", out, "folder"))
     out_dir.mkdir(parents=True, exist_ok=True)
+    key_vars: list[str] = []  # the variables the Secret has to hold, in order
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
@@ -3580,7 +3670,18 @@ def deploy(
                 # rendered manifest states the model the pod will actually serve.
                 line = line.replace("{{ AZURE-DEPLOYMENT-NAME }}", manifest.provider.model_version)
             line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
+            line = re.sub(r"^(\s*namespace:\s*)llm\s*$", lambda found: found.group(1) + namespace, line)
+            line = re.sub(r"^(\s*secretName:\s*)llm-tls-certs\s*$", lambda found: found.group(1) + tls_secret, line)
             lines.append(line)
+        env_var = manifest.provider.auth.env_var if manifest.provider.auth.mode == "env" else None
+        if env_var:
+            try:
+                lines = _with_key_secret(lines, env_var, key_secret)
+            except ValueError as exc:
+                console.print(f"[red]{_plain(manifest.model_id)}: {_plain(exc)}[/red]")
+                raise typer.Exit(1)
+            if env_var not in key_vars:
+                key_vars.append(env_var)
         target = out_dir / f"deploy-{manifest.model_id}.yaml"
         target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         variant = " (PV variant)" if use_pv and not is_azure else ""
@@ -3588,8 +3689,54 @@ def deploy(
             variant = " (environment-configured variant)"
         elif is_azure:
             variant = " (Azure variant - connection from the container environment)"
+        if env_var:
+            variant += f" - key from Secret {key_secret}/{env_var}"
         console.print(f"[green]{_plain(manifest.model_id)}: {_plain(target)}[/green]" + _plain(variant))
-    console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n <namespace>")
+    if key_vars:
+        # Names only: the shell fills each value from its own environment
+        # (e.g. after `set -a; . ./.env; set +a`), so no key is ever printed.
+        literals = " ".join(f'--from-literal={name}="${name}"' for name in key_vars)
+        console.print(f"Create the key Secret once per namespace - it holds {_plain(', '.join(key_vars))}, each value "
+                      "filled in by the shell from its own environment (e.g. after set -a; . ./.env; set +a):")
+        # One line however long, so it can be copied as it is.
+        console.print(f"  kubectl create secret generic {_plain(key_secret)} {_plain(literals)} -n {_plain(namespace)}",
+                      soft_wrap=True)
+        console.print("  (to add a key to an existing Secret, append --dry-run=client -o yaml | kubectl apply -f -)")
+    console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n {_plain(namespace)}",
+                  soft_wrap=True)
+
+
+def _with_key_secret(lines: list[str], env_var: str, secret: str) -> list[str]:
+    """The Deployment's env list with `env_var` read from `secret` (key = the
+    variable's name). An entry of that name the template already declares
+    (AZURE_OPENAI_API_KEY in the Azure template) is replaced, not doubled."""
+    def entry_end(start: int) -> int:
+        depth = len(lines[start]) - len(lines[start].lstrip())
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and len(lines[end]) - len(lines[end].lstrip()) > depth:
+            end += 1
+        return end
+
+    named = [i for i, line in enumerate(lines) if line.strip() == f"- name: {env_var}"]
+    anchor = [i for i, line in enumerate(lines) if line.strip() == "- name: SAS_SCR_LOG_LEVEL_SCR_IO"]
+    if named:
+        at = named[0]
+        lines = lines[:at] + lines[entry_end(at):]
+    elif anchor:
+        at = entry_end(anchor[0])
+    else:
+        raise ValueError("the deployment template has no env list (no SAS_SCR_LOG_LEVEL_SCR_IO entry) to add "
+                         f"{env_var} to")
+    indent = lines[anchor[0]][:len(lines[anchor[0]]) - len(lines[anchor[0]].lstrip())] if anchor else "        "
+    block = [
+        f"{indent}# The provider key (auth.mode env) - from a Kubernetes Secret, never from the image.",
+        f"{indent}- name: {env_var}",
+        f"{indent}  valueFrom:",
+        f"{indent}    secretKeyRef:",
+        f"{indent}      name: {secret}",
+        f"{indent}      key: {env_var}",
+    ]
+    return lines[:at] + block + lines[at:]
 
 
 @app.command()
@@ -3617,7 +3764,8 @@ def radar(
                                        "hand-maintained scorer - no provider surface to check"))
             continue
         adapter = adapters.get(manifest.provider.adapter)
-        results.append(check_model(manifest, adapter, session, env_key_for(adapter) if adapter else None, probe))
+        results.append(check_model(manifest, adapter, session,
+                                   env_key_for(adapter, manifest) if adapter else None, probe))
     if as_json:
         console.print_json(json.dumps([r.__dict__ for r in results]))
     else:
