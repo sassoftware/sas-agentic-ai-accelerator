@@ -132,6 +132,33 @@ NO_MODEL_AND_TRIMMED = [
     "      - The optionsFileURI of a model table is read without the blanks a column holds behind its value. With a column of "
     "200 characters version <before> asked for the file with those blanks behind its URI, got HTTP 404 and wrote no code (measured on "
     "2026-10-13); with the column of 49 characters that LLM - List Available LLMs writes it read the file"]
+# The entry of the newest version in the changelog of both steps (Create LLM Call 1.5, Get Options 1.4)
+EMPTY_OPTIONS = ("      - An options file without any option - the options file of an LLM that reads its key from its container "
+                 "(mdb add --auth env) can be one - gets code that sends an empty options object. Version <before> wrote no "
+                 "code for it and ended with an ERROR line")
+# The lines of the step that writes the code from the options that changed for an options file without any option,
+# as (the lines of before, the lines of now)
+EMPTY_GENERATION = [
+    ("    set work._slo_options end=EoF;\n", "    if _slo_count GT 0 then set work._slo_options end=EoF nobs=_slo_count;\n"),
+    ("", """    * Without any option there is no row to read, and the call sends an empty options object;
+    if _slo_count EQ 0 then do;
+        _slo_code = '_slo_code = compress(_slo_code) ||' || "'" || '}"' || "'" || ';';
+        output;
+        _slo_code = 'put _slo_code;';
+        output;
+        _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+        output;
+        _slo_code = "put '}';";
+        output;
+        _slo_code = 'put "]}";';
+        output;
+        _slo_code = 'run;';
+        output;
+        stop;
+    end;
+
+"""),
+]
 # What a run without a model says in the place of the reason, and the URI of an options file of the tests
 NO_MODEL = ("no model with an options file was chosen - with Select name from a table the step needs a model table that has the columns "
             "name and optionsFileURI and a model name selected from it, otherwise a model name and an options file URI")
@@ -380,6 +407,7 @@ def test_the_about_tab_and_the_changelog_say_what_the_step_does():
     assert ("It is possible to save the resulting code to a file or printing it to the Results pane. Without a path the code is saved to a "
             "temporary file, which the fileref _slo_LLM names until the SAS session ends.") in about
     assert changelog.split("\n") == [
+        "* Version: 1.5 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.4"),
         "* Version: 1.4 (13OCT2026)"] + [line.replace("<before>", "1.3") for line in NO_MODEL_AND_TRIMMED] + [
         "* Version: 1.3 (13OCT2026)",
         "      - An apostrophe in the path is doubled in the statement that assigns the file. Version 1.2 wrote the path between two "
@@ -545,7 +573,8 @@ def test_a_run_that_could_not_read_every_option_writes_no_code_and_ends_with_an_
 
     assert not re.search(r"^\s*proc transpose", text, flags=re.IGNORECASE | re.MULTILINE) and "_slo_transposed" not in text
     # _slo_ok starts at 0, and only the DATA step that found a default for every option sets it to 1
-    assert text.count("%let _slo_ok = 0;") == 1 and text.count("call symputx('_slo_ok', 1);") == 1
+    # (twice: for the last row of the options, and for an options file without any option, which has none)
+    assert text.count("%let _slo_ok = 0;") == 1 and text.count("call symputx('_slo_ok', 1);") == 2
     assert text.index("%let _slo_ok = 0;") < text.index("proc http") < text.index("call symputx('_slo_ok', 1);")
     # the steps that make the code, the file and the print stand behind _slo_ok
     generate = text.index("%if &_slo_ok. EQ 1 %then %do;")
@@ -571,6 +600,63 @@ def test_a_run_that_could_not_read_every_option_writes_no_code_and_ends_with_an_
         assert not set(comment) & set("%&'\""), comment
 
 
+def sas_text(expression):
+    """The value of a SAS character expression made of quoted texts joined by ||: '...' and "..." with a doubled
+    quotation mark for one. Anything else in it fails the test."""
+    parts = re.findall(r"""\s*('(?:[^']|'')*'|"(?:[^"]|"")*")\s*(\|\||$)""", expression)
+    assert "".join(text + bar for text, bar in parts).replace(" ", "") == expression.replace(" ", ""), expression
+    return "".join(text[1:-1].replace(text[0] * 2, text[0]) for text, _ in parts)
+
+
+def written(block, option_name=None):
+    """The code lines a block of the DATA step that writes the code outputs, in their order: each `_slo_code = ...;`
+    followed by `output;`, with `compress(option_name)` given the name of an option."""
+    lines = []
+    for expression in re.findall(r"^\s*_slo_code = (.*);\n\s*output;$", block, flags=re.MULTILINE):
+        if option_name is not None:
+            expression = expression.replace("compress(option_name)", "'" + option_name + "'")
+        lines.append(sas_text(expression))
+    return lines
+
+
+@pytest.mark.parametrize("name", list(PROGRAMS))
+def test_an_options_file_without_any_option_gets_code_that_sends_an_empty_options_object(name):
+    """An LLM that reads its key from its container (mdb add --auth env) has no API_KEY option, and one with no
+    other option has the options file {} - which mdb writes, and which the Prompt Builder takes. The JSON engine
+    gives no line with P GE 1 for it, so the table of the options has no row. Versions 1.4 and 1.3 and the script
+    then wrote no code: the DATA step that sets _slo_ok ended at its SET statement before its last row, and
+    the run ended with the ERROR line that the file holds no option. The value of the NOBS= option is known before
+    the first row is read, so both steps ask for it in front of their SET statement."""
+    text = PROGRAMS[name]()
+    assert read_options(text, all_data({})) == ({}, ["default", "range", "description"])
+
+    # the check: an options file without any option is read completely
+    start = text.index("* Every option needs its default")
+    check = text[start:text.index("%end;", start)]
+    assert check.index("if _slo_count EQ 0 then call symputx('_slo_ok', 1);") < check.index(
+        "set work._slo_options end=_slo_last nobs=_slo_count;")
+
+    # the code: the step reads a row only where there is one, and for none writes the end of an empty options object
+    start = text.index("data work._slo_final_json_input;")
+    step = text[start:text.index("run;\n", text.index("keep _slo_code;", start))]
+    assert step.index("if _slo_count GT 0 then set work._slo_options end=EoF nobs=_slo_count;") < step.index("if _n_ = 1 then do;")
+    header = step[step.index("if _n_ = 1 then do;"):step.index("* Without any option there is no row to read")]
+    empty = step[step.index("if _slo_count EQ 0 then do;"):step.index("if eof then do;")]
+    last = step[step.index("if eof then do;"):step.index("else do;", step.index("if eof then do;"))]
+    assert empty.rstrip().endswith("stop;\n    end;")
+    assert written(empty)[0] == """_slo_code = compress(_slo_code) ||'}"';"""
+    assert written(last, "top_p")[0] == """_slo_code = compress(_slo_code) ||"top_p:"|| "&top_p."||'}"';"""
+    # behind its first line the end is the one of the last option
+    assert written(empty)[1:] == written(last, "top_p")[1:] == [
+        "put _slo_code;", 'call symputx("options", compress(_slo_code) || "}");', "put '}';", 'put "]}";', "run;"]
+
+    # what the code puts: the opening of the options object, closed right away - the options value {}
+    opening = written(header)[-1]
+    assert opening == """_slo_code='{"name": "options", "value": "{';"""
+    put = sas_text(opening[len("_slo_code="):-1]).replace(" ", "") + '}"'
+    assert json.loads(json.loads(put + "}")["value"]) == {}
+
+
 def test_the_code_the_step_writes_is_the_code_of_version_1_1():
     """The steps that make the code from the options and the block that saves it are the ones of 1.1 (and of
     LLM - Get Options 1.0): for an options file version 1.1 read, the code is the same."""
@@ -589,7 +675,9 @@ def test_the_code_the_step_writes_is_the_code_of_version_1_1():
         return block
 
     text, get = program(), PROGRAMS["LLM - Get Options"]()
-    assert hashlib.sha256(generation(text).encode("utf-8")).hexdigest() == GENERATION_OF_1_1 and generation(get) == generation(text)
+    # ... but for the lines of an options file without any option (Create LLM Call 1.5, Get Options 1.4)
+    assert hashlib.sha256(before(generation(text), EMPTY_GENERATION).encode("utf-8")).hexdigest() == GENERATION_OF_1_1
+    assert generation(get) == generation(text)
     # the block that saves the code is the one of 1.1 but for the lines of the path (1.3) ...
     assert hashlib.sha256(before(saved(text), QUOTED).encode("utf-8")).hexdigest() == SAVING_OF_1_1
     # ... and in LLM - Get Options the one of 1.0 but for them, the statement of an empty path and the NOTE (1.2)
@@ -608,10 +696,12 @@ def test_the_two_steps_say_what_they_read():
     sentence = ("Every option of the options file is read with its default, also an option that lists the values it can take. A run that "
                 "can not read the default of every option writes no code and no file: it ends with an ERROR line that says why.")
     assert sentence in control("textAbout")["text"] and sentence in get_texts["textAbout"]
-    assert control("textChangelog")["text"].startswith("* Version: 1.4 (13OCT2026)\n")
+    assert control("textChangelog")["text"].startswith("* Version: 1.5 (18OCT2026)\n")
+    assert "\n* Version: 1.4 (13OCT2026)\n" in control("textChangelog")["text"]
     assert "\n* Version: 1.3 (13OCT2026)\n" in control("textChangelog")["text"] and "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
-    assert get_texts["textChangelog"].split("\n")[:3] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
-    assert get_texts["textChangelog"].split("\n")[3:7] == [
+    assert get_texts["textChangelog"].split("\n")[:2] == ["* Version: 1.4 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.3")]
+    assert get_texts["textChangelog"].split("\n")[2:5] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
+    assert get_texts["textChangelog"].split("\n")[5:9] == [
         "* Version: 1.2 (13OCT2026)",
         "      - With the box Save the code to a filename ticked and no path, the values the step comes with, version 1.1 wrote the code "
         "file and then ended with ERROR 180-322 and a failed job (measured on 2026-10-13): the statement that assigns the temporary file "
