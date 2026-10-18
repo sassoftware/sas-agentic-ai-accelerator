@@ -418,7 +418,10 @@ them.
   Builder fetches the signed-in user's secrets map once at load time and
   disables models whose provider entry is missing (a note names the entry
   and domain). The domain is the only key source; enter `none` to skip the
-  lookup in deployments that use exclusively key-less self-hosted models.
+  lookup in deployments that use exclusively key-less models - self-hosted
+  ones, and definitions whose container holds the key
+  ([`--auth env`](./Model-Definition-Builder.md#auth-env)), which are never
+  disabled for a missing entry.
   The setting is **one option for every kind** the Prompt Builder offers:
   prompt templates, decision templates and RAG setups read the same domain.
   `none` works for the two template kinds only. A RAG setup has no key-less
@@ -456,7 +459,11 @@ domain only for what is still missing after both, so the same artifact runs
 on every destination. Where the two variables are set, they are used and the
 domain is not asked. The LLM containers themselves are
 unaffected either way: they receive the API key per call via the options
-payload, resolved by the caller.
+payload, resolved by the caller - except a definition built with
+[`mdb add --auth env`](./Model-Definition-Builder.md#auth-env), whose
+container reads the key from an environment variable filled from a
+Kubernetes Secret. Its `options.json` has no `API_KEY`, so no caller asks the
+domain for it and no identity needs an entry for it.
 
 Without the two variables of the vector store the retrieval model does not
 fail the decision: it answers `retrieval failed: RuntimeError: no
