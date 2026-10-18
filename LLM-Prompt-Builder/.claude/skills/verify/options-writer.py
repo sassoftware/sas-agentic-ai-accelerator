@@ -201,6 +201,15 @@ for key_name in values_of('key_name', manifest_module.AuthBlock.model_fields['ke
     written, refused = write(data)
     results.append({'shape': 'auth key_name ' + json.dumps(key_name, default=str), 'key': 'API_KEY', 'written': written, 'refused': refused})
 
+# The provider key from the container's environment (auth.mode env): no
+# API_KEY entry at all - alone, and beside an option the judge reads by name.
+for options in ({}, {'temperature': {'default': 0.5}}):
+    data = copy.deepcopy(base)
+    data['provider']['auth'] = {'mode': 'env'}
+    data['options'] = copy.deepcopy(options)
+    written, refused = write(data)
+    results.append({'shape': 'auth env ' + json.dumps(options), 'key': 'API_KEY', 'written': written, 'refused': refused})
+
 # An option named API_KEY in a manifest without a provider key.
 for spec in specs():
     data = copy.deepcopy(base)
