@@ -53,6 +53,8 @@ The script comes with *_slo_LLM_name* and *_slo_optionsFileURI* empty. Without a
 
 The output of this script is the input required for the next step.
 
+A definition whose container holds the provider key ([`mdb add --auth env`](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#auth-env)) has no *API_KEY* option, and its code has no *API_KEY* line. Code that was generated while the definition still took a key holds `%let API_KEY=<entry name>;` - the name of the credential-domain entry, such as *OpenAI*, not a key - and sends `API_KEY:&API_KEY.` in its options; a non-empty *API_KEY* option wins over the key of the container, so the provider answers 401. Generate that code again from the new options file, or delete the `%let API_KEY=...;` line and the `API_KEY:&API_KEY.` part of the options string. The same holds for code of the custom steps *LLM - Create LLM Call* and *LLM - Get Options*. An options file without any option, `{}`, gets code that sends an empty options object.
+
 ## Modify the LLM Call
 
 *Note:* This step is not yet available as a SAS Studio Custom Step.

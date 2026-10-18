@@ -26,7 +26,7 @@ Earlier releases documented mounting a Hugging Face token into the Build Kit pod
 
 ## Create the shared weight volume
 
-Apply this once per namespace. Copy `SCR-LLM-Deployment-YAML/llm-weights-pvc-template.yaml`, replace the two placeholders, and apply it:
+Apply this once per namespace. Copy `SCR-LLM-Deployment-YAML/llm-weights-pvc-template.yaml`, replace the two placeholders, and apply it. The template names the namespace `llm`; for models rendered with `mdb deploy --namespace <name>`, change its `namespace:` line - and the one of `stage-weights-job-template.yaml` - to that namespace and apply it with `-n <name>`:
 
 ```bash
 kubectl apply -f llm-weights-pvc.yaml -n llm

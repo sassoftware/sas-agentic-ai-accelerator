@@ -463,7 +463,21 @@ payload, resolved by the caller - except a definition built with
 [`mdb add --auth env`](./Model-Definition-Builder.md#auth-env), whose
 container reads the key from an environment variable filled from a
 Kubernetes Secret. Its `options.json` has no `API_KEY`, so no caller asks the
-domain for it and no identity needs an entry for it.
+domain for it and no identity needs an entry for it - once the callers built
+before the switch are rebuilt. RAG ingestion looks the entry of an embedding
+model or an enrichment LLM up in two static maps of `rag_core/providers.py`,
+and a model that is still in them is still asked for (`needs the 'OpenAI'
+entry in the credential domain`). After a definition is switched, regenerate
+the maps from the fact sheets and replace them in the module:
+
+```bash
+cd SAS-Viya-Integrations/RAG
+python -m rag_core.providers --from ../../Embedding-Definitions/embedding_fact_sheet.csv
+python -m rag_core.providers --llm-from ../../LLM-Definitions/llm_fact_sheet.csv
+```
+
+A model whose `options.json` has no `API_KEY` is left out of the map and
+needs no entry.
 
 Without the two variables of the vector store the retrieval model does not
 fail the decision: it answers `retrieval failed: RuntimeError: no
