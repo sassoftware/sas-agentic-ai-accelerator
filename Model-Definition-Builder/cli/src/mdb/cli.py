@@ -1025,7 +1025,8 @@ def load_facts(
     SAS Visual Analytics monitoring report can bind to LLM_FACT_SHEET /
     EMBEDDING_FACT_SHEET / DECISION_FACT_SHEET across sessions and restarts.
     A kind without any definition is loaded as an empty table with its
-    sheet's columns, since the report reads all three.
+    sheet's columns: the LLM Usage Report reads the LLM and the embedding
+    table, and Start Here looks for all three.
     """
     from .viya.cas import load_fact_sheet, resolve_server
     ctx = Context()
@@ -1038,7 +1039,8 @@ def load_facts(
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
     # What each kind loads: its sheet, or - for a kind the site has no
     # definition of - an empty table with the sheet's columns, because the
-    # LLM Usage Report reads all three tables and fails on a missing one. A
+    # LLM Usage Report reads the LLM and the embedding table and fails on a
+    # missing one, and Start Here looks for all three. A
     # kind that HAS definitions but no sheet is skipped as before: an empty
     # table there would hide that the sheet was never generated.
     sheets: dict = {}
@@ -1072,8 +1074,9 @@ def load_facts(
             # "dropped" reflects the loaded copy; the save step replaces any saved one
             suffix = " (replaced a loaded copy)" if result["dropped"] else ""
             if empty:
+                reader = "Start Here looks for it" if kind == "decision" else "the LLM Usage Report reads it"
                 console.print(f"  {_plain(result['table'])}: no {_plain(kind)} definitions - loaded an empty table "
-                              f"with the sheet's columns (the LLM Usage Report reads it){_plain(suffix)}")
+                              f"with the sheet's columns ({reader}){_plain(suffix)}")
             else:
                 console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")

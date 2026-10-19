@@ -177,7 +177,8 @@ This uploads each sheet with global scope (promoted) and saves it to disk as
 `LLM_FACT_SHEET` / `EMBEDDING_FACT_SHEET` / `DECISION_FACT_SHEET`, dropping any
 existing table first — the same result as the SAS script, driven from the CLI over
 the register/publish session. A kind the site has no definition of is loaded as an
-empty table with its sheet's columns, because the LLM Usage Report reads all three.
+empty table with its sheet's columns: the LLM Usage Report reads the LLM and the
+embedding table, and the page Start Here looks for all three.
 
 ## Notes
 

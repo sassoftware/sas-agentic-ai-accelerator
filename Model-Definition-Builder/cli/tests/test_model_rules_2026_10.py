@@ -12,7 +12,8 @@ mdb rules - no network.
   reasoning_effort, and gets max_tokens 4000 so a judge verdict is not cut off.
 - inception/mercury-decide is a decision model of the OpenRouter snapshot.
 - `mdb load-facts` loads an empty table for a kind without definitions,
-  because the LLM Usage Report reads all three.
+  because the LLM Usage Report reads the LLM and the embedding table and
+  Start Here looks for all three.
 - Every definition of the repository still regenerates byte for byte.
 """
 import contextlib
@@ -407,6 +408,21 @@ def test_load_facts_loads_an_empty_table_for_a_kind_without_definitions(tmp_path
     assert "LLM_FACT_SHEET: uploaded, promoted (global) and saved to disk" in lines
     # nothing is written into the site's folders
     assert not (tmp_path / "defs" / "Embedding-Definitions" / FACT_SHEETS["embedding"]).exists()
+
+
+def test_an_empty_decision_table_names_start_here_as_its_reader(tmp_path, monkeypatch, repo_root):
+    # the LLM Usage Report binds LLM_ and EMBEDDING_FACT_SHEET only; the
+    # decision table is one Start Here looks for
+    _site(tmp_path, monkeypatch, repo_root, {"llm": (["claude_haiku_5_5"], True)})
+    stand_in = _CAS()
+    monkeypatch.setattr(cli, "_viya_session", lambda: contextlib.nullcontext(stand_in))
+    out = _printed(monkeypatch)
+    result = CliRunner().invoke(cli.app, ["load-facts"])
+    assert result.exit_code == 0, out.getvalue()
+    assert stand_in.uploads["DECISION_FACT_SHEET"] == empty_sheet("decision")
+    lines = [line.strip() for line in out.getvalue().splitlines()]
+    assert ("DECISION_FACT_SHEET: no decision definitions - loaded an empty table with the sheet's columns "
+            "(Start Here looks for it)") in lines
 
 
 def test_load_facts_skips_a_kind_whose_definitions_have_no_sheet(tmp_path, monkeypatch, repo_root):
