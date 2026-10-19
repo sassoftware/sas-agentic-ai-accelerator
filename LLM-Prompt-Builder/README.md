@@ -33,10 +33,22 @@ bundle, one Job Definition and one report object for all three.
   candidates anonymised and shuffled), suggests the winner and shows its
   rationale. Optional auto-judge on run completion; the judge's own response is
   excluded by default to avoid self-preference bias (override available). The
-  judge only *suggests* — you keep the final "best" choice
+  judge only *suggests* — you keep the final "best" choice. A judge call (a
+  single judge, a member of a council, the chairman) is sent temperature 0
+  where the model's temperature is a number, and an output budget of at least
+  4000 tokens where its `options.json` has `max_tokens` or
+  `max_completion_tokens` as a number (never more than the option's maximum -
+  a number `max`, or the upper bound of its `range`), so that a model defined
+  with a small default does not cut the verdict off; a run of the experiment
+  sends what its controls hold
 - Mark a "best" response and persist the experiment tracker to Model Manager
 - "Manifest" the best prompt as a Python-scored model (input/output variables +
-  score code) ready for use in SAS Intelligent Decisioning
+  score code) ready for use in SAS Intelligent Decisioning. The inputs of the
+  model are the variables its prompts use as `{{name}}`: a prompt (or the state
+  of a decision template) that uses none is manifested without inputs, which
+  SAS Intelligent Decisioning cannot use (SAS Model Manager answers its Python
+  wrapper with HTTP 412). The Finalize step says so above Manifest, which stays
+  usable; define a variable and use it in the prompt to give the model an input
 - **Decision templates** for decision models (Jev, Von): a state and typed
   questions (a choice, a yes/no, a score) answered with calibrated
   probabilities, checked against expected answers, evaluated on labelled cases
