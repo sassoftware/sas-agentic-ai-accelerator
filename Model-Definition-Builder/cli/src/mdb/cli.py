@@ -3624,6 +3624,16 @@ DEFAULT_KEY_SECRET = "llm-api-keys"
 #: A namespace (DNS label) and a Secret (DNS subdomain) as Kubernetes takes them.
 K8S_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+#: A label value (the workload.sas.com/class of a node) and a resource
+#: quantity (100m, 384Mi, 1.5Gi, 2) as Kubernetes takes them.
+K8S_LABEL_VALUE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+K8S_QUANTITY = re.compile(r"^(\d+(\.\d+)?|\.\d+)(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$")
+INGRESS_KINDS = ("nginx", "contour")
+PULL_POLICIES = ("Always", "IfNotPresent", "Never")
+#: The cluster DNS (kube-dns) Service address of AKS - the router's resolver.
+DEFAULT_DNS = "10.0.0.10"
+ROUTER_TEMPLATE = "llm-router-contour-template.yaml"
+ROUTER_FILE = "llm-router.yaml"
 
 
 @app.command()
@@ -3639,14 +3649,39 @@ def deploy(
     key_secret: str = typer.Option(
         DEFAULT_KEY_SECRET, "--key-secret",
         help="Kubernetes Secret an auth.mode env definition reads its key from (one entry per variable name)"),
+    ingress: str = typer.Option(
+        "nginx", "--ingress",
+        help="Ingress controller of the cluster: nginx (a rewriting Ingress per model) or contour (one Ingress /llm "
+             "and an NGINX router, written to llm-router.yaml)"),
+    node: Optional[str] = typer.Option(None, "--node", help="Pin the pods to this node (nodeSelector "
+                                       "kubernetes.io/hostname)"),
+    node_class: Optional[str] = typer.Option(
+        None, "--node-class",
+        help="Tolerate the SAS node taint workload.sas.com/class=CLASS:NoSchedule instead of the app=llm "
+             "node affinity and tolerations"),
+    requests: Optional[str] = typer.Option(None, "--requests", help="CPU,MEMORY the model container requests "
+                                           "(e.g. 100m,384Mi) instead of 1000m,4000Mi"),
+    limit_memory: Optional[str] = typer.Option(None, "--limit-memory", help="Memory limit of the model container "
+                                               "(e.g. 1Gi)"),
+    pull_policy: Optional[str] = typer.Option(None, "--pull-policy", help="imagePullPolicy of the model container: "
+                                              "Always, IfNotPresent or Never"),
+    dns: Optional[str] = typer.Option(None, "--dns", help=f"Cluster DNS address the contour router resolves "
+                                      f"Services with (default {DEFAULT_DNS}, the kube-dns of AKS)"),
 ):
     """Render ready-to-apply SCR deployment YAML (fills all template placeholders).
 
     A definition with `auth.mode: env` gets its key variable from a Kubernetes
     Secret (secretKeyRef, the key named like the variable); the command prints
-    the `kubectl create secret` line to create it - names only, never values."""
+    the `kubectl create secret` line to create it - names only, never values.
+
+    With --ingress contour the deploy-<model_id>.yaml files carry no Ingress;
+    llm-router.yaml routes /llm/<model_id>/<model_id> of every model rendered
+    in the same run, so render them all (--all)."""
+    import ipaddress
     import re
     from urllib.parse import urlparse
+
+    import yaml
     for option, value, what in (("--namespace", namespace, "namespace"), ("--tls-secret", tls_secret, "Secret"),
                                 ("--key-secret", key_secret, "Secret")):
         pattern = K8S_LABEL if what == "namespace" else K8S_NAME
@@ -3655,6 +3690,38 @@ def deploy(
             console.print(f"[red]{_plain(option)} '{_plain(value)}' is not a Kubernetes {_plain(what)} name "
                           f"(lower-case letters, {_plain(allowed)}).[/red]")
             raise typer.Exit(2)
+    placement_errors = []
+    if ingress not in INGRESS_KINDS:
+        placement_errors.append(f"--ingress '{ingress}' is not one of {', '.join(INGRESS_KINDS)}.")
+    if node is not None and (not K8S_NAME.fullmatch(node) or len(node) > 253):
+        placement_errors.append(f"--node '{node}' is not a Kubernetes node name (lower-case letters, digits, '-' "
+                                "and '.').")
+    if node_class is not None and (not K8S_LABEL_VALUE.fullmatch(node_class) or len(node_class) > 63):
+        placement_errors.append(f"--node-class '{node_class}' is not a Kubernetes label value (letters, digits, '-', "
+                                "'_' and '.', at most 63).")
+    request_values = None
+    if requests is not None:
+        request_values = [part.strip() for part in requests.split(",")]
+        if len(request_values) != 2 or not all(K8S_QUANTITY.fullmatch(part) for part in request_values):
+            placement_errors.append(f"--requests '{requests}' is not CPU,MEMORY as Kubernetes quantities "
+                                    "(e.g. 100m,384Mi).")
+    if limit_memory is not None and not K8S_QUANTITY.fullmatch(limit_memory):
+        placement_errors.append(f"--limit-memory '{limit_memory}' is not a Kubernetes quantity (e.g. 1Gi).")
+    if pull_policy is not None and pull_policy not in PULL_POLICIES:
+        placement_errors.append(f"--pull-policy '{pull_policy}' is not one of {', '.join(PULL_POLICIES)}.")
+    if dns is not None:
+        try:
+            ipaddress.ip_address(dns)
+        except ValueError:
+            if not K8S_NAME.fullmatch(dns) or len(dns) > 253:
+                placement_errors.append(f"--dns '{dns}' is neither an IP address nor a host name.")
+    for error in placement_errors:
+        console.print(f"[red]{_plain(error)}[/red]")
+    if placement_errors:
+        raise typer.Exit(2)
+    placement = {"node": node, "node_class": node_class, "requests": request_values, "limit_memory": limit_memory,
+                 "pull_policy": pull_policy}
+    contour = ingress == "contour"
     ctx = Context()
     registry = registry or os.environ.get("SAS_CONTAINER_REGISTRY")
     if not registry:
@@ -3672,6 +3739,7 @@ def deploy(
     out_dir.mkdir(parents=True, exist_ok=True)
     key_vars: list[str] = []  # the variables the Secret has to hold, in order
     pv_rendered = False  # a manifest of the PV variant was written
+    routes: list[tuple] = []  # --ingress contour: (model_id, Service, port) per rendered model
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
@@ -3725,6 +3793,20 @@ def deploy(
                 raise typer.Exit(1)
             if env_var not in key_vars:
                 key_vars.append(env_var)
+        try:
+            lines = _with_placement(lines, **placement)
+        except ValueError as exc:
+            console.print(f"[red]{_plain(manifest.model_id)}: {_plain(exc)}[/red]")
+            raise typer.Exit(1)
+        if contour:
+            lines = _without_ingress(lines)
+            service = next((doc for doc in yaml.safe_load_all("\n".join(lines))
+                            if isinstance(doc, dict) and doc.get("kind") == "Service"), None)
+            if service is None:
+                console.print(f"[red]{_plain(manifest.model_id)}: the template {_plain(template.name)} has no Service "
+                              "for the router to forward to.[/red]")
+                raise typer.Exit(1)
+            routes.append((manifest.model_id, service["metadata"]["name"], service["spec"]["ports"][0]["port"]))
         target = out_dir / f"deploy-{manifest.model_id}.yaml"
         target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         variant = " (PV variant)" if use_pv and not is_azure else ""
@@ -3736,6 +3818,27 @@ def deploy(
         if env_var:
             variant += f" - key from Secret {key_secret}/{env_var}"
         console.print(f"[green]{_plain(manifest.model_id)}: {_plain(target)}[/green]" + _plain(variant))
+    router = None
+    if contour and routes:
+        router = out_dir / ROUTER_FILE
+        router_lines = _router_lines((template_dir / ROUTER_TEMPLATE).read_text(encoding="utf-8"), routes,
+                                     host=host, namespace=namespace, tls_secret=tls_secret, dns=dns or DEFAULT_DNS)
+        router_lines = _with_placement(router_lines, node=node, node_class=node_class)
+        router.write_text("\n".join(router_lines) + "\n", encoding="utf-8", newline="")
+        console.print(f"[green]llm-router: {_plain(router)}[/green] (Contour Ingress /llm and the NGINX router - "
+                      f"{len(routes)} route(s))", soft_wrap=True)
+        if not all_:
+            console.print(f"[yellow]{_plain(ROUTER_FILE)} routes only the {len(routes)} model(s) rendered here "
+                          f"({_plain(', '.join(model_id for model_id, _, _ in routes))}): applying it removes the "
+                          "route of every other model the router serves. Render all models with --all.[/yellow]",
+                          soft_wrap=True)
+    if dns is not None and not contour:
+        console.print("[yellow]--dns is the resolver of the contour router - it does not apply to --ingress "
+                      "nginx.[/yellow]")
+    if node is not None and node_class is None:
+        console.print(f"[yellow]--node pins the pods to {_plain(node)}, and the app=llm node affinity of the "
+                      "template still applies: pass --node-class <class> when that node carries no label app=llm "
+                      "(a SAS node is tainted workload.sas.com/class=<class>).[/yellow]", soft_wrap=True)
     if key_vars:
         # Names only: the shell fills each value from its own environment
         # (e.g. after `set -a; . ./.env; set +a`), so no key is ever printed.
@@ -3765,6 +3868,109 @@ def deploy(
                       f"namespace: lines to {_plain(namespace)} before applying them.", soft_wrap=True)
     console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n {_plain(namespace)}",
                   soft_wrap=True)
+    if router is not None:
+        console.print(f"and the router with: kubectl apply -f {_plain(router)} - then https://{_plain(host)}/llm/healthz "
+                      "answers ok. An NGINX Ingress of an earlier deploy stays until deleted: kubectl delete ingress "
+                      f"<model-name> -n {_plain(namespace)}.", soft_wrap=True)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    """The index after the YAML block that the key at `start` opens - its more
+    deeply indented lines and the list items written at its own indentation."""
+    depth = _indent(lines[start])
+    end = start + 1
+    while end < len(lines) and lines[end].strip() and (
+            _indent(lines[end]) > depth or (_indent(lines[end]) == depth and lines[end].lstrip().startswith("- "))):
+        end += 1
+    return end
+
+
+def _with_placement(lines: list[str], node: Optional[str] = None, node_class: Optional[str] = None,
+                    requests: Optional[list[str]] = None, limit_memory: Optional[str] = None,
+                    pull_policy: Optional[str] = None) -> list[str]:
+    """The rendered Deployment placed and sized: `node` a nodeSelector on
+    kubernetes.io/hostname; `node_class` one toleration of the SAS taint
+    workload.sas.com/class in place of the template's affinity and
+    tolerations; `requests` [cpu, memory] and `limit_memory` the container's
+    resources; `pull_policy` its imagePullPolicy. Without any of them the lines
+    come back as they are."""
+    if not any((node, node_class, requests, limit_memory, pull_policy)):
+        return lines
+    lines = list(lines)
+
+    def find(key: str) -> int:
+        found = [i for i, line in enumerate(lines) if line.strip() == key or line.strip().startswith(key + " ")]
+        if not found:
+            raise ValueError(f"the deployment template has no '{key}' line to place the pods with")
+        return found[0]
+
+    if pull_policy:
+        at = find("image:")
+        lines.insert(at + 1, " " * _indent(lines[at]) + f"imagePullPolicy: {pull_policy}")
+    if requests or limit_memory:
+        start = find("requests:")
+        end = _block_end(lines, start)
+        if requests:
+            cpu, memory = requests
+            for i in range(start + 1, end):
+                key = lines[i].strip().split(":", 1)[0]
+                if key in ("cpu", "memory"):
+                    lines[i] = lines[i][:_indent(lines[i])] + f'{key}: "{cpu if key == "cpu" else memory}"'
+        if limit_memory:
+            pad = " " * _indent(lines[start])
+            lines[end:end] = [f"{pad}limits:", f'{pad}  memory: "{limit_memory}"']
+    if node or node_class:
+        at = find("affinity:")
+        pad = " " * _indent(lines[at])
+        added = []
+        if node:
+            added += [f"{pad}nodeSelector:", f"{pad}  kubernetes.io/hostname: {node}"]
+        if node_class:
+            # The SAS node pools carry this taint; the app=llm affinity of the
+            # template would keep the pods off every one of them.
+            del lines[at:_block_end(lines, at)]
+            tolerations = find("tolerations:")
+            del lines[tolerations:_block_end(lines, tolerations)]
+            added += [f"{pad}tolerations:", f"{pad}- key: workload.sas.com/class", f"{pad}  operator: Equal",
+                      f"{pad}  value: {node_class}", f"{pad}  effect: NoSchedule"]
+        lines[at:at] = added
+    return lines
+
+
+def _without_ingress(lines: list[str]) -> list[str]:
+    """The rendered documents without the per-model Ingress (--ingress contour:
+    the router's single Ingress serves every model)."""
+    documents: list[list[str]] = [[]]
+    for line in lines:
+        if line.strip() == "---":
+            documents.append([])
+        documents[-1].append(line)
+    kept = [document for document in documents if not any(line.startswith("kind: Ingress") for line in document)]
+    return [line for document in kept for line in document]
+
+
+def _router_lines(template: str, routes: list[tuple], *, host: str, namespace: str, tls_secret: str,
+                  dns: str) -> list[str]:
+    """llm-router.yaml from its template: one `location` per (model_id,
+    Service, port) of `routes`, the cluster DNS as nginx's resolver."""
+    lines = []
+    for line in template.splitlines():
+        if "location = /llm/model_name/model_name" in line:
+            for model_id, service, port in routes:
+                lines.append(line.replace("model_name", model_id).replace("llmname", service)
+                             .replace(".llm.svc.", f".{namespace}.svc.").replace(":443/", f":{port}/"))
+            continue
+        line = line.replace("kubeDnsIp", dns)
+        line = line.replace("routedModelIds", ",".join(model_id for model_id, _, _ in routes))
+        line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
+        line = re.sub(r"^(\s*namespace:\s*)llm\s*$", lambda found: found.group(1) + namespace, line)
+        line = re.sub(r"^(\s*secretName:\s*)llm-tls-certs\s*$", lambda found: found.group(1) + tls_secret, line)
+        lines.append(line)
+    return lines
 
 
 def _with_key_secret(lines: list[str], env_var: str, secret: str) -> list[str]:
