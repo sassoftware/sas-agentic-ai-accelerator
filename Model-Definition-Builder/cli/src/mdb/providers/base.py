@@ -41,8 +41,8 @@ class CatalogModel:
     # Thinking steered by an effort level instead of a token budget (Claude
     # 5.5: thinking type 'enabled' is refused) - offered as reasoning_effort.
     adaptive_thinking: bool = False
-    # False: the model refuses temperature / top_p / top_k (Claude 5.5 takes
-    # only its default), so no sampling option is written.
+    # False: the model refuses sampling options (Claude 5.5: temperature
+    # other than 1, top_p and top_k at any value), so none is written.
     sampling: bool = True
     # The reasoning-effort values the provider accepts for THIS model, lowest
     # first (GPT-6 Luna: none..xhigh). mdb add derives the option's value_map
@@ -226,8 +226,8 @@ class ProviderAdapter(ABC):
         if cm.adaptive_thinking or not cm.sampling:
             # No sampling option (the model refuses any but its default), and
             # an output budget that leaves room for thinking: with 1000 the
-            # Prompt Builder judge's verdict - it sends no output limit - was
-            # cut off on Claude 5.5.
+            # Prompt Builder judge's verdict was cut off on Claude 5.5 (the
+            # judge, which then sent no output limit, now asks for >= 4000).
             options: dict[str, OptionSpec] = {}
             if cm.adaptive_thinking:
                 options["reasoning_effort"] = OptionSpec(default="medium",

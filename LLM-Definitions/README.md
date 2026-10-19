@@ -82,10 +82,11 @@ a model that takes other words carries its own as `value_map` on the option in
 | `gpt_61_sol` | `low` (it has no `none`) | `xhigh` |
 | `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5` | `low` | `max` (Anthropic's `output_config.effort`) |
 
-Claude 5.5 refuses `temperature` and `top_p` other than their defaults, `top_k`,
+Claude 5.5 refuses `temperature` other than 1, `top_p` and `top_k` at any value,
 and a thinking budget, so these definitions declare none of them: the score code
-sends only `max_tokens` (default 4000 - thinking counts against it, and the
-Prompt Builder judge, which sends no output limit, needs the room) and the effort.
+sends only `max_tokens` (default 4000 - thinking counts against it, so a smaller
+limit can end a call before its answer is written; the Prompt Builder asks a judge
+for at least 4000 for the same reason) and the effort.
 A `temperature` a caller passes anyway is not sent. Older Claude definitions keep
 `temperature`, `top_p` and `thinking_budget`.
 
