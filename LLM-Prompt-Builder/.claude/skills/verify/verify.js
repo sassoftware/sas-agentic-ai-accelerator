@@ -2858,6 +2858,180 @@ async function assertCreateDialogLayout(target, modalSelector, label) {
   await page.unroute('**/modelRepository/**', slowViya);
   await page.unroute('**/files/**', slowViya);
 
+  // ---- a judge call asks for room for its verdict ------------------------------------
+  // Measured on 2026-10-18: a judge whose LLM is defined with max_tokens 1000
+  // wrote its reasoning, was cut off before the verdict, and the page said
+  // "The judge returned an unreadable verdict". A judge call - a single judge,
+  // a member of a council, the chairman - asks for at least 4000 tokens of
+  // output where the options.json of its LLM has max_tokens or
+  // max_completion_tokens as a number, and never more than that option's
+  // maximum (a number `max`, or the upper bound of its range); an LLM without
+  // such an option is sent none. A run sends what its controls hold.
+  {
+    const target = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
+    const errors = [];
+    target.on('pageerror', (e) => errors.push(e.message));
+    const optionsOf = {
+      // max_tokens 1000 of at most 64000 (the range mdb writes): 4000.
+      'opt-1': { temperature: { default: 0.7 }, max_tokens: { default: 1000, range: '1 - 64000 (minus input token length)' } },
+      // max_completion_tokens 1000 of at most 2048 (a number max): 2048.
+      'opt-3': { temperature: { default: 0.3 }, max_completion_tokens: { default: 1000, max: 2048 }, API_KEY: { default: 'Anthropic' } },
+      // second_llm keeps its fixture: no option that limits the output.
+    };
+    await target.route('**/files/files/opt-*/content', (route) => {
+      const id = new URL(route.request().url()).pathname.split('/')[3];
+      return optionsOf[id] ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(optionsOf[id]) }) : route.continue();
+    });
+    const sent = { run: new Map(), judge: new Map(), chairman: new Map() };
+    await target.route('**/scr/**', async (route) => {
+      const model = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[2] || '');
+      let inputs = [];
+      try {
+        inputs = JSON.parse(route.request().postData() || '{}').inputs || [];
+      } catch {
+        inputs = [];
+      }
+      const system = String((inputs.find((input) => input.name === 'systemPrompt') || {}).value || '');
+      const options = String((inputs.find((input) => input.name === 'options') || {}).value || '');
+      const kind = system.includes('chairman of a panel') ? 'chairman' : system.includes('impartial evaluator') ? 'judge' : 'run';
+      sent[kind].set(model, [...(sent[kind].get(model) || []), options]);
+      // Answers that differ, so that the mock's judges rank them by their
+      // text - contrarian_judge the other way round - and a council of the two
+      // ties over all three.
+      const answer = { demo_llm: 'Answer a', second_llm: 'Answer b', contrarian_judge: 'Answer c' }[model];
+      if (kind === 'run' && answer) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { response: answer, run_time: 1, prompt_length: 1, output_length: 1 } }) }).catch(() => {});
+        return;
+      }
+      await route.continue().catch(() => {});
+    });
+    await target.goto(`${APP_URL}&credentialDomain=all-keys`);
+    await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await target.selectOption('#LPB-project-dropdown', 'proj-1');
+    // Phase D created prompt-tests in proj-1: wait for the one used here.
+    await waitUntil(async () => (await target.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value))).includes('model-free'), 'the judge budget: prompts listed');
+    await target.selectOption('#LPB-prompt-dropdown', 'model-free');
+    await target.click('#app-obj-LPB-step-build');
+    await target.waitForSelector('#app-obj-LPB-pane-build:not([hidden])');
+    for (const index of [0, 1, 2]) await target.check(`#model${index}`);
+    await target.fill('#app-obj-LPB-system-prompt', 'Answer briefly.');
+    await target.fill('#app-obj-LPB-user-prompt', 'Is this a test?');
+    await target.click('#app-obj-LPB-run-experiment');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length === 1 && !(await target.isDisabled('#app-obj-LPB-run-experiment')), 'the judge budget: the run has ended', 60000);
+    const runSent = Object.fromEntries([...sent.run].map(([model, options]) => [model, options.join(' ')]));
+    assert(
+      runSent.demo_llm === '{temperature:0.7,max_tokens:1000}' && runSent.contrarian_judge === '{temperature:0.3,max_completion_tokens:1000,API_KEY:sk-mock-anthropic-key}' && runSent.second_llm === '{temperature:0.5,API_KEY:sk-mock-openai-key}',
+      `a run sends the output limits its controls hold, not the budget of a judge (sent: ${JSON.stringify(runSent)})`
+    );
+    // A single judge, judging every answer, its own included: demo_llm, then
+    // second_llm.
+    await target.check('#app-obj-LPB-judge-include-self');
+    for (const judge of ['demo_llm', 'second_llm']) {
+      await target.selectOption('#app-obj-LPB-judge-model', judge);
+      await target.click('#app-obj-LPB-pet-0-judge');
+      await waitUntil(async () => (sent.judge.get(judge) || []).length > 0 && !(await target.isDisabled('#app-obj-LPB-pet-0-judge')), `the judge budget: ${judge} has judged`, 60000);
+      await quiet(target);
+    }
+    const single = Object.fromEntries([...sent.judge].map(([model, options]) => [model, options.join(' ')]));
+    assert(
+      single.demo_llm === '{temperature:0,max_tokens:4000}' && single.second_llm === '{API_KEY:sk-mock-openai-key,temperature:0}',
+      `a single judge whose LLM has max_tokens 1000 (of at most 64000) is sent max_tokens 4000 beside temperature 0, and one whose LLM has no option that limits the output is sent no budget (sent: ${JSON.stringify(single)})`
+    );
+    // A council of demo_llm and contrarian_judge, which ties (contrarian_judge
+    // ranks the other way round), and a chairman who breaks the tie.
+    sent.judge.clear();
+    await target.check('#app-obj-LPB-judge-council-toggle');
+    await target.evaluate((members) => {
+      for (const box of document.querySelectorAll('#app-obj-LPB-judge-panel input.pb-judge-panel-item')) {
+        if (members.includes(box.value) !== box.checked) box.click();
+      }
+    }, ['demo_llm', 'contrarian_judge']);
+    await target.check('#app-obj-LPB-judge-chairman-toggle');
+    await target.selectOption('#app-obj-LPB-judge-chairman-model', 'contrarian_judge');
+    await target.click('#app-obj-LPB-pet-0-judge');
+    await waitUntil(async () => sent.judge.size === 2 && sent.chairman.size === 1 && !(await target.isDisabled('#app-obj-LPB-pet-0-judge')), 'the judge budget: the council has judged and its chairman broken the tie', 60000);
+    await quiet(target);
+    const council = Object.fromEntries([...sent.judge].map(([model, options]) => [model, options.join(' ')]));
+    assert(
+      council.demo_llm === '{temperature:0,max_tokens:4000}' && council.contrarian_judge === '{API_KEY:sk-mock-anthropic-key,temperature:0,max_completion_tokens:2048}',
+      `each member of a council is sent its own budget: max_tokens 4000 for max_tokens 1000 of at most 64000, max_completion_tokens 2048 for max_completion_tokens 1000 of at most 2048 (sent: ${JSON.stringify(council)})`
+    );
+    const chairman = (sent.chairman.get('contrarian_judge') || []).join(' ');
+    assert(
+      chairman === '{API_KEY:sk-mock-anthropic-key,temperature:0,max_completion_tokens:2048}' && errors.length === 0,
+      `the chairman who breaks the tie of a council is sent the budget of its LLM as well (sent: ${chairman || 'nothing'}; errors: ${errors.join(' | ') || 'none'})`
+    );
+    await target.close();
+  }
+
+  // ---- a manifest whose prompts use no variable says what follows ----------------------
+  // A prompt without {{variables}} is manifested as `def scoreModel():` - the
+  // model takes nothing of the data it scores, and SAS Model Manager refuses
+  // the Python wrapper SAS Intelligent Decisioning needs for it with HTTP 412
+  // (measured 2026-10-18). Manifest stays usable; a notice above it says so,
+  // and how to give the model an input. Only for the run Manifest takes: the
+  // most recent one with a ticked box.
+  for (const [locale, words] of [
+    ['en-US', { add: 'Add Variable', says: ['uses no {{variable}}', 'SAS Intelligent Decisioning', 'HTTP 412', 'Define Variables', 'Manifest still works'] }],
+    ['de-DE', { add: 'Variable hinzufügen', says: ['verwendet keine {{Variable}}', 'SAS Intelligent Decisioning', 'HTTP 412', '„Variablen definieren“', 'manifestieren'] }],
+  ]) {
+    const context = await browser.newContext({ locale, viewport: { width: 1500, height: 1100 } });
+    const target = await context.newPage();
+    const errors = [];
+    target.on('pageerror', (e) => errors.push(e.message));
+    const NOTICE = '#app-obj-LPB-pet-manifest-no-inputs';
+    const shown = async () => {
+      await target.click('#app-obj-LPB-step-finalize');
+      await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+      const seen = { visible: await target.isVisible(NOTICE), text: ((await target.textContent(NOTICE)) || '').trim(), manifestOff: await target.isDisabled('#app-obj-LPB-pet-create-model-button') };
+      await target.click('#app-obj-LPB-step-build');
+      await target.waitForSelector('#app-obj-LPB-pane-build:not([hidden])');
+      return seen;
+    };
+    // The box of a run sits in its folded accordion: clicked as a script does.
+    const tick = async (selector, on) => {
+      await target.waitForSelector(selector, { state: 'attached' });
+      await target.$eval(selector, (box, wanted) => box.checked !== wanted && box.click(), on);
+      await waitUntil(async () => (await target.$eval(selector, (box) => box.checked)) === on, `${locale}: ${selector} ${on ? 'ticked' : 'unticked'}`);
+    };
+    await target.goto(APP_URL);
+    await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+    await target.selectOption('#LPB-project-dropdown', 'proj-1');
+    await waitUntil(async () => (await target.$$eval('#LPB-prompt-dropdown option', (els) => els.map((e) => e.value))).includes('model-free'), `${locale}: prompts listed`);
+    await target.selectOption('#LPB-prompt-dropdown', 'model-free');
+    await target.click('#app-obj-LPB-step-build');
+    await target.waitForSelector('#app-obj-LPB-pane-build:not([hidden])');
+    await target.check('#model0');
+    await target.fill('#app-obj-LPB-system-prompt', 'Answer briefly.');
+    await target.fill('#app-obj-LPB-user-prompt', 'Is this a test?');
+    await target.click('#app-obj-LPB-run-experiment');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length === 1 && !(await target.isDisabled('#app-obj-LPB-run-experiment')), `${locale}: the run without a variable has ended`, 60000);
+    const unticked = await shown();
+    await tick('#best-prompt-0-demo_llm', true);
+    const without = await shown();
+    assert(
+      !unticked.visible && without.visible && !without.manifestOff && words.says.every((word) => without.text.includes(word)) && errors.length === 0,
+      `${locale}: a best prompt that uses no variable is manifested with a notice above Manifest that names what follows and what to do, and Manifest stays usable (before the tick: ${unticked.visible ? 'shown' : 'hidden'}; after: ${without.visible ? 'shown' : 'hidden'}, Manifest ${without.manifestOff ? 'off' : 'usable'}; text: "${without.text.slice(0, 220)}"; errors: ${errors.join(' | ') || 'none'})`
+    );
+    // A variable defined and used in the prompt: the run Manifest takes now has an input.
+    await target.click(`text="${words.add}"`);
+    await target.locator('.pb-variable-row').nth(0).locator('.pb-var-name').fill('customer');
+    await target.locator('.pb-variable-row').nth(0).locator('.pb-var-value').fill('ACME Corp');
+    await target.fill('#app-obj-LPB-user-prompt', 'Is this a test for {{customer}}?');
+    await target.click('#app-obj-LPB-run-experiment');
+    await waitUntil(async () => (await target.$$('.pet-run-delete')).length === 2 && !(await target.isDisabled('#app-obj-LPB-run-experiment')), `${locale}: the run with a variable has ended`, 60000);
+    await tick('#best-prompt-1-demo_llm', true);
+    const withVariable = await shown();
+    // Its box unticked again: Manifest takes the run without a variable.
+    await tick('#best-prompt-1-demo_llm', false);
+    const backAgain = await shown();
+    assert(
+      !withVariable.visible && backAgain.visible && errors.length === 0,
+      `${locale}: with the variable used in the prompt of the run Manifest takes there is no notice, and it is back once that run is no longer the one (with the variable: ${withVariable.visible ? 'shown' : 'hidden'}; back to the run without: ${backAgain.visible ? 'shown' : 'hidden'}; errors: ${errors.join(' | ') || 'none'})`
+    );
+    await context.close();
+  }
+
   // ---- an optimization does not start over experiments that are not saved ----------
   // Run optimization saves the experiments first, so that the job reads what
   // the page shows. A save that threw ended the launch with the error of the

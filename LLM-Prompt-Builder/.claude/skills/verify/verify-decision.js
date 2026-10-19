@@ -856,6 +856,55 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
     await target.context().close();
   }
 
+  // ---- a decision template whose state uses no variable -----------------------------------
+  // Its manifest has no input of the data it scores (`def scoreModel():`, or
+  // the API key alone), and SAS Model Manager refuses the Python wrapper SAS
+  // Intelligent Decisioning needs for it with HTTP 412 (measured 2026-10-18).
+  // Manifest stays usable; a notice above it names the consequence and the
+  // remedy, in both languages - for a state whose variables are defined and
+  // not used as well. The fixture uses both of its variables: no notice.
+  const fixtureRows = await (await fetch(BASE + '/files/files/dtrk-1/content')).json();
+  for (const [locale, says] of [
+    ['en-US', ['uses no {{variable}}', '"Best Decision Model"', 'SAS Intelligent Decisioning', 'HTTP 412', 'Define Variables']],
+    ['de-DE', ['verwendet keine {{Variable}}', '„Bestes Entscheidungsmodell“', 'SAS Intelligent Decisioning', 'HTTP 412', '„Variablen definieren“', 'manifestieren']],
+  ]) {
+    const seen = {};
+    for (const state of ['with its variables', 'without a variable']) {
+      const context = await browser.newContext({ locale, viewport: { width: 1500, height: 1100 } });
+      const target = await context.newPage();
+      const errors = [];
+      target.on('pageerror', (e) => errors.push(e.message));
+      if (state === 'without a variable') {
+        const rows = JSON.parse(JSON.stringify(fixtureRows));
+        rows[0].userPrompt = 'Subject: Charged twice\nMessage: Please refund one payment.';
+        await target.route('**/files/files/dtrk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) }));
+      }
+      await target.goto(APP_URL);
+      await target.waitForSelector('#LPB-project-dropdown', { timeout: 15000 });
+      await target.click('#LPB-kind-decision');
+      await waitUntil(async () => (await target.$$eval('#LPB-project-dropdown option', (els) => els.map((e) => e.value))).includes('proj-2'), `${locale}, ${state}: the decision project is listed`);
+      await target.selectOption('#LPB-project-dropdown', 'proj-2');
+      await waitUntil(async () => (await target.$$('#LPB-prompt-dropdown option')).length === 2, `${locale}, ${state}: the decision template is listed`);
+      await target.selectOption('#LPB-prompt-dropdown', 'model-dec');
+      await waitUntil(async () => (await target.$$('.pet-run-delete')).length >= 1, `${locale}, ${state}: the saved run is loaded`);
+      await target.click('#app-obj-LPB-step-finalize');
+      await target.waitForSelector('#app-obj-LPB-pane-finalize:not([hidden])');
+      seen[state] = {
+        visible: await target.isVisible('#app-obj-LPB-pet-manifest-no-inputs'),
+        text: ((await target.textContent('#app-obj-LPB-pet-manifest-no-inputs')) || '').trim(),
+        manifestOff: await target.isDisabled(MANIFEST_BUTTON),
+        errors,
+      };
+      await context.close();
+    }
+    const without = seen['without a variable'];
+    const withVariables = seen['with its variables'];
+    step(
+      without.visible && !without.manifestOff && says.every((word) => without.text.includes(word)) && !withVariables.visible && without.errors.length + withVariables.errors.length === 0,
+      `${locale}: a decision template whose state uses no variable shows a notice above Manifest that names what follows and what to do, Manifest stays usable, and one whose state uses its variables shows none (without: ${without.visible ? 'shown' : 'hidden'}, Manifest ${without.manifestOff ? 'off' : 'usable'}, "${without.text.slice(0, 200)}"; with: ${withVariables.visible ? 'shown' : 'hidden'}; errors: ${[...without.errors, ...withVariables.errors].join(' | ') || 'none'})`
+    );
+  }
+
   // ---- one Best Decision Model per run (round 24) -------------------------------------------
   // The box documents THE best decision model of a run, the one Manifest
   // takes: a run has one. Where two decision models match every expected

@@ -10,7 +10,10 @@
  * `node verify-locales.cjs <path-to>/LLM-Prompt-Builder`.
  */
 // Texts whose braces are an example for the reader, not a placeholder the code replaces.
-const SAMPLE_BRACES = ['promptBuilderDecisionExplainer', 'promptBuilderDecisionStatePlaceholder'];
+const SAMPLE_BRACES = [
+  'promptBuilderDecisionExplainer', 'promptBuilderDecisionStatePlaceholder',
+  'promptBuilderManifestNoInputsWarning', 'promptBuilderManifestDecisionNoInputsWarning',
+];
 // Keys assembled at run time: `<prefix>${...}` in the sources.
 const KEY_TEMPLATE = /[`'"]((?:promptBuilder|ragBuilder)[A-Za-z0-9_]*)\$\{/g;
 // The Prompt Builder texts that address the reader with "du". Every other

@@ -287,7 +287,7 @@ const SENDERS = {
   'objects/prompt-builder.ts promptBuilderRunExperiment -> callSCRLLM': 'a run: each option as its control holds it - the roads of every kind of options.json and of every name',
   'api/judge-api.ts judgeRun -> callSCRLLM': 'a judge or a member of a council: the options of resolveJudgeOptions',
   'api/judge-api.ts chairmanBreakTie -> callSCRLLM': 'the chairman of a council: the options of resolveJudgeOptions',
-  'objects/prompt-builder.ts runOneJudge -> resolveJudgeOptions': 'the provider key, and temperature 0 where the temperature is a number - the road of every kind of options.json, judged by a council of all of them',
+  'objects/prompt-builder.ts runOneJudge -> resolveJudgeOptions': 'the provider key, temperature 0 where the temperature is a number, and an output budget of at least 4000 within the maximum where max_tokens or max_completion_tokens is a number - the road of every kind of options.json, judged by a council of all of them',
   'objects/prompt-builder.ts promptBuilderJudgeRun -> resolveJudgeOptions': 'the same function, for the chairman',
   'objects/prompt-builder.ts promptBuilderRunDecisionExperiment -> callSCRDecision': 'a decision model: decisionCallOptions, the provider key of API_KEY.default alone (isDecisionModelOptions)',
   'objects/prompt-builder.ts evaluationButton.onclick -> callSCRDecision': 'a decision model in an evaluation: decisionCallOptions, as in a run',
@@ -688,7 +688,8 @@ function sendersCensus() {
       // The run judged by a council of every LLM of a kind: each member is
       // sent its provider key, and temperature 0 only where its temperature
       // is a number (resolveJudgeOptions) - of an enum of texts or a text,
-      // 0 is no value it can have.
+      // 0 is no value it can have -, and an output budget where max_tokens or
+      // max_completion_tokens is a number (judgeOutputLimits).
       await atRest();
       judging = true;
       // The council is offered once a judge is chosen.
@@ -708,13 +709,26 @@ function sendersCensus() {
         const expected = [];
         if (kind.file.API_KEY) expected.push(`API_KEY:${secretOf(kind.file.API_KEY.default)}`);
         if (kind.file.temperature && stored.isNumberOption(kind.file.temperature)) expected.push('temperature:0');
+        // The output budget of a judge: for max_tokens and max_completion_tokens
+        // as a number, at least 4000 (or the default, where larger), and never
+        // more than the maximum of the option - a number `max`, else the upper
+        // bound of a range "<min> - <max>", where that is a whole number of 1 or more.
+        for (const name of ['max_tokens', 'max_completion_tokens']) {
+          const option = Object.prototype.hasOwnProperty.call(kind.file, name) ? kind.file[name] : null;
+          if (!option || !stored.isNumberOption(option)) continue;
+          const bound = /^\s*\d+(?:\.\d+)?\s*-\s*(\d+)(?![.\d])/.exec(typeof option.range === 'string' ? option.range : '');
+          const fromRange = bound ? Number(bound[1]) : NaN;
+          const maximum = typeof option.max === 'number' && Number.isFinite(option.max) && option.max >= 1 ? Math.floor(option.max) : Number.isSafeInteger(fromRange) && fromRange >= 1 ? fromRange : null;
+          const wanted = Math.max(4000, Math.ceil(option.default));
+          expected.push(`${name}:${maximum === null ? wanted : Math.min(wanted, maximum)}`);
+        }
         const want = `{${expected.join(',')}}`;
         if (judged.get(kind.name) !== want) wrongJudged.push(`${kind.shape}: sent ${JSON.stringify(judged.get(kind.name))}, expected ${want}`);
       }
       const temperatures = kinds.filter(({ name, file }) => usable.includes(name) && file.temperature);
       step(
         usable.length > 0 && judged.size === usable.length && wrongJudged.length === 0 && pageErrors.length === 0,
-        `a council of every kind of options.json mdb writes sends each member its provider key, and temperature 0 only where its temperature is a number (${judged.size} of ${usable.length} members called; with a temperature: ${temperatures.length}, of them a number: ${temperatures.filter(({ file }) => stored.isNumberOption(file.temperature)).length}; sent otherwise: ${wrongJudged.length}${wrongJudged.length ? ` - ${clip(wrongJudged.slice(0, 6).join('; '))}` : ''}; page errors: ${pageErrors.join(' | ') || 'none'})`
+        `a council of every kind of options.json mdb writes sends each member its provider key, temperature 0 only where its temperature is a number, and its output budget where max_tokens or max_completion_tokens is a number (${judged.size} of ${usable.length} members called; with a temperature: ${temperatures.length}, of them a number: ${temperatures.filter(({ file }) => stored.isNumberOption(file.temperature)).length}; sent otherwise: ${wrongJudged.length}${wrongJudged.length ? ` - ${clip(wrongJudged.slice(0, 6).join('; '))}` : ''}; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }
