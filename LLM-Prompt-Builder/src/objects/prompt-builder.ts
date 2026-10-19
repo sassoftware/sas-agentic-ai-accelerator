@@ -185,6 +185,18 @@ interface PromptVariable {
 }
 
 /**
+ * The variables of a run that one of `texts` uses as {{name}} (blanks inside
+ * the braces allowed): the inputs its manifest has. A prompt template looks
+ * in both prompts, a decision template in its state.
+ */
+function variablesUsedIn(variables: PromptVariable[], texts: string[]): PromptVariable[] {
+  return variables.filter((variable) => {
+    const variableToken = new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`);
+    return texts.some((text) => variableToken.test(text));
+  });
+}
+
+/**
  * Run-level summary of an LLM-as-a-Judge evaluation. Kept as tracker metadata
  * (like `manifest`), not a per-model result. `reasoning`/`ranking`/`best` are
  * held in memory for the session; only `judgeModel` and `confidence` are
@@ -4656,8 +4668,37 @@ export async function buildPromptBuilder(
     // Wrapped so the "select a best response first" hint shows on hover even
     // while the button is disabled (a disabled button fires no hover events).
     const promptExperimentCreateModelButtonWrapper = wrapForHint(promptExperimentCreateModelButton);
+    // A manifest takes as inputs the variables its run uses as {{name}} - of
+    // a prompt template in either prompt, of a decision template in the state.
+    // A run that uses none is manifested as `def scoreModel():` (or with the
+    // API key as its only input): the model takes nothing of the data it
+    // scores, and SAS Model Manager refuses the Python wrapper SAS Intelligent
+    // Decisioning needs for it (HTTP 412, measured 2026-10-18). Manifest stays
+    // usable - such a model still scores outside a decision -, and the notice
+    // above the button says what follows and what to do before the click.
+    const promptExperimentNoInputsNotice = document.createElement('div');
+    promptExperimentNoInputsNotice.id = `${paneID}-obj-${promptBuilderObject?.id}-pet-manifest-no-inputs`;
+    promptExperimentNoInputsNotice.classList.add('alert', 'alert-warning', 'py-2', 'px-3', 'mt-3', 'mb-0', 'd-none');
+    promptExperimentNoInputsNotice.setAttribute('role', 'note');
+    function updateNoInputsNotice(): void {
+      // The run a manifest takes: the most recent one with a box ticked.
+      const run = [...promptExperimentTracker].reverse().find((trackerEntry) =>
+        Object.keys(trackerEntry).some(
+          (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
+        )
+      );
+      const decision = promptMode === 'decision';
+      // A prompt run saved before the variables manager has no list of
+      // variables: its manifest parses the user prompt and always has an input.
+      const variables = Array.isArray(run?.variables) ? (run.variables as PromptVariable[]) : decision ? [] : null;
+      const texts = decision ? [run?.userPrompt ?? ''] : [run?.systemPrompt ?? '', run?.userPrompt ?? ''];
+      const noInputs = Boolean(run) && variables !== null && variablesUsedIn(variables, texts).length === 0;
+      promptExperimentNoInputsNotice.innerText = manifestText('promptBuilderManifestNoInputsWarning', 'promptBuilderManifestDecisionNoInputsWarning');
+      promptExperimentNoInputsNotice.classList.toggle('d-none', !noInputs);
+    }
     // Disabled (with a hint) until a run has a best response selected
     function updateManifestButtonState(): void {
+      updateNoInputsNotice();
       const hasBestPrompt = promptExperimentTracker.some((trackerEntry) =>
         Object.keys(trackerEntry).some(
           (key) => !TRACKER_META_KEYS.includes(key) && (trackerEntry[key] as ModelExperimentData)?.best_prompt
@@ -5293,18 +5334,15 @@ export async function buildPromptBuilder(
           : null;
         const referencedVariables: PromptVariable[] = [];
         if (runVariables) {
-          runVariables.forEach((variable) => {
-            const variableToken = new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`);
-            if (variableToken.test(basePrompt!.systemPrompt) || variableToken.test(basePrompt!.userPrompt)) {
-              referencedVariables.push(variable);
-              promptInputs.push({
-                name: variable.name,
-                description: variable.description,
-                level: variable.type === 'decimal' ? 'interval' : 'nominal',
-                type: variable.type === 'decimal' ? 'decimal' : 'string',
-                length: variable.type === 'decimal' ? 8 : 10000000,
-              });
-            }
+          variablesUsedIn(runVariables, [basePrompt!.systemPrompt, basePrompt!.userPrompt]).forEach((variable) => {
+            referencedVariables.push(variable);
+            promptInputs.push({
+              name: variable.name,
+              description: variable.description,
+              level: variable.type === 'decimal' ? 'interval' : 'nominal',
+              type: variable.type === 'decimal' ? 'decimal' : 'string',
+              length: variable.type === 'decimal' ? 8 : 10000000,
+            });
           });
         } else {
           let parsedUserPrompt = basePrompt!.userPrompt.trim().split(';');
@@ -5790,9 +5828,7 @@ ${scoreCodeReturn}`;
       const questions = questionsFromJson(header.systemPrompt ?? '');
       const stateTemplate = header.userPrompt ?? '';
       const runVariables: PromptVariable[] = Array.isArray(header.variables) ? (header.variables as PromptVariable[]) : [];
-      const referencedVariables = runVariables.filter((variable) =>
-        new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`).test(stateTemplate)
-      );
+      const referencedVariables = variablesUsedIn(runVariables, [stateTemplate]);
       // The questions and the variables come from the saved run, which may be
       // older than the name checks of the designer and of the variables
       // manager (a template saved by an earlier release). The checks are made
@@ -8115,6 +8151,7 @@ ${scoreCodeReturn}`;
     manifestCard.controls.appendChild(promptExperimentManifestOptions);
     if (decisionEnabled) manifestCard.controls.appendChild(promptExperimentDecisionManifestOptions);
     manifestCard.controls.appendChild(promptExperimentTlsWarning);
+    manifestCard.controls.appendChild(promptExperimentNoInputsNotice);
     promptExperimentCreateModelButtonWrapper.classList.add('mt-3');
     manifestCard.controls.appendChild(promptExperimentCreateModelButtonWrapper);
     promptExperimentResultContainer.classList.add('mt-2');
