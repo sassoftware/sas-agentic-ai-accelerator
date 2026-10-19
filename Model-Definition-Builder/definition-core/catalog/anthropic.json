@@ -4,6 +4,48 @@
     "pricing_note": "Prices in USD per 1M tokens. Static fallback snapshot - always confirm against https://www.anthropic.com/pricing before relying on cost monitoring.",
     "models": [
         {
+            "ref": "claude-opus-5-5",
+            "display_name": "Claude Opus 5.5",
+            "kind": "llm",
+            "context_length": 1000000,
+            "max_output_tokens": 128000,
+            "input_price_per_m": 4.0,
+            "output_price_per_m": 20.0,
+            "release_date": "2026-09-21",
+            "adaptive_thinking": true,
+            "sampling": false,
+            "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "snapshot_date": "2026-10-19"
+        },
+        {
+            "ref": "claude-sonnet-5-5",
+            "display_name": "Claude Sonnet 5.5",
+            "kind": "llm",
+            "context_length": 1000000,
+            "max_output_tokens": 128000,
+            "input_price_per_m": 2.0,
+            "output_price_per_m": 10.0,
+            "release_date": "2026-09-28",
+            "adaptive_thinking": true,
+            "sampling": false,
+            "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "snapshot_date": "2026-10-19"
+        },
+        {
+            "ref": "claude-haiku-5-5",
+            "display_name": "Claude Haiku 5.5",
+            "kind": "llm",
+            "context_length": 1000000,
+            "max_output_tokens": 128000,
+            "input_price_per_m": 0.1,
+            "output_price_per_m": 0.5,
+            "release_date": "2026-10-07",
+            "adaptive_thinking": true,
+            "sampling": false,
+            "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "snapshot_date": "2026-10-19"
+        },
+        {
             "ref": "claude-opus-4-5-20251101",
             "display_name": "Claude Opus 4.5",
             "kind": "llm",

@@ -12,6 +12,16 @@
             "release_date": "2026-09-15"
         },
         {
+            "ref": "inception/mercury-decide",
+            "display_name": "Mercury Decide",
+            "kind": "decision",
+            "context_length": 65536,
+            "input_price_per_m": 0.02,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-09-30",
+            "snapshot_date": "2026-10-19"
+        },
+        {
             "ref": "cloudflare/clef-flash",
             "display_name": "Clef-flash",
             "kind": "decision",
