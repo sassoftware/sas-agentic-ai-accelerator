@@ -1076,7 +1076,7 @@ def load_facts(
             if empty:
                 reader = "Start Here looks for it" if kind == "decision" else "the LLM Usage Report reads it"
                 console.print(f"  {_plain(result['table'])}: no {_plain(kind)} definitions - loaded an empty table "
-                              f"with the sheet's columns ({reader}){_plain(suffix)}")
+                              f"with the sheet's columns ({_plain(reader)}){_plain(suffix)}")
             else:
                 console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
