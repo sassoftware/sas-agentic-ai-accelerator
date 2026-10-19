@@ -1,0 +1,44 @@
+[
+    {
+        "name": "answers",
+        "description": "Every answer as a JSON object keyed by question id: a choice carries choice, probabilities and confidence; a noul carries noul (the probability that it holds); a score carries score, legend, probabilities and confidence",
+        "level": "nominal",
+        "type": "string",
+        "length": 100000
+    },
+    {
+        "name": "answer",
+        "description": "The first question's headline answer: the chosen option, the score, or yes/no for a noul",
+        "level": "nominal",
+        "type": "string",
+        "length": 256
+    },
+    {
+        "name": "confidence",
+        "description": "The first question's confidence between 0 and 1 (for a noul: the probability of the side given in answer)",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    },
+    {
+        "name": "run_time",
+        "description": "Inference time of the decision model",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    },
+    {
+        "name": "prompt_length",
+        "description": "Token amount of the state and questions",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    },
+    {
+        "name": "output_length",
+        "description": "Always 0: a decision model generates no text",
+        "level": "interval",
+        "type": "decimal",
+        "length": 8
+    }
+]

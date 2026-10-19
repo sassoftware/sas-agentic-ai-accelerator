@@ -1,0 +1,7 @@
+{
+    "API_KEY": {
+        "default": "OpenRouter",
+        "range": "sk-****",
+        "description": "This is the OpenRouter key that is used to make the actual request."
+    }
+}
