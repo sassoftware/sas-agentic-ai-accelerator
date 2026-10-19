@@ -7,8 +7,8 @@ mdb is loaded from <repository>/Model-Definition-Builder/cli/src. The shapes
 come from the code: every field of OptionSpec (mdb/core/manifest.py) that
 reaches options.json as the page reads it with a value of each kind its
 annotation allows - a field this script does not know stops it; min, max,
-range and informational, which shape only the range text the page does not
-read and the score code, are left at none -, for an option of no vocabulary
+range, informational and value_map, which shape only the range text the page
+does not read and the score code, are left at none -, for an option of no vocabulary
 and for every option of the
 vocabulary (definition-core/static/option-vocabulary.json), with the provider
 key of AuthBlock beside it, and the option base_url, which the generator
@@ -152,12 +152,13 @@ def values_of(name, annotation):
 
 
 fields = manifest_module.OptionSpec.model_fields
-values = {name: values_of(name, field.annotation) for name, field in fields.items()}
 # The fields that never reach options.json are written with one value each
 # (min and max shape a range text, which the page does not read; informational
-# keeps an option from the provider, not from options.json); every other field
-# with each of its values.
-SINGLE = {'min': None, 'max': None, 'range': None, 'informational': None}
+# keeps an option from the provider, not from options.json; value_map is the
+# translation the score code sends, and options.json holds the normalized
+# values); every other field with each of its values.
+SINGLE = {'min': None, 'max': None, 'range': None, 'informational': None, 'value_map': None}
+values = {name: values_of(name, field.annotation) for name, field in fields.items() if name not in SINGLE}
 unknown = [name for name in fields if name not in SINGLE and name not in ('type', 'default', 'values', 'label', 'description')]
 if unknown:
     raise SystemExit(f'OptionSpec has fields this script does not know: {", ".join(unknown)}')
