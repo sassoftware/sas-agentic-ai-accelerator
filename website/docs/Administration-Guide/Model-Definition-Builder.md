@@ -276,7 +276,30 @@ The TLS Secret has to exist in the namespace of `--namespace` (default `llm`): a
 kubectl create secret tls llm-tls-certs -n llm \
   --cert=<(kubectl get secret sas-ingress-certificate -n <viya-namespace> -o jsonpath='{.data.tls\.crt}' | base64 -d) \
   --key=<(kubectl get secret sas-ingress-certificate -n <viya-namespace> -o jsonpath='{.data.tls\.key}' | base64 -d)
-``` `Model-Definition-Builder/ci-recipes/` contains thin GitHub Actions pipelines (a `workflow_dispatch` model-lifecycle job and a weekly deprecation radar) where every step is just an `mdb` verb.
+```
+
+### A cluster with Contour (`--ingress contour`) {#ingress-contour}
+
+The Python SCR runtime answers only `POST /<model_id>`. The Ingress of each rendered model rewrites the public path `/llm/<model_id>/<model_id>` to it with an annotation of the NGINX Ingress controller. Contour, the ingress controller of current SAS Viya deployments, has no rewrite on a plain Ingress, so these Ingresses reach no model there. With `--ingress contour` the command renders the models without an Ingress and writes one router for all of them, `llm-router.yaml`, from `SCR-LLM-Deployment-YAML/llm-router-contour-template.yaml`:
+
+```bash
+mdb deploy --all --ingress contour --registry registry.example.com/llm --host viya.example.com \
+  --tls-secret llm-tls-certs --dns "$(kubectl get service kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')"
+kubectl apply -f deploy-yaml/                      # the models' Deployments and Services, and the router
+curl https://viya.example.com/llm/healthz          # ok
+```
+
+An Ingress that an earlier `mdb deploy` without `--ingress contour` created for a model stays until you delete it (`kubectl delete ingress <model-name> -n llm`); the command reminds you of it.
+
+- **What the router is.** A ConfigMap with an NGINX server block that has one `location = /llm/<model_id>/<model_id>` per rendered model and forwards it to `http://<service>.<namespace>.svc.cluster.local:<port>/<model_id>`; a Deployment of `nginxinc/nginx-unprivileged:1.27-alpine` (port 8080, readiness on `/llm/healthz`, requests 20m CPU and 32Mi, limit 128Mi) and its Service; and one Contour Ingress for the path `/llm` (`Prefix`) of the host, with the TLS secret of `--tls-secret` and `projectcontour.io/response-timeout: 300s`. Contour merges an Ingress for the same host, so the routes of SAS Viya stay as they are. Calls keep their URL: *host/llm/model_name/model_name*.
+- **Render every model at once.** The router routes exactly the models of one render. `mdb deploy <model_id> --ingress contour` warns that applying its `llm-router.yaml` removes the routes of every other model: render with `--all` whenever a model is added. The Deployment of the router carries the list of routed models as an annotation, so a changed list restarts it - NGINX reads its configuration only at start.
+- **The resolver.** NGINX looks each Service up per request through the cluster DNS (`resolver <dns> valid=30s ipv6=off`), so the router starts before the models and follows a Service that is created again. `--dns` gives the address of the cluster DNS; the default `10.0.0.10` is that of kube-dns on AKS. Other limits of the server block: request bodies up to 64 MB and 300-second timeouts.
+- **Placing the pods.** `--node <name>` pins the models and the router to one node (`nodeSelector` on `kubernetes.io/hostname`); the `app=llm` node affinity of the templates still applies unless `--node-class` is given. `--node-class <class>` replaces that affinity and its tolerations with one toleration of the SAS node taint `workload.sas.com/class=<class>:NoSchedule`, so the models can run on a node pool of SAS Viya. `--requests CPU,MEMORY` (default `1000m,4000Mi`), `--limit-memory` and `--pull-policy` (`Always`, `IfNotPresent` or `Never`) change the model container only; the router keeps its own small requests. These options work with `--ingress nginx` as well. A value the command cannot use ends it with exit code 2 before anything is written.
+- **No authentication.** Like the Ingress of each model, the router answers anyone who can reach *host/llm/*; restrict who can reach the path as described under [`--auth env`](#auth-env).
+
+Without `--ingress contour` the rendered files are those of earlier releases, byte for byte. The output of `--ingress contour` was compared with `kubectl diff` against a cluster that ran a hand-made router of the same design (SAS Viya Stable 2026.09 on AKS, 2026-10-19), without applying it: the router was identical; the model Deployments differed in a label, in `SAS_SCR_LOG_LEVEL_SCR_IO` (`TRACE` from the templates, `INFO` on that cluster - see [Container Deployment](./Container-Deployment.md)) and in a readiness probe on `/internal/ready` (port 8080) that the hand-made Deployments had and the templates do not. Applying the rendered files there would restart each model pod once.
+
+`Model-Definition-Builder/ci-recipes/` contains thin GitHub Actions pipelines (a `workflow_dispatch` model-lifecycle job and a weekly deprecation radar) where every step is just an `mdb` verb.
 
 ## Watching for provider retirements
 
@@ -312,7 +335,13 @@ To make the sheets available to the SAS Visual Analytics monitoring report,
 `mdb load-facts` uploads them to CAS — the Python equivalent of
 `Load-Fact-Sheets.sas`. Each sheet is loaded with **global scope** (promoted, so
 every session sees it) and **saved to the caslib's data source on disk** (so it
-survives a CAS restart), as the tables `LLM_FACT_SHEET` and `EMBEDDING_FACT_SHEET`.
+survives a CAS restart), as the tables `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET`
+and `DECISION_FACT_SHEET`. A kind the site has no definition of - no folder in
+`Embedding-Definitions`, say - is loaded as an empty table with its sheet's
+columns, and the command says so in one line: the LLM Usage Report reads the LLM
+and the embedding table, and the page *Start Here* looks for all three. A kind
+that has definitions but no sheet is skipped with the hint to run
+`mdb sync --rebuild` first.
 An existing table of the same name is unloaded first and its saved copy replaced:
 
 ```bash
@@ -544,3 +573,25 @@ The rule does not cover the rest of what the parser of a generated score code do
 ## Scoring-time options
 
 Options are defined once in the manifest and flow into the score script defaults, `options.json` and the fact sheet together. Beyond `temperature`, `top_p`, `top_k` and `max_tokens`, the typed option vocabulary covers `seed`, frequency/presence penalties, `reasoning_effort` for reasoning models (which reject temperature/top_p — the generator handles this), `max_completion_tokens` and `thinking_budget` for extended-thinking models. The full vocabulary lives in `Model-Definition-Builder/definition-core/static/option-vocabulary.json`.
+
+### Reasoning effort per model {#reasoning-effort-per-model}
+
+`reasoning_effort` takes five levels for every model: `minimal`, `low`, `medium`, `high`, `maximum`. The vocabulary translates them once per score template: the OpenAI-style templates send `minimal` to `high` as they are and `maximum` as `high`; the environment-configured Azure template sends `minimal` as `none` and `maximum` as `xhigh`; and the Anthropic template sends `output_config.effort`, with `minimal` and `low` as `low` and `maximum` as `max`. A model that accepts other words than its template carries its own translation on the option in `definition.yaml`:
+
+```yaml
+options:
+  reasoning_effort:
+    default: medium
+    value_map:
+      minimal: none
+      low: low
+      medium: medium
+      high: high
+      maximum: xhigh
+```
+
+The keys must be exactly the five levels and the values the words the provider accepts. A missing or extra key, an empty value, or a `value_map` on an option its template does not translate is refused by `mdb generate`, `validate` (V003) and `register`. `mdb add` writes the map from the catalog's list of the effort words a model accepts - `minimal` to `minimal` where the model takes it, else to its lowest word, and `maximum` to its highest - and only where it differs from the template's: `gpt_6_luna` sends `minimal` as `none` and `maximum` as `xhigh`, and `gpt_61_sol` sends `minimal` as `low` (it has no `none`) and `maximum` as `xhigh`. For a model the catalog does not know, write the map by hand and run `mdb generate`.
+
+### Claude 5.5: effort instead of sampling {#claude-5-5}
+
+Claude 5.5 (Haiku, Sonnet, Opus) refuses `temperature` and `top_p` other than their defaults, `top_k`, and a thinking budget (`thinking {type: enabled}`); it thinks adaptively and is steered by `output_config.effort`. `mdb add` therefore gives these models `reasoning_effort` (default `medium`) and `max_tokens` (default 4000), and no sampling option; a `temperature` a caller passes anyway is not sent. The thinking counts against `max_tokens`: a smaller default can end a call before its answer is written, and the Prompt Builder asks a judge for at least 4000 tokens for the same reason. `reasoning_effort` and `thinking_budget` exclude each other - keep `thinking_budget` for older Claude models. The default `medium` is the API's own for Haiku 5.5 and Opus 5.5; Sonnet 5.5 defaults to `high` at the API, so set `default: high` in its `definition.yaml` where you want that.
