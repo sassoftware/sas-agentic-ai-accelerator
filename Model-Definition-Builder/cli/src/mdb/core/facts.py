@@ -105,6 +105,13 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
     }
 
 
+def empty_sheet(kind: str) -> bytes:
+    """A fact sheet of `kind` without rows: its header line only. `mdb
+    load-facts` loads it for a kind the site has no definition of, so the
+    table the monitoring report reads exists with its columns."""
+    return (",".join(COLUMNS_BY_KIND[kind]) + "\n").encode("utf-8")
+
+
 def _write_bytes_retrying(path: Path, data: bytes) -> None:
     # Windows indexers/AV can hold the file briefly - retry transient errors
     for attempt in range(5):

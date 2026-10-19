@@ -1010,7 +1010,9 @@ def load_facts(
     The Python equivalent of Load-Fact-Sheets.sas: each sheet is loaded with
     global scope (promoted) and saved to the caslib's data source on disk, so the
     SAS Visual Analytics monitoring report can bind to LLM_FACT_SHEET /
-    EMBEDDING_FACT_SHEET across sessions and restarts.
+    EMBEDDING_FACT_SHEET / DECISION_FACT_SHEET across sessions and restarts.
+    A kind without any definition is loaded as an empty table with its
+    sheet's columns, since the report reads all three.
     """
     from .viya.cas import load_fact_sheet, resolve_server
     ctx = Context()
@@ -1021,30 +1023,55 @@ def load_facts(
         _rebuild_sheets(ctx, prune=prune)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
-    with _viya_session() as session:
+    # What each kind loads: its sheet, or - for a kind the site has no
+    # definition of - an empty table with the sheet's columns, because the
+    # LLM Usage Report reads all three tables and fails on a missing one. A
+    # kind that HAS definitions but no sheet is skipped as before: an empty
+    # table there would hide that the sheet was never generated.
+    sheets: dict = {}
+    for kind in KINDS:
+        sheet = ctx.fact_sheet(kind)
+        if sheet.is_file():
+            sheets[kind] = sheet
+        elif not _has_definitions(ctx, kind):
+            sheets[kind] = None
+        else:
+            console.print(f"  [yellow]{_plain(sheet.name)} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
+    if not any(sheets.values()):
+        console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
+        raise typer.Exit(1)
+    import tempfile
+    with _viya_session() as session, tempfile.TemporaryDirectory() as tmp:
         server_name = resolve_server(session, server_choice)
         console.print(
             f"Loading fact sheets into CAS library [bold]{_plain(caslib)}[/bold] on [bold]{_plain(server_name)}[/bold]:"
         )
-        loaded = 0
-        for kind in KINDS:
-            sheet = ctx.fact_sheet(kind)
-            if not sheet.is_file():
-                console.print(f"  [yellow]{_plain(sheet.name)} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
-                continue
+        for kind, sheet in sheets.items():
+            empty = sheet is None
+            if empty:
+                sheet = Path(tmp) / ctx.fact_sheet(kind).name
+                sheet.write_bytes(facts.empty_sheet(kind))
             try:
                 result = load_fact_sheet(session, sheet, kind, caslib, server_name)
             except RuntimeError as exc:
                 console.print(f"  [red]{_plain(exc)}[/red]")
                 raise typer.Exit(1)
-            loaded += 1
             # "dropped" reflects the loaded copy; the save step replaces any saved one
             suffix = " (replaced a loaded copy)" if result["dropped"] else ""
-            console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
-    if not loaded:
-        console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
-        raise typer.Exit(1)
+            if empty:
+                console.print(f"  {_plain(result['table'])}: no {_plain(kind)} definitions - loaded an empty table "
+                              f"with the sheet's columns (the LLM Usage Report reads it){_plain(suffix)}")
+            else:
+                console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
+
+
+def _has_definitions(ctx: "Context", kind: str) -> bool:
+    """Whether the definitions folder of `kind` holds any definition - managed
+    or a hand-maintained legacy folder (those have fact-sheet rows too)."""
+    folder = ctx.defs_dir(kind)
+    return folder.is_dir() and any(
+        child.is_dir() and not child.name.startswith(("_", ".")) for child in folder.iterdir())
 
 
 def _load_releases(session, ctx: "Context", caslib: str, server_name: str, table: str,
