@@ -317,6 +317,21 @@
                     ],
                     "default": null,
                     "title": "Informational"
+                },
+                "value_map": {
+                    "anyOf": [
+                        {
+                            "additionalProperties": {
+                                "type": "string"
+                            },
+                            "type": "object"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Value Map"
                 }
             },
             "required": [

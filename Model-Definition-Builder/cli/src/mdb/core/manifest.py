@@ -38,6 +38,27 @@ class OptionSpec(BaseModel):
     range: Optional[str] = None  # overrides the legacy free-text range string
     # Custom options only: documented in options.json but never sent to the provider
     informational: Optional[bool] = None
+    # This model's own translation of a normalized enum (e.g. reasoning_effort
+    # minimal..maximum) to the values its provider accepts, in place of the
+    # score-template family's map in the vocabulary. Keys: every normalized
+    # value of the option (checked against the vocabulary at generation);
+    # values: the provider's words. `mdb add` fills it from the catalog where a
+    # model accepts other values than its family (GPT-6: none / xhigh).
+    value_map: Optional[dict[str, str]] = None
+
+    @field_validator("value_map")
+    @classmethod
+    def _value_map_texts(cls, v):
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("value_map is empty - leave it out to use the family's translation")
+        for key, value in v.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("value_map keys are the option's normalized values - an empty key was given")
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"value_map['{key}'] must be a non-empty text (the provider's value)")
+        return v
 
 
 #: The name of an environment variable as a container and a Kubernetes Secret

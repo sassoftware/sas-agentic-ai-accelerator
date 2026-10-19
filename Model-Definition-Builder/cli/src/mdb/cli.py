@@ -28,7 +28,7 @@ from . import __version__
 from .core import drift, facts
 from .core.generator import (
     AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, _render_options_json,
-    check_options_file, effective_score_file, list_custom_options, render_assets,
+    check_options_file, drop_family_value_maps, effective_score_file, list_custom_options, render_assets,
 )
 from .core.importer import import_folder
 from .core.manifest import (
@@ -388,7 +388,13 @@ def _enrich_from_static(live: list[CatalogModel], static: list[CatalogModel]) ->
         if model.kind == "llm" and known.kind in ("embedding", "decision"):
             model.kind = known.kind
         model.reasoning = model.reasoning or known.reasoning
-        model.extended_thinking = model.extended_thinking or known.extended_thinking
+        model.adaptive_thinking = model.adaptive_thinking or known.adaptive_thinking
+        # Either source knowing that the model refuses sampling is enough.
+        model.sampling = model.sampling and known.sampling
+        # Adaptive thinking replaces the budget: keep the snapshot's word.
+        model.extended_thinking = (model.extended_thinking or known.extended_thinking) \
+            and not model.adaptive_thinking
+        model.reasoning_efforts = model.reasoning_efforts or known.reasoning_efforts
         if known.source != "static":
             model.source = f"live, enriched from {known.source}"
     return live
@@ -486,6 +492,10 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     table.add_row("definition", "kind", _plain(manifest.kind.upper()))
     for name, spec in manifest.options.items():
         bounds = "" if spec.max is None else f"  (max {spec.max:g})"
+        if spec.value_map:
+            # Only what this model sends other than the word it is offered
+            moved = [f"{key} -> {value}" for key, value in spec.value_map.items() if key != value]
+            bounds += f"  (sent as {', '.join(moved)})" if moved else ""
         table.add_row("options", _plain(name), f"{_plain(spec.default)}{_plain(bounds)}")
     table.add_row("metadata", "description", _plain(metadata.description))
     table.add_row("metadata", "context_length", _plain(metadata.context_length) if metadata.context_length else unknown)
@@ -744,6 +754,9 @@ def add(
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        # A value_map the catalog gave that says what the family says anyway
+        # is not written: a definition carries one only where its model differs.
+        drop_family_value_maps(manifest, ctx.core)
         if auth is not None:
             _apply_auth(manifest, adapter, auth, key_env)
         # State the kind up front - it decides the score template, the folder

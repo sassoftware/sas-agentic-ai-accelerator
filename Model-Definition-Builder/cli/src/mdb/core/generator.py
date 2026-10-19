@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -179,6 +179,46 @@ def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) 
     return ""
 
 
+def _checked_value_map(name: str, spec: OptionSpec, resolved: dict[str, Any]) -> Optional[dict[str, str]]:
+    """The manifest's own value_map of an option, checked against the
+    option's normalized values: every one of them is a key, and nothing else
+    is - a missing key would send the fallback for a value the UI offers, an
+    extra one names a value no caller can choose. None where there is none."""
+    if spec.value_map is None:
+        return None
+    normalized = list(resolved.get("values") or [])
+    missing = [value for value in normalized if value not in spec.value_map]
+    unknown = [key for key in spec.value_map if key not in normalized]
+    if missing or unknown:
+        problems = []
+        if missing:
+            problems.append(f"no entry for {', '.join(missing)}")
+        if unknown:
+            problems.append(f"{', '.join(unknown)} {'is' if len(unknown) == 1 else 'are'} not a value of the option")
+        raise GenerationError(
+            f"Option '{name}': value_map must map exactly the normalized values "
+            f"{' | '.join(normalized)} to the provider's values - {'; '.join(problems)}."
+        )
+    return {value: spec.value_map[value] for value in normalized}
+
+
+def drop_family_value_maps(manifest: ModelManifest, core: "CoreAssets") -> list[str]:
+    """Take out every option value_map that says what the score-template
+    family's map in the vocabulary says already, so a definition only carries
+    a map where its model differs from its family. Returns the option names
+    whose map was dropped. `mdb add` calls it after an adapter filled the maps
+    from the catalog."""
+    dropped = []
+    for name, spec in manifest.options.items():
+        if spec.value_map is None:
+            continue
+        family_map = core.vocabulary.get(name, {}).get("families", {}).get(manifest.runtime.template, {})
+        if family_map.get("value_map") == spec.value_map:
+            spec.value_map = None
+            dropped.append(name)
+    return dropped
+
+
 CAST_FN = {"float": "float", "int": "int", "str": "str", "bool": "bool"}
 # Python coercion for custom pass-through options, keyed by option type
 TYPE_CAST = {"number": "float", "int": "int", "bool": "bool", "enum": "str", "string": "str"}
@@ -192,7 +232,20 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
     # Options the provider refuses to accept together, keyed by group name. The
     # first member declared in the manifest wins when the caller sets neither.
     exclusive: dict[str, list[tuple[str, str, str]]] = {}
+    # Fields of nested request objects, keyed by the object: {outer: [(field, expression)]}
+    nested: dict[str, list[tuple[str, str]]] = {}
     thinking_block = ""
+
+    if family == "anthropic_messages" and {"reasoning_effort", "thinking_budget"} <= set(manifest.options):
+        # Two thinking controls of two model generations: a budget sends
+        # thinking {type: enabled}, which a model with adaptive thinking
+        # refuses, and reasoning_effort sends output_config.effort, which an
+        # older model refuses.
+        raise GenerationError(
+            "Options 'reasoning_effort' and 'thinking_budget' exclude each other: reasoning_effort "
+            "(output_config.effort) is for Claude models with adaptive thinking, thinking_budget "
+            "(thinking type enabled) for older ones - keep the one the model takes."
+        )
 
     for name, spec in manifest.options.items():
         resolved = _resolve_option(name, spec, core)
@@ -222,15 +275,28 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if family_map.get("builtin"):
             continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
         cast = CAST_FN.get(family_map.get("cast", "str"), "str")
+        if spec.value_map is not None and "value_map" not in family_map:
+            raise GenerationError(
+                f"Option '{name}' declares a value_map, but score template family '{family}' does not "
+                "translate its values - remove value_map."
+            )
         if "value_map" in family_map and "body_key" in family_map:
             # Normalized enum translated to the provider's own value set, e.g.
             # the 5-level reasoning scale where 'maximum' maps to OpenAI 'high'
-            value_map = family_map["value_map"]
+            # - or to this model's own set where the manifest names one
+            value_map = _checked_value_map(name, spec, resolved) or family_map["value_map"]
             fallback = value_map.get(str(spec.default), next(iter(value_map.values())))
-            body_lines.append(
-                f'        "{family_map["body_key"]}": {json.dumps(value_map)}'
-                f'.get(str(options["{name}"]), "{fallback}"),'
-            )
+            expression = (f'{json.dumps(value_map)}'
+                          f'.get(str(options["{name}"]), {json.dumps(fallback)})')
+            body_key = family_map["body_key"]
+            if "." in body_key:
+                # A field of a nested request object, e.g. Anthropic's
+                # output_config.effort: collected so that several options of
+                # one object render as one entry of the payload literal
+                outer, inner = body_key.split(".", 1)
+                nested.setdefault(outer, []).append((inner, expression))
+            else:
+                body_lines.append(f'        "{body_key}": {expression},')
             continue
         if "body_key" in family_map:
             body_key = family_map["body_key"]
@@ -252,6 +318,10 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
                 body_lines.append(f'        "{body_key}": {cast}(options["{name}"]),')
         elif "generate_key" in family_map:
             generate_lines.append(f"        {family_map['generate_key']}={cast}(options['{name}'])")
+
+    for outer, fields in nested.items():
+        inner = ", ".join(f'"{key}": {expression}' for key, expression in fields)
+        body_lines.append(f'        "{outer}": {{{inner}}},')
 
     return {
         "options_defaults_block": "\n".join(defaults_lines),
