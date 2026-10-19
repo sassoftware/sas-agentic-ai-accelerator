@@ -17,6 +17,55 @@
  */
 
 import { callSCRLLM } from './scr-api';
+import { isNumberOption } from './stored-json';
+
+/**
+ * The output budget of a judge call - a single judge, a member of a council
+ * and the chairman. A judge writes its reasoning before the verdict, and the
+ * output limit an LLM is defined with is sized for an ordinary answer: with
+ * max_tokens 1000 the verdict of a judge was cut off and read as unreadable
+ * ("The judge returned an unreadable verdict"), and a reasoning model spends
+ * part of its max_completion_tokens on thinking before it writes a word. So a
+ * judge call asks for at least this many tokens of output, whatever the
+ * default of the model is.
+ */
+export const JUDGE_OUTPUT_BUDGET = 4000;
+
+/** The options of an options.json that limit the output of a call, in the order a judge call sends them. */
+export const OUTPUT_LIMIT_OPTIONS = ['max_tokens', 'max_completion_tokens'] as const;
+
+/**
+ * The largest value an option takes where its options.json says so: a number
+ * `max`, or else the upper bound of its `range` when that reads
+ * "<min> - <max>" (mdb writes "1 - 128000 (minus input token length)"). Null
+ * where neither gives a positive whole number.
+ */
+export function optionMaximum(option: Record<string, unknown>): number | null {
+  if (typeof option.max === 'number' && Number.isFinite(option.max) && option.max >= 1) return Math.floor(option.max);
+  const bound = typeof option.range === 'string' ? /^\s*\d+(?:\.\d+)?\s*-\s*(\d+)(?![.\d])/.exec(option.range) : null;
+  const maximum = bound ? Number(bound[1]) : NaN;
+  return Number.isSafeInteger(maximum) && maximum >= 1 ? maximum : null;
+}
+
+/**
+ * The output limits a judge call sends, by the options.json of the judge
+ * model: for each of max_tokens and max_completion_tokens it has as a number,
+ * the larger of JUDGE_OUTPUT_BUDGET and the option's default, and never more
+ * than the option's maximum where the file gives one. A model without such
+ * an option is sent none (its score code keeps its own default). A run of
+ * the experiment sends what its controls hold and is not touched by this.
+ */
+export function judgeOutputLimits(options: Record<string, Record<string, unknown>>): Record<string, number> {
+  const limits: Record<string, number> = {};
+  for (const name of OUTPUT_LIMIT_OPTIONS) {
+    const option = Object.prototype.hasOwnProperty.call(options, name) ? options[name] : undefined;
+    if (!option || typeof option !== 'object' || !isNumberOption(option)) continue;
+    const wanted = Math.max(JUDGE_OUTPUT_BUDGET, Math.ceil(option.default as number));
+    const maximum = optionMaximum(option);
+    limits[name] = maximum === null ? wanted : Math.min(wanted, maximum);
+  }
+  return limits;
+}
 
 export interface JudgeCandidate {
   /** The model that produced the response (used to map the verdict back). */

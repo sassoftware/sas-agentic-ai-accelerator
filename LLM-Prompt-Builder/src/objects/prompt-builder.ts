@@ -76,7 +76,7 @@ import {
   type DecisionQuestionType,
   type EvaluationCase,
 } from './prompt-decision';
-import { judgeRun, aggregateBallots, chairmanBreakTie, type JudgeConfidence, type JudgeBallot, type JudgeUsage } from '../api/judge-api';
+import { judgeRun, aggregateBallots, chairmanBreakTie, judgeOutputLimits, type JudgeConfidence, type JudgeBallot, type JudgeUsage } from '../api/judge-api';
 import {
   resolveJobDefinitionUri,
   launchJob,
@@ -4096,10 +4096,13 @@ export async function buildPromptBuilder(
       }
     }
 
-    // Resolve the SCR options for the judge call: its API key (when the judge
-    // model requires one) and temperature 0 for reproducibility where its
-    // temperature is a number - one of another kind (an enum of texts, a
-    // text) keeps the default of the score code.
+    // Resolve the SCR options for the judge call - a single judge, a member of
+    // a council and the chairman all take them from here: its API key (when
+    // the judge model requires one), temperature 0 for reproducibility where
+    // its temperature is a number - one of another kind (an enum of texts, a
+    // text) keeps the default of the score code -, and an output budget large
+    // enough for the reasoning and the verdict where it has max_tokens or
+    // max_completion_tokens as a number (judgeOutputLimits).
     function resolveJudgeOptions(judgeMeta?: AvailableLLM): Record<string, unknown> {
       const judgeOptions: Record<string, unknown> = {};
       const options = judgeMeta?.options;
@@ -4109,6 +4112,7 @@ export async function buildPromptBuilder(
         judgeOptions.API_KEY = apiKeys?.[options.API_KEY.default as string] ?? '';
       }
       if (options.temperature && isNumberOption(options.temperature)) judgeOptions.temperature = 0;
+      Object.assign(judgeOptions, judgeOutputLimits(options));
       return judgeOptions;
     }
 
