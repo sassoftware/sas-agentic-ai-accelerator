@@ -590,7 +590,7 @@ options:
       maximum: xhigh
 ```
 
-The keys must be exactly the five levels and the values the words the provider accepts. A missing or extra key, an empty value, or a `value_map` on an option its template does not translate is refused by `mdb generate`, `validate` (V003) and `register`. `mdb add` writes the map from the catalog's list of the effort words a model accepts - `minimal` to `minimal` where the model takes it, else to its lowest word, and `maximum` to its highest - and only where it differs from the template's: `gpt_6_luna` sends `minimal` as `none` and `maximum` as `xhigh`, and `gpt_61_sol` sends `minimal` as `low` (it has no `none`) and `maximum` as `xhigh`. For a model the catalog does not know, write the map by hand and run `mdb generate`.
+The keys must be exactly the five levels and the values the words the provider accepts. A missing or extra key, an empty value, or a `value_map` on an option its template does not translate - a custom pass-through option or an informational one included - is refused by `mdb generate`, `validate` (V003) and `register`. `mdb add` writes the map from the catalog's list of the effort words a model accepts - `minimal` to `minimal` where the model takes it, else to its lowest word, and `maximum` to its highest - and only where it differs from the template's: `gpt_6_luna` sends `minimal` as `none` and `maximum` as `xhigh`, and `gpt_61_sol` sends `minimal` as `low` (it has no `none`) and `maximum` as `xhigh`. For a model the catalog does not know, write the map by hand and run `mdb generate`.
 
 ### Claude 5.5: effort instead of sampling {#claude-5-5}
 

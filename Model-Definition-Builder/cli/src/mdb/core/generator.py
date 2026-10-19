@@ -249,6 +249,15 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
 
     for name, spec in manifest.options.items():
         resolved = _resolve_option(name, spec, core)
+        if spec.value_map is not None and (resolved["informational"] or resolved["custom"]):
+            # Checked before either branch skips the translation, so a map
+            # is never silently dropped from what the score code sends
+            reason = ("is informational and never enters the score code" if resolved["informational"]
+                      else "is a custom option outside the vocabulary and is sent as-is under its own name")
+            raise GenerationError(
+                f"Option '{name}' declares a value_map, but it {reason} - nothing translates its "
+                "values; remove value_map (for a custom option, list the provider's own values)."
+            )
         if resolved["informational"]:
             continue  # options.json only - never enters the score script
         defaults_lines.append(f'        "{name}": {_py_literal(spec.default)},')
@@ -272,14 +281,14 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
                 f"Option '{name}' is not supported by score template family '{family}'. "
                 "Remove the option or extend the vocabulary."
             )
-        if family_map.get("builtin"):
-            continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
-        cast = CAST_FN.get(family_map.get("cast", "str"), "str")
         if spec.value_map is not None and "value_map" not in family_map:
             raise GenerationError(
                 f"Option '{name}' declares a value_map, but score template family '{family}' does not "
                 "translate its values - remove value_map."
             )
+        if family_map.get("builtin"):
+            continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
+        cast = CAST_FN.get(family_map.get("cast", "str"), "str")
         if "value_map" in family_map and "body_key" in family_map:
             # Normalized enum translated to the provider's own value set, e.g.
             # the 5-level reasoning scale where 'maximum' maps to OpenAI 'high'

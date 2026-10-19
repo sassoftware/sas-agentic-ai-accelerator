@@ -173,6 +173,34 @@ def test_value_map_on_an_option_its_family_does_not_translate_is_refused(core):
         render_assets(manifest, core)
 
 
+def test_value_map_on_a_custom_option_is_refused(core):
+    # A custom option passes through as-is: a map on it would be ignored and
+    # the raw value sent, so it is refused instead of dropped
+    manifest = _added(core, "openai", "gpt-6-luna", "luna")
+    manifest.options["verbosity"] = OptionSpec(type="enum", default="low", values=["low", "high"],
+                                               description="Answer length",
+                                               value_map={"low": "L", "high": "H"})
+    with pytest.raises(GenerationError, match="custom option outside the vocabulary .* remove value_map"):
+        render_assets(manifest, core)
+    manifest.options["verbosity"].value_map = None
+    assert _payload_line(manifest, core, 'str(options["verbosity"])').strip() == '"verbosity": str(options["verbosity"]),'
+
+
+def test_value_map_on_an_informational_option_is_refused(core):
+    manifest = _added(core, "openai", "gpt-6-luna", "luna")
+    manifest.options["reasoning_effort"].informational = True
+    with pytest.raises(GenerationError, match="is informational and never enters the score code"):
+        render_assets(manifest, core)
+
+
+def test_value_map_on_an_option_the_template_consumes_itself_is_refused(core, repo_root):
+    manifest = load_manifest(repo_root / "Embedding-Definitions" / "all_minilm_l6_v2")
+    assert "Embedding_Mode" in manifest.options
+    manifest.options["Embedding_Mode"].value_map = {"query": "q", "document": "d"}
+    with pytest.raises(GenerationError, match="does not translate its values - remove value_map"):
+        render_assets(manifest, core)
+
+
 def test_a_map_equal_to_the_family_map_is_not_written(core):
     manifest = _added(core, "openai", "gpt-6-luna", "luna")
     manifest.options["reasoning_effort"].value_map = dict(
