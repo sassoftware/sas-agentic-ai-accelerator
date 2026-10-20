@@ -7,8 +7,15 @@ import onnxruntime_genai as og
 # Self-hosted ONNX model via onnxruntime-genai. The weights are downloaded
 # into the image at build time (see requirements.json); onnx_dir points at
 # the variant folder inside the downloaded repo.
-model = og.Model('{{ onnx_dir }}')
-tokenizer = og.Tokenizer(model)
+onnx_dir = '{{ onnx_dir }}'
+
+{% include "partials/_model_cache.py.j2" %}
+
+def _load_model():
+    loadedModel = og.Model(onnx_dir)
+    return loadedModel, og.Tokenizer(loadedModel)
+
+model, tokenizer = _cached(onnx_dir, _load_model)
 chat_template = '{{ chat_template }}'
 
 # Initiate the logger to write output information to the log

@@ -18,17 +18,25 @@ checkpoint = './bge_base_en_v15'
 # minutes for a checkpoint of a few GB on a network volume. The loaded model
 # is kept in a module of sys.modules instead, which outlives the runs of this
 # file: the first call of a worker loads it, every later call reuses it.
+import threading
 import types
 _model_cache = sys.modules.setdefault(
     "_sas_accelerator_model_cache", types.ModuleType("_sas_accelerator_model_cache")
 )
+# One lock per key, kept with the cache: calls that arrive together before the
+# model is loaded wait for one load instead of each reading the weights.
+_model_locks = _model_cache.__dict__.setdefault("_locks", {})
 
 def _cached(key, load):
     "The value load() returns, computed once per worker process and key."
     value = getattr(_model_cache, key, None)
     if value is None:
-        value = load()
-        setattr(_model_cache, key, value)
+        with _model_locks.setdefault(key, threading.Lock()):
+            value = getattr(_model_cache, key, None)
+            if value is None:
+                # A load that raises stores nothing: the next call loads again.
+                value = load()
+                setattr(_model_cache, key, value)
     return value
 
 
