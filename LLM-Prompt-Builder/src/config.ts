@@ -159,9 +159,12 @@ const RAG_DEFAULTS: RagBuilderConfig = {
   contentRoot: '/SAS Agentic AI Accelerator/RAG',
   casServer: 'cas-shared-default',
   // Compute context the ingestion job runs in (Job Execution _contextName);
-  // blank = the Job Execution default context. If the context runs its
-  // servers under a service account, THAT identity needs the credential —
-  // see the Managing Credentials guide's service-account caveat.
+  // blank = the Job Execution default context. It must run as the requesting
+  // user: in a context that runs its servers under a service account (the
+  // stock SAS Job Execution compute context does) the ingestion steps cannot
+  // reuse the CAS session they need, and a credential granted to that
+  // account is no remedy - see the Managing Credentials guide's
+  // service-account caveat.
   computeContext: '',
   // Admin-set operational policy. Users do not see these per setup; a setup
   // records the values it was created with.

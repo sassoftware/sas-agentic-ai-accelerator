@@ -124,6 +124,7 @@
     "promptBuilderDecisionErrorUnreachable": "the endpoint is unreachable (check the SCR endpoint of this object and the network)",
     "promptBuilderRunPartialFailure": "{failed} of {total} models did not answer. The run keeps the other results; the reasons are listed above the Prompt Experiment Tracker.",
     "promptBuilderRunOptionComma": "The run was not sent: the text of {options} holds a comma. A run sends the options of a model as {name:value,name:value}, and the score code would read the text only up to the comma. Remove the comma and run again.",
+    "promptBuilderRunOptionReadOtherwise": "The run was not sent: the score code would read the text of {options} as something else. It takes blanks and quotes off the ends of a text, reads true and false in any case as true and false, and a number as a number. Change the text and run again.",
     "promptBuilderDecisionReadYes": "yes",
     "promptBuilderDecisionReadNo": "no",
     "promptBuilderDecisionReadNoulClear": "P(yes) = {p}: clearly {answer}.",

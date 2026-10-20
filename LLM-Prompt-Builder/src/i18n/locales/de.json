@@ -124,6 +124,7 @@
     "promptBuilderDecisionErrorUnreachable": "der Endpunkt ist nicht erreichbar (SCR-Endpunkt dieses Objekts und Netzwerk prüfen)",
     "promptBuilderRunPartialFailure": "{failed} von {total} Modellen haben nicht geantwortet. Der Lauf behält die übrigen Ergebnisse; die Gründe stehen oberhalb des Prompt Experiment Trackers.",
     "promptBuilderRunOptionComma": "Der Lauf wurde nicht gesendet: Der Text von {options} enthält ein Komma. Ein Lauf sendet die Optionen eines Modells als {name:value,name:value}, und der Score-Code würde den Text nur bis zum Komma lesen. Entfernen Sie das Komma und starten Sie den Lauf erneut.",
+    "promptBuilderRunOptionReadOtherwise": "Der Lauf wurde nicht gesendet: Der Score-Code würde den Text von {options} als etwas anderes lesen. Er entfernt Leerzeichen und Anführungszeichen an den Enden eines Textes, liest true und false in jeder Schreibweise als Wahrheitswert und eine Zahl als Zahl. Ändern Sie den Text und starten Sie den Lauf erneut.",
     "promptBuilderDecisionReadYes": "ja",
     "promptBuilderDecisionReadNo": "nein",
     "promptBuilderDecisionReadNoulClear": "P(ja) = {p}: eindeutig {answer}.",

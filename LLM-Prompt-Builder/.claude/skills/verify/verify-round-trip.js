@@ -72,10 +72,13 @@
  *     option is drawn as a control of its own, sent as written, and chosen
  *     as it was sent when the run is loaded, also from the tracker Save
  *     Experiments wrote. And texts of options as a person types them: a
- *     comma is flagged and the run not sent; quotes, a backslash, braces, a
- *     blank at the end of a name and an empty string field are sent as
- *     typed, stored as sent and loaded as sent, from memory and from the
- *     saved tracker.
+ *     comma, and in the field of an option whose default is a text a text
+ *     the score code reads as something else (" a ", 'say "hi"', "TRUE",
+ *     "5"), is flagged and the run not sent; quotes inside a text, a
+ *     backslash, braces, a blank inside a name and an empty string field are
+ *     sent as typed, stored as sent and loaded as sent, from memory and from
+ *     the saved tracker; a number in a number field and FALSE in the text
+ *     field of an option whose default is true are sent.
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173); the
@@ -379,11 +382,13 @@ function sendersCensus() {
     step(false, `the calls that write or read the options text of a run are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
   }
   // The options text read back as it was written, for the texts a run can
-  // send: a quote, a backslash, a brace at either end or alone, a blank at an
-  // end of a name or a value, a name or a text that holds API_KEY, and the
-  // values a number or a word true/false is written as. Before, a quote came
-  // back as a backslash, a blank was trimmed, a quote at an end taken off, a
-  // brace removed and an option cut at "API_KEY".
+  // send and those a tracker saved before they were refused holds (a name
+  // with a blank at its ends, a text the score code reads otherwise): a
+  // quote, a backslash, a brace at either end or alone, a blank at an end of
+  // a name or a value, a name or a text that holds API_KEY, and the values a
+  // number or a word true/false is written as. Before, a quote came back as a
+  // backslash, a blank was trimmed, a quote at an end taken off, a brace
+  // removed and an option cut at "API_KEY".
   if (stored) {
     const sentOptions = {
       temperature: 0.5,
@@ -1002,7 +1007,14 @@ function sendersCensus() {
   // ==========================================================================
   // A run sends the text of a field as it stands. A comma in it would be read
   // by the score code as the end of the option: the run is not sent, and the
-  // option is named. Save Experiments stored the options as JSON.stringify
+  // option is named. Nor is it sent with a text typed into the field of an
+  // option whose default is a text that the score code reads as something
+  // else (blanks or quotes at its ends, true/false in any case, a number) -
+  // the rule isModelOptions holds the defaults to (isReadAsWritten); a
+  // number in a number field and true/false in the text field of an option
+  // whose default is true are sent. The file holds only options that rule
+  // takes, with a blank inside a name and quotes inside a text. Save
+  // Experiments stored the options as JSON.stringify
   // with every '"' removed - a quote came back as a backslash, a backslash
   // doubled -, a saved run was read back with blanks and quotes taken off the
   // ends of a name and of a value, and an option of type string the run left
@@ -1013,15 +1025,17 @@ function sendersCensus() {
       temperature: { default: 0.5 },
       stop: { type: 'string', default: 'x' },
       region: { type: 'string', default: '' },
-      ' padded': { type: 'string', default: 'p' },
-      my_text: { type: 'string', default: 'say "hi"' },
+      'two words': { type: 'string', default: 'p' },
+      my_text: { type: 'string', default: 'say "hi" now' },
+      quoted: { type: 'string', default: "it's" },
+      switch_word: { default: true },
       my_path: { type: 'string', default: 'C:\\temp' },
       braced: { type: 'string', default: '{x}' },
       closing: { type: 'string', default: '}' },
       my_API_KEY_region: { type: 'string', default: 'no_API_KEY_here' },
       free: { default: 'text of no type' },
     };
-    await road('texts of options typed, sent, saved and loaded as they were sent; a comma refused', async (page) => {
+    await road('texts of options typed, sent, saved and loaded as they were sent; a comma and a text read otherwise refused', async (page) => {
       const LLM = 'rtt_llm';
       const taken = check('options.json', file);
       await addModels(page, 'llm-proj', [['rt-txt', LLM]], JSON.stringify(file));
@@ -1083,14 +1097,47 @@ function sendersCensus() {
         flagged && sent.length === 0 && (await savedRuns(page)) === 0 && refusal.includes(`stop (${LLM})`) && refusal.includes('comma') && (await textOf(page, lpb('run-experiment'))) === 'Run Experiments',
         `a comma typed into the text of an option is flagged in its field, and the run is not sent - the option and its LLM are named (field flagged: ${flagged}; calls: ${sent.length}; said: ${clip(refusal || 'nothing')})`
       );
-      await type({ stop: 'x' });
+      // Texts of a string option the score code reads as something else: a
+      // blank at an end, a quote at an end, true/false in another case, a
+      // number with and without a point - in a field of type string and in
+      // one of no type whose default is a text (free).
+      const readOtherwise = [];
+      for (const [key, typed] of [['stop', ' a '], ['stop', 'say "hi"'], ['stop', "'q'"], ['stop', 'TRUE'], ['stop', '5'], ['my_text', '0.50'], ['free', 'false']]) {
+        await type({ stop: 'x', my_text: file.my_text.default, free: file.free.default });
+        await type({ [key]: typed });
+        const marked = await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids[key]);
+        await page.click(lpb('run-experiment'));
+        await waitUntil(async () => (await textOf(page, lpb('run-error'))) !== '', 'the run says why it was not sent', 15000).catch(() => {});
+        await atRest();
+        const said = await textOf(page, lpb('run-error'));
+        if (!(marked && sent.length === 0 && said.includes(`${key} (${LLM})`) && said.includes('as something else') && !said.includes('comma') && (await textOf(page, lpb('run-experiment'))) === 'Run Experiments')) {
+          readOtherwise.push(`${key} ${JSON.stringify(typed)}: field flagged ${marked}, calls ${sent.length}, said ${clip(said || 'nothing')}`);
+        }
+      }
+      step(
+        readOtherwise.length === 0 && (await savedRuns(page)) === 0,
+        `a text typed into the field of a string option that the score code reads as something else (" a ", 'say "hi"', "'q'", "TRUE", "5", "0.50", "false") is flagged in its field, and the run is not sent - the option and its LLM are named (not so: ${clip(readOtherwise.join('; ') || 'none')})`
+      );
+      // A comma and a text read otherwise at once: both are named.
+      await type({ stop: 'END,STOP', my_text: ' a ' });
+      await page.click(lpb('run-experiment'));
+      await waitUntil(async () => (await textOf(page, lpb('run-error'))).includes('my_text'), 'the run says why it was not sent', 15000).catch(() => {});
+      await atRest();
+      const both = await textOf(page, lpb('run-error'));
+      step(
+        sent.length === 0 && both.includes(`stop (${LLM})`) && both.includes('comma') && both.includes(`my_text (${LLM})`) && both.includes('as something else') && both.split(`stop (${LLM})`).length === 2,
+        `a comma in one option and a text read otherwise in another: the run is not sent and both are named, each once (calls: ${sent.length}; said: ${clip(both || 'nothing')})`
+      );
+      await type({ stop: 'x', my_text: file.my_text.default, free: file.free.default });
+      const cleared = await page.evaluate((all) => Object.values(all).filter((id) => document.getElementById(id)?.classList.contains('is-invalid')), ids);
+      step(cleared.length === 0, `the texts of the file typed back, no field is flagged (flagged: ${cleared.join(', ') || 'none'})`);
       // The run, sent as typed: the empty field of a string option left out.
       const want = `{${Object.entries(file)
         .filter(([, option]) => !(option.type === 'string' && option.default === ''))
         .map(([key, option]) => `${key}:${option.default}`)
         .join(',')}}`;
       const first = await runOnce();
-      step(first === want && !(await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids.stop)), `a run sends the text of each option as it stands - quotes, a backslash, braces, a blank at the end of a name, API_KEY inside a name and a text (sent: ${clip(JSON.stringify(first))}; expected: ${clip(JSON.stringify(want))})`);
+      step(first === want && !(await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids.stop)), `a run sends the text of each option as it stands - quotes inside a text, a backslash, braces, a blank inside a name, API_KEY inside a name and a text (sent: ${clip(JSON.stringify(first))}; expected: ${clip(JSON.stringify(want))})`);
       // Every field changed, the run loaded from memory.
       await type(changed);
       await page.click(`${lpb('pet-0')} .pet-run-load`);
@@ -1129,6 +1176,16 @@ function sendersCensus() {
       step(
         Boolean(upload) && fromTracker.length === 0 && third === want && pageErrors.length === 0,
         `saved and opened again, the run loaded holds each text as it was sent and sends what it sent (held otherwise: ${clip(fromTracker.join('; ') || 'none')}; sent: ${clip(JSON.stringify(third))}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+      // A number typed into a number field and true/false, in any case, into
+      // the text field of an option whose default is true are sent.
+      await type({ temperature: '0.7', switch_word: 'FALSE' });
+      const flaggedNow = await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids.switch_word);
+      const fourth = await runOnce();
+      const refusedNow = await textOf(page, lpb('run-error'));
+      step(
+        !flaggedNow && typeof fourth === 'string' && fourth.includes('temperature:0.7') && fourth.includes('switch_word:FALSE') && refusedNow === '',
+        `a number typed into a number field and FALSE into the text field of an option whose default is true are sent (field flagged: ${flaggedNow}; sent: ${clip(JSON.stringify(fourth))}; said: ${clip(refusedNow || 'nothing')})`
       );
     });
   }

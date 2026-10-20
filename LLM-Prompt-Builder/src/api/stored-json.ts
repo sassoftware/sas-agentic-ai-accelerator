@@ -435,6 +435,18 @@ export const isReadAsWritten = (text: string): boolean =>
   !(text.includes('.') ? FLOAT_TEXT : INT_TEXT).test(text);
 
 /**
+ * Whether the score code reads a text typed into the text field of an option
+ * as something else than that text, for an option whose default is a text (a
+ * string option): by isReadAsWritten, the rule isModelOptions holds that
+ * default to - " a ", 'say "hi"', "TRUE" and "5" are such texts. A run is not
+ * sent with one, as with a comma. The text field of an option whose default
+ * is a number or true/false is not held to it: a number or true/false typed
+ * there is read as what its default is read as.
+ */
+export const isTypedTextReadOtherwise = (option: { default?: unknown } | undefined, text: string): boolean =>
+  typeof option?.default === 'string' && !isReadAsWritten(text);
+
+/**
  * Whether a run sends the number as a text the score code reads as a text
  * (sent_number of generator.py): the page writes a number as String() does,
  * in exponent notation below 0.000001 and from 10^21 on, and one of one

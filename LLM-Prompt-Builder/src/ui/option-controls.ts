@@ -18,7 +18,7 @@
  * The page draws only entries isModelOptions takes.
  */
 
-import { isNumberOption } from '../api/stored-json';
+import { isNumberOption, isTypedTextReadOtherwise } from '../api/stored-json';
 
 export interface TypedOptionMeta {
   default: unknown;
@@ -71,12 +71,14 @@ export function createTypedOptionControl(key: string, meta: TypedOptionMeta, con
     textInput.value = String(meta?.default ?? '');
     // A run sends the options as {name:value,name:value}, which the score
     // code splits at each comma: a text with a comma would be read up to
-    // the comma, and a run is not sent with one. The field says so while
-    // it is typed.
+    // the comma, and a run is not sent with one. Nor is it sent with a text
+    // of a string option the score code reads as something else - blanks or
+    // quotes at its ends, true or false, a number (isTypedTextReadOtherwise).
+    // The field says so while it is typed.
     textInput.addEventListener('input', () => {
-      const comma = textInput.value.includes(',');
-      textInput.classList.toggle('is-invalid', comma);
-      textInput.setAttribute('aria-invalid', String(comma));
+      const refused = textInput.value.includes(',') || isTypedTextReadOtherwise(meta, textInput.value);
+      textInput.classList.toggle('is-invalid', refused);
+      textInput.setAttribute('aria-invalid', String(refused));
     });
     return textInput;
   }

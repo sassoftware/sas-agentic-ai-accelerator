@@ -14,6 +14,7 @@ import {
   isDecisionModelOptions,
   isNumberOption,
   isReservedModelName,
+  isTypedTextReadOtherwise,
   NUMBER_FIELD_OPTIONS,
   optionControlId,
   optionsFromText,
@@ -602,8 +603,10 @@ function openModelManagerLink(
  * The options of a saved run, from the options string Save Experiments stored
  * with it (`{key:value,key:value}`, see optionsFromText): each option with the
  * value it was sent with. Neither a name nor a value is trimmed or taken out
- * of quotes, so an option named ` padded` or a text `say "hi"` is loaded as it
- * was sent.
+ * of quotes, so a text `say "hi" now`, `it's`, `C:\temp` or `{x}` is loaded
+ * as it was sent - and so is a tracker saved before a name with a blank or a
+ * quote at its ends, or such a text, was refused (isModelOptions,
+ * isTypedTextReadOtherwise).
  */
 function parseScrOptionsString(optionsStr: string | null | undefined): Record<string, unknown> {
   return optionsFromText(optionsStr);
@@ -2978,6 +2981,9 @@ export async function buildPromptBuilder(
       );
       if (promptBuilderRunExperimentErrorText) promptBuilderRunExperimentErrorText.innerText = '';
       const promptBuilderSelectedModels: { currentlySelectedModel: { name: string; options: Record<string, unknown> } }[] = [];
+      // The texts typed into the field of a string option that the score
+      // code would read as something else (isTypedTextReadOtherwise).
+      const optionsReadOtherwise: string[] = [];
       promptBuilderAvailableLLMs.forEach((promptBuilderCurrentLLM, index) => {
         const promptBuilderCheckbox = document.getElementById(`model${index}`) as HTMLInputElement;
         if (promptBuilderCheckbox.checked) {
@@ -3001,6 +3007,9 @@ export async function buildPromptBuilder(
                 // code fall back to container env vars (AZURE_OPENAI_RESOURCE etc.)
                 if (optionMeta?.type === 'string' && control.value === '') return;
                 currentlySelectedModel.options[`${key}`] = control.value;
+                if (optionMeta?.type === 'string' && isTypedTextReadOtherwise(optionMeta, control.value)) {
+                  optionsReadOtherwise.push(`${key} (${promptBuilderCurrentLLM.name})`);
+                }
               } else if (isNumberOption(optionMeta)) {
                 const numeric = parseFloat(control.value);
                 // An emptied number field is sent empty
@@ -3008,6 +3017,9 @@ export async function buildPromptBuilder(
               } else {
                 // An option of no such type whose default is no number has a text field
                 currentlySelectedModel.options[`${key}`] = control.value;
+                if (isTypedTextReadOtherwise(optionMeta, control.value)) {
+                  optionsReadOtherwise.push(`${key} (${promptBuilderCurrentLLM.name})`);
+                }
               }
             } else if (key === 'API_KEY') {
               const apiKeys = promptBuilderObject?.API_KEYS as Record<string, string> | undefined;
@@ -3031,19 +3043,29 @@ export async function buildPromptBuilder(
       // A run sends the options of a model as one text, {name:value,...},
       // which the score code splits at each comma: a text with a comma would
       // be read up to the comma, and saved, loaded up to it as well. The
-      // defaults of options.json hold none (isModelOptions); a comma typed
-      // into the field of an option stops the run here, with the option named.
+      // score code also takes blanks and quotes off the ends of a value and
+      // reads true/false and a number as such: a text typed into the field
+      // of a string option it would read as something else is not sent
+      // either. The defaults of options.json hold neither (isModelOptions);
+      // a typed one stops the run here, with the option named.
       const optionsWithComma = promptBuilderSelectedModels.flatMap(({ currentlySelectedModel }) =>
         Object.entries(currentlySelectedModel.options)
           .filter(([key, value]) => key !== 'API_KEY' && typeof value === 'string' && value.includes(','))
           .map(([key]) => `${key} (${currentlySelectedModel.name})`)
       );
-      if (optionsWithComma.length > 0) {
+      const readOtherwise = optionsReadOtherwise.filter((option) => !optionsWithComma.includes(option));
+      if (optionsWithComma.length > 0 || readOtherwise.length > 0) {
         if (promptBuilderRunExperimentErrorText) {
-          promptBuilderRunExperimentErrorText.innerText = `${promptBuilderInterfaceText?.promptBuilderRunOptionComma}`.replace(
-            '{options}',
-            optionsWithComma.join(', ')
-          );
+          promptBuilderRunExperimentErrorText.innerText = [
+            optionsWithComma.length > 0
+              ? `${promptBuilderInterfaceText?.promptBuilderRunOptionComma}`.replace('{options}', optionsWithComma.join(', '))
+              : '',
+            readOtherwise.length > 0
+              ? `${promptBuilderInterfaceText?.promptBuilderRunOptionReadOtherwise}`.replace('{options}', readOtherwise.join(', '))
+              : '',
+          ]
+            .filter((line) => line !== '')
+            .join('\n');
         }
         promptBuilderRunExperimentTargetButton.disabled = false;
         promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
