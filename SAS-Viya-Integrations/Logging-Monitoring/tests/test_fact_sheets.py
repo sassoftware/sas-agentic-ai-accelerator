@@ -182,7 +182,7 @@ def test_the_macro_and_its_flag_are_gone_at_the_end():
 
     assert "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;" in tail
     in_order(tail, "cas mySess terminate;", "%sysmacdelete _lfs_read;", "%sysmacdelete _lfs_swap;", "options &_lfs_syntaxcheck.;",
-             "%symdel _lfs_ok _lfs_syntaxcheck / nowarn;", "%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
+             "%symdel _lfs_ok _lfs_syntaxcheck / nowarn;", "%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session / nowarn;")
     # the header says what the program does with a table that exists, and who includes the file
     head = text.split("*/")[0]
     assert "A table that exists is only replaced by a sheet that was read" in head

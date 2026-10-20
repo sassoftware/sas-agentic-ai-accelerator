@@ -64,4 +64,4 @@ proc ds2;
 run; quit;
 
 * Clean up;
-%symdel viyaHost llmEndpoint;
+%symdel viyaHost llmEndpoint / nowarn;

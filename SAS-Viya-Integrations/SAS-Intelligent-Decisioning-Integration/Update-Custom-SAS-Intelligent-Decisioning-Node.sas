@@ -110,4 +110,4 @@ filename _dntIn clear;
 
 * Clean up;
 %sysmacdelete _retrieve_etag;
-%symdel _dntviyaHost _dntID _resource_etag;
+%symdel _dntviyaHost _dntID _resource_etag / nowarn;

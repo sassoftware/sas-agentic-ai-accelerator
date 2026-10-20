@@ -277,4 +277,4 @@ run; quit;
 %sysmacdelete _lfs_ask_folder;
 options &_lfs_syntaxcheck.;
 %symdel _lfs_ok _lfs_syntaxcheck / nowarn;
-%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;
+%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session / nowarn;

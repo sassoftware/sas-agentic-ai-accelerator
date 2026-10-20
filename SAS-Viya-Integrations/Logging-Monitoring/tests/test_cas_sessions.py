@@ -127,6 +127,6 @@ def test_fact_sheets_are_loaded_in_the_session_that_is_connected():
     assert 'proc casUtil inCASLib="&_lfs_caslib." outCASLib="&_lfs_caslib.";' in text
     assert text.count("proc casUtil") == 1 and text.count("table.promote ") == 1 and text.count("table.save ") == 1
     assert text.count("%_lfs_swap(") == 3 and "cas mySess;" not in text[text.index("%macro _lfs_read("):]
-    assert text.rstrip().endswith("%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session;")
+    assert text.rstrip().endswith("%symdel _lfs_path _lfs_caslib _lfs_clean_cas_session / nowarn;")
     assert "A CAS session will be created for you" not in text
     assert "A CAS session is started for you when neither the session the option\n      SESSREF names nor a session mySess is connected" in text

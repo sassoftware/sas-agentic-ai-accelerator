@@ -1721,5 +1721,5 @@ run; quit;
 %if &_lnk_row_count. LT 0 or &_lnk_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_unchanged _lnk_refused _lnk_failed _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved;
-%symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_query_window _lnk_promote_table _lnk_save_table;
+%symdel _lnk_clean_cas_session _casSessionUUID _lnk_row_count _lnk_unchanged _lnk_refused _lnk_failed _lnk_ready _lnk_log_exists _lnk_catalog_exists _lnk_runs_exists _lnk_log_scope _lnk_log_saved / nowarn;
+%symdel _lnk_log_caslib _lnk_log_table _lnk_catalog_caslib _lnk_catalog_table _lnk_runs_caslib _lnk_runs_table _lnk_redo_all _lnk_min_literal _lnk_utc_offset _lnk_query_window _lnk_promote_table _lnk_save_table / nowarn;

@@ -166,6 +166,6 @@ data _null_;
 run;
 
 * Final clean up;
-%symdel _sll_llm_repository _sll_llm_project _sll_viyaHost _sll_repositoryID _sll_projectID;
+%symdel _sll_llm_repository _sll_llm_project _sll_viyaHost _sll_repositoryID _sll_projectID / nowarn;
 %sysmacdelete _sll_model_pagination;
 %sysmacdelete _sll_model_options_file;

@@ -262,7 +262,7 @@ def test_the_program_that_names_its_session_names_it_in_every_cas_statement():
     assert re.findall(r"proc casutil([^;]*);", code) == [" session=_optbuild"] * 2
     assert "proc cas;" not in code.lower()
     # the macro variable of the check is deleted with the end of the program
-    assert code.rstrip().endswith("%symdel _opt_clean_cas_session;")
+    assert code.rstrip().endswith("%symdel _opt_clean_cas_session / nowarn;")
 
 
 def test_every_program_sets_the_option_only_to_its_own_session_and_only_where_the_option_names_none_that_is_connected():

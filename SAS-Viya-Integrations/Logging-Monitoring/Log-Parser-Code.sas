@@ -2168,5 +2168,5 @@ run; quit;
 %if &_log_row_count. LT 0 or &_log_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_target_loaded _log_cas_refused _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr _log_table_mode _log_target_rows _log_row_repeats _log_target_has_id _log_compare_syserr _log_target_has_failed _log_kept_rows _log_took_rows _log_append_nothing;
-%symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table;
+%symdel _log_ready _log_failed _log_clean_cas_session _casSessionUUID _log_row_count _log_target_scope _log_target_unloaded _log_target_loaded _log_cas_refused _log_fixed_rename _log_fixed_assign _log_fixed_drop _log_append_syserr _log_table_mode _log_target_rows _log_row_repeats _log_target_has_id _log_compare_syserr _log_target_has_failed _log_kept_rows _log_took_rows _log_append_nothing / nowarn;
+%symdel _log_path _log_target_table_engine _log_target_table_lib _log_target_table_name _log_append_table _log_promote_table _log_save_table / nowarn;

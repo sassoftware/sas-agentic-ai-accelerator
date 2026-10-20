@@ -144,7 +144,7 @@ run; quit;
     filename _spe_cpo clear;
 
     * Final clean up;
-    %symdel _spe_repo_folder_id;
+    %symdel _spe_repo_folder_id / nowarn;
 %end;
 
 %if &_spe_nvar. LE 2 AND &_spe_llm_create_project. EQ 0 %then %do;
@@ -164,7 +164,7 @@ run; quit;
 * Clean up;
 libname _spe_pID clear;
 filename _spe_pID clear;
-%symdel _spe_nvar;
+%symdel _spe_nvar / nowarn;
 
 filename _spe_mID temp;
 
@@ -248,7 +248,7 @@ run; quit;
 * Clean up;
 libname _spe_mID clear;
 filename _spe_mID clear;
-%symdel _spe_nvar;
+%symdel _spe_nvar / nowarn;
 
 * Check if a Prompt Experiment Tracker already exists;
 filename _spe_mci temp;
@@ -387,7 +387,7 @@ with Session(server, token=token) as s:
     run; quit;
 
     * Clean up;
-    %symdel _spe_pet_id _spe_mri;
+    %symdel _spe_pet_id _spe_mri / nowarn;
     libname _spe_mcc clear;
     filename _spe_mcc clear;
     proc datasets lib=work noList;
@@ -402,7 +402,7 @@ with Session(server, token=token) as s:
 * Clean up;
 libname _spe_mci clear;
 filename _spe_mci clear;
-%symdel _spe_nvar;
+%symdel _spe_nvar / nowarn;
 
 data _null_;
     putLog "NOTE: Find the mode using this link &_spe_viyaHost./SASModelManager/models/&_spe_model_id./files";
@@ -410,4 +410,4 @@ data _null_;
 run;
 
 * Final clean up;
-%symdel _spe_llm_repository _spe_llm_project _spe_llm_prompt _spe_llm_create_project _spe_llm_create_prompt _spe_viyaHost _spe_repo_id _spe_project_id _spe_model_id;
+%symdel _spe_llm_repository _spe_llm_project _spe_llm_prompt _spe_llm_create_project _spe_llm_create_prompt _spe_viyaHost _spe_repo_id _spe_project_id _spe_model_id / nowarn;

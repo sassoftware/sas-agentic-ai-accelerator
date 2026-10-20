@@ -237,7 +237,9 @@ def _about():
 def test_the_step_says_it_in_its_about_tab_and_its_changelog():
     texts = _about()
     # content-23: 2.11 stands in front of it, and the About tab names an action CAS did not run as well; content-24: 2.12
-    assert texts["textChangelog"].startswith("* Version: 2.12 (15OCT2026)\n")
+    # 2.13 (2026-10-20: the option NOWARN of %symdel) stands in front of 2.12
+    assert texts["textChangelog"].startswith("* Version: 2.13 (20OCT2026)\n")
+    assert "\n* Version: 2.12 (15OCT2026)\n" in texts["textChangelog"]
     assert "\n* Version: 2.11 (15OCT2026)\n" in texts["textChangelog"]
     entry = texts["textChangelog"][texts["textChangelog"].index("* Version: 2.10 (14OCT2026)\n"):texts["textChangelog"].index("* Version: 2.9 (")]
     assert "CAS refuses" in entry and "writes nothing" in entry

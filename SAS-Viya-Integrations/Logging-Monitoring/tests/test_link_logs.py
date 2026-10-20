@@ -118,7 +118,7 @@ def test_every_macro_variable_of_the_program_is_removed_at_its_end():
     settings = set(re.findall(r"^%_lnk_default\((_lnk_\w+),", program, flags=re.MULTILINE))
     # the two names of the macro that sets a default are its own, and gone with it
     assigned = (set(re.findall(r"%let (_lnk_\w+)", program)) | settings | {"_casSessionUUID"}) - {"_lnk_name", "_lnk_value"}
-    removed = set(" ".join(re.findall(r"^%symdel (.*);$", program, flags=re.MULTILINE)).split())
+    removed = set(" ".join(re.findall(r"^%symdel (.*?)(?: / nowarn)?;$", program, flags=re.MULTILINE)).split())
     assert len(settings) == 12 and assigned == removed
     assert "%sysmacdelete _lnk_default;" in program
 

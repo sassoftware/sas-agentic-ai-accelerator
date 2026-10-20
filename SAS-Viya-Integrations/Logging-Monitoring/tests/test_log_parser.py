@@ -1158,9 +1158,9 @@ def test_about_tab_names_every_column_and_what_the_program_does_with_it(monkeypa
 def test_about_tab_is_about_the_program_and_the_changelog_starts_with_this_version():
     texts = _about_tab()
 
-    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.12 (")
+    assert json.loads(step_definition()["ui"])["pages"][1]["children"][-1]["children"][0]["text"].startswith("* Version: 2.13 (")
     changelog = texts["textChangelog"]
-    assert (changelog.index("Version: 2.12") < changelog.index("Version: 2.11") < changelog.index("Version: 2.10") < changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
+    assert (changelog.index("Version: 2.13") < changelog.index("Version: 2.12") < changelog.index("Version: 2.11") < changelog.index("Version: 2.10") < changelog.index("Version: 2.9") < changelog.index("Version: 2.8") < changelog.index("Version: 2.7") < changelog.index("Version: 2.6") < changelog.index("Version: 2.5") < changelog.index("Version: 2.4") < changelog.index("Version: 2.3") < changelog.index("Version: 2.2")
             < changelog.index("Version: 2.1 (") < changelog.index("Version: 2.0"))
     # What a release has not run yet is said in the changelog of the release, not in the step
     for name, text in texts.items():
@@ -1237,7 +1237,7 @@ def test_readme_says_of_the_line_of_the_script_what_the_parser_does():
     assert "so is what stands in front of the first line of the script in a file that is appended to" in readme
     assert "so a NOTE counts the request lines that were read that way" in readme
     assert "Every request whose `failed` is missing is counted once" in readme
-    assert "versions 2.12 and 2.7 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.12 (")
+    assert "versions 2.13 and 2.7 of the two steps" in readme and _about_tab()["textChangelog"].startswith("* Version: 2.13 (")
     assert "not run in sas" not in readme.lower()
 
 

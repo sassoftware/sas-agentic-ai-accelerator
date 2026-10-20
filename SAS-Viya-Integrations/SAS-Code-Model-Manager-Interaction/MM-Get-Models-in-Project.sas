@@ -82,5 +82,5 @@
 %_mgm_model_pagination();
 
 * Clean up;
-%symdel _mgm_project_id _mgm_viyaHost;
+%symdel _mgm_project_id _mgm_viyaHost / nowarn;
 %sysmacdelete _mgm_model_pagination;

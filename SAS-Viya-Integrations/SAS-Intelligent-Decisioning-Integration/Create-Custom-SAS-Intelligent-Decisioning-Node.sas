@@ -152,4 +152,4 @@ quit;
 ************************************************************************/
 
 * Clean up;
-%symdel _dntviyaHost _dntID _dntNodeName _dntHasProperties _dntHasInputs _dntHasOutputs _dntInputDatagridMappable _dntOutputDatagridMappable _dntInputDecisionTermMappable _dntOutputDecisionTermMappable _dntIndependentMappings _dntThemeId _dntType;
+%symdel _dntviyaHost _dntID _dntNodeName _dntHasProperties _dntHasInputs _dntHasOutputs _dntInputDatagridMappable _dntOutputDatagridMappable _dntInputDecisionTermMappable _dntOutputDecisionTermMappable _dntIndependentMappings _dntThemeId _dntType / nowarn;

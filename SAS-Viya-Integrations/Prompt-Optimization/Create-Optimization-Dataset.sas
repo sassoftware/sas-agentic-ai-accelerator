@@ -83,4 +83,4 @@ run; quit;
 %if &_opt_clean_cas_session. %then %do;
     cas _optbuild terminate;
 %end;
-%symdel _opt_clean_cas_session;
+%symdel _opt_clean_cas_session / nowarn;
