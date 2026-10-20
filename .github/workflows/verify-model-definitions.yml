@@ -175,8 +175,9 @@ jobs:
       - name: RAG runtime test suite
         # rag_core is pure Python plus pandas; the store adapters skip their
         # tests when the database drivers are absent. pypdfium2 is installed
-        # because one test distinguishes a PDF that FAILS extraction from one
-        # that is SKIPPED for want of an extractor.
+        # so that the test of the PDF text layer runs rather than skips; the
+        # tests of a PDF that FAILS extraction and of one that is SKIPPED for
+        # want of an extractor give the registry what they need themselves.
         run: |
           pip install pandas requests pypdfium2 pytest
           python -m pytest SAS-Viya-Integrations/RAG/tests -q

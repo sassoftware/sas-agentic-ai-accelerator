@@ -3168,7 +3168,9 @@ def test_lines_in_front_of_the_first_line_of_the_script_are_read_by_their_time(m
     assert frame.iloc[:3].equals(head)
     # behind the first line of the script the parts end at its lines: request 6 is an hour older than request 5 and has its values
     assert list(frame["user_prompt"])[3:] == ["Question number 4?", "Question number 5?", "Question number 6?"]
-    assert list(frame["response"])[3:] == ["Answer number 4 of the model.", None, "Answer number 6 of the model."]
+    # request 5 has no response: None in pandas 2 (SAS Viya), NaN in pandas 3, where a column of texts is str
+    responses = list(frame["response"])[3:]
+    assert responses[0::2] == ["Answer number 4 of the model.", "Answer number 6 of the model."] and missing(responses[1])
     assert _end_note(appended) == 2
 
 

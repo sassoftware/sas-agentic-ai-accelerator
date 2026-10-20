@@ -202,17 +202,58 @@ def test_content_reader_resolves_by_path_without_a_crawl():
     assert source.read("/Docs/Old/old.txt") == b"legacy note"
 
 
+class _BrokenPdfExtractor:
+    """A PDF extractor that needs no package and cannot read the stub's bytes.
+
+    The built-in pdf-text extractor needs pypdfium2, and without it the
+    registry has no extractor for .pdf - which makes the document SKIPPED,
+    not failed (rag_core/steps.py). This one keeps the test about a PDF whose
+    extraction breaks the same whether pypdfium2 is installed or not.
+    """
+
+    name = "pdf-broken"
+    formats = {".pdf"}
+    requires: list = []
+
+    def extract(self, data, source_uri, **params):
+        raise ValueError("not a PDF")
+
+
+def _registry_without_a_pdf_extractor(monkeypatch):
+    import rag_core.extractors as extractors
+
+    monkeypatch.setattr(extractors, "BUILTINS",
+                        [e for e in extractors.BUILTINS if ".pdf" not in e.formats])
+    return extractors.ExtractorRegistry()
+
+
 def test_list_then_extract_over_sas_content():
     source = content_source()
     inventory = run_list(source, [], "run-1", "v1", "", log=lambda *_: None)
     assert {row["status"] for row in inventory} == {"new"}
-    elements, updated = run_extract(inventory, ExtractorRegistry(),
+    registry = ExtractorRegistry()
+    registry.register(_BrokenPdfExtractor())
+    elements, updated = run_extract(inventory, registry,
                                     source=source, log=lambda *_: None)
     by_uri = {row["source_uri"]: row for row in updated}
     assert by_uri["/Docs/policy.md"]["status"] == "new"
     assert any("Thirty days" in el["text"] for el in elements)
     # guide.pdf has no stub bytes -> per-document failure, never an exception
     assert by_uri["/Docs/guide.pdf"]["status"] == "failed"
+    assert "not a PDF" in by_uri["/Docs/guide.pdf"]["error_text"]
+
+
+def test_a_pdf_with_no_pdf_extractor_is_skipped_not_failed(monkeypatch):
+    """pypdfium2 is not installed: nothing can read the format, which is not a
+    fault of the run, and the chunks the document has are left alone."""
+    source = content_source()
+    inventory = run_list(source, [], "run-1", "v1", "", log=lambda *_: None)
+    _elements, updated = run_extract(inventory, _registry_without_a_pdf_extractor(monkeypatch),
+                                     source=source, log=lambda *_: None)
+    by_uri = {row["source_uri"]: row for row in updated}
+    assert by_uri["/Docs/policy.md"]["status"] == "new"
+    assert by_uri["/Docs/guide.pdf"]["status"] == "skipped"
+    assert by_uri["/Docs/guide.pdf"]["error_text"] == "no extractor for .pdf files"
 
 
 def test_second_run_sees_no_change():

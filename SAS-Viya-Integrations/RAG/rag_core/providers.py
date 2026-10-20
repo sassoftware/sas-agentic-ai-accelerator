@@ -32,6 +32,10 @@ static, so they are regenerated after either:
 
     python -m rag_core.providers --from ../../Embedding-Definitions/embedding_fact_sheet.csv
     python -m rag_core.providers --llm-from ../../LLM-Definitions/llm_fact_sheet.csv
+
+The prices of rag_core/pricing.py are a copy of the same sheets and are
+regenerated with them. tests/test_providers.py and tests/test_pricing.py fail
+while a map differs from its sheet.
 """
 from __future__ import annotations
 
@@ -57,7 +61,10 @@ API_KEY_ENTRIES = {
 #: LLM model_id -> credential-domain entry name (deployment_type API only)
 LLM_KEY_ENTRIES = {
     "claude_haiku_4_5_bedrock": "AWSBedrock",
+    "claude_haiku_5_5": "Anthropic",
+    "claude_opus_5_5": "Anthropic",
     "claude_sonnet_4_5": "Anthropic",
+    "claude_sonnet_5_5": "Anthropic",
     "free_models_router": "OpenRouter",
     "gemini_flash_25": "Google",
     "google_gemma_4_31b_free": "OpenRouter",
@@ -68,6 +75,8 @@ LLM_KEY_ENTRIES = {
     "gpt_4o_mini_az_2024_07_18": "AzureOpenAI",
     "gpt_56_sol": "OpenAI",
     "gpt_5_mini": "OpenAI",
+    "gpt_61_sol": "OpenAI",
+    "gpt_6_luna": "OpenAI",
     "ling_3_0_flash_free": "OpenRouter",
     "llama_33_70b": "OpenRouter",
     "mistral_small_32": "Mistral",

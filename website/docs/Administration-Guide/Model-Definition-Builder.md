@@ -341,6 +341,26 @@ preserves any hand-maintained rows that have no definition folder unless you pas
 `--prune`. This is the quickest way to bring the fact sheets in line after a bulk
 migration instead of syncing each model one by one.
 
+RAG ingestion does not read the sheets: `rag_core` holds a copy of two of their
+columns, the credential-domain entry of each hosted model
+(`rag_core/providers.py`) and the prices of the cost line of the run log
+(`rag_core/pricing.py`). After a definition is added, its auth mode switched or
+a price changed, regenerate both from the sheets and replace the maps in the
+modules. Until then a new hosted model is sent no key - an enrichment with it
+stops before the first call and names `rag_core/providers.py`, an embedding
+model fails at its first call - and the run log says `cost unknown` for it:
+
+```bash
+cd SAS-Viya-Integrations/RAG
+python -m rag_core.providers --from ../../Embedding-Definitions/embedding_fact_sheet.csv
+python -m rag_core.providers --llm-from ../../LLM-Definitions/llm_fact_sheet.csv
+python -m rag_core.pricing --from ../../Embedding-Definitions/embedding_fact_sheet.csv
+python -m rag_core.pricing --llm-from ../../LLM-Definitions/llm_fact_sheet.csv
+```
+
+The RAG test suite (`SAS-Viya-Integrations/RAG/tests`) fails while a map
+differs from its sheet.
+
 To make the sheets available to the SAS Visual Analytics monitoring report,
 `mdb load-facts` uploads them to CAS — the Python equivalent of
 `Load-Fact-Sheets.sas`. Each sheet is loaded with **global scope** (promoted, so
