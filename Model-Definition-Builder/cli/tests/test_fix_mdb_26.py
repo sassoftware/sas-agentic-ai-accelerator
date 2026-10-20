@@ -123,11 +123,11 @@ DRIVEN = {
     "generate": (["generate", "gpt_5_mini"], [(cli, "render_assets")]),
     "validate": (["validate", "gpt_5_mini"], [(validator, "render_assets")]),
     "ship": (["ship", "gpt_5_mini"], [(validator, "render_assets")]),
-    "import_": (["import", "gpt_5_mini"], [(cli, "import_folder")]),
-    "import_ (render)": (["import", "gpt_5_mini"], [(cli, "render_assets")]),
+    "_import_definition (import)": (["import", "gpt_5_mini"], [(cli, "import_folder")]),
+    "_import_definition (render)": (["import", "gpt_5_mini"], [(cli, "render_assets")]),
+    "_import_definition (pull --import)": (["pull", "gpt_5_mini", "--import", "--force"], [(cli, "import_folder")]),
     "register": (["register", "gpt_5_mini"], [(cli, "_render_options_json")]),
     "retire": (["retire", "gpt_5_mini"], [(cli, "render_assets")]),
-    "pull": (["pull", "gpt_5_mini", "--import", "--force"], [(cli, "import_folder")]),
     "provider_check": (["provider", "check", "openai"], [(cli, "render_assets")]),
 }
 
@@ -140,7 +140,7 @@ def test_every_command_that_reaches_the_rule_is_driven():
 def test_a_refusal_of_the_rule_is_printed_on_one_line(case, tmp_path, monkeypatch, repo_root, no_viya):
     arguments, refusing = DRIVEN[case]
     folder = _relocated(tmp_path, monkeypatch, repo_root, "gpt_5_mini")
-    if case.startswith("import_"):
+    if arguments[0] == "import":
         (folder / MANIFEST_FILENAME).unlink()
     for module, name in refusing:
         monkeypatch.setattr(module, name, _refusing)
@@ -249,11 +249,10 @@ def test_import_refuses_an_options_json_it_cannot_read_with_one_line(case, tmp_p
     assert _files(folder) == before
 
 
-#: What import reads otherwise than as a refusal - unchanged by the rule.
+#: What import reads otherwise than as a refusal - unchanged by the rule. An
+#: API_KEY whose default is empty or null, or that is null, was taken as no
+#: key; it is refused now (test_fix_mdb_26_lows.py).
 IMPORT_TAKEN = {
-    "an API_KEY default that is empty: no key": (_set_default("API_KEY", ""), None),
-    "an API_KEY default that is null: no key": (_set_default("API_KEY", None), None),
-    "an API_KEY that is null: no key": (_set("API_KEY", None), None),
     "an option without a default: 1": (lambda options: {**options, "seed": {"range": "any"}}, 1),
     "a legacy Azure option of any default: left out": (_set("azure_api_version", {"default": None}), None),
 }

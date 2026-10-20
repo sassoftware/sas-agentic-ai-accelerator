@@ -519,12 +519,31 @@ def test_no_line_with_markup_on_prints_an_exception_as_markup():
     printed = list(_prints_with_markup_on())
     bare = [(line, text) for line, text in printed if text in ("exc", "result.detail")]
     assert bare == []
-    # _plain(one_line(str(exc))): the text of an exception that can be an answer, on one line (test_fix_mdb_24)
+    # _plain(one_line(str(exc))): the text of an exception that can be an answer, on one line (test_fix_mdb_24);
+    # or the same text in a line of _line, which prints with markup off and without breaking it (fix-mdb-26 lows)
     assert sum(1 for _, text in printed
-               if text in ("_plain(exc)", "_plain(one_line(str(exc)))", "_plain(result.detail)")) >= 40
+               if text in ("_plain(exc)", "_plain(one_line(str(exc)))", "_plain(result.detail)")) \
+        + len(_lines_of_an_exception()) >= 40
     out = io.StringIO()
     text = "HTTP 403 not [/red] allowed for [/folders/folders/f1] - see [bold]the log[/bold] C:\\"
     Console(file=out, width=1000, force_terminal=False).print(f"[red]{cli._plain(RuntimeError(text))}[/red]")
+    assert out.getvalue() == text + "\n"
+
+
+def _lines_of_an_exception() -> list:
+    """Every `_line(...)` of cli.py that prints the text of an exception, one_line(str(exc))."""
+    import ast
+    tree = ast.parse((REPOSITORY / "Model-Definition-Builder/cli/src/mdb/cli.py").read_text(encoding="utf-8"))
+    return [node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_line"
+            and "one_line(str(exc))" in ast.unparse(node.args[0])]
+
+
+def test_line_prints_with_markup_off_and_without_breaking_the_line(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "console", cli._Console(file=out, width=40, force_terminal=False, emoji=False))
+    text = "HTTP 403 not [/red] allowed for [/folders/folders/f1] - see [bold]the log[/bold] C:\\"
+    cli._line(text, "red")
     assert out.getvalue() == text + "\n"
 
 

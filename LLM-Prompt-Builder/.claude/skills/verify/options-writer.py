@@ -111,12 +111,15 @@ def base_for(key):
 
 # Values of each kind a field of OptionSpec takes, by the kinds of its
 # annotation. A kind without values here stops the script: the shapes follow
-# the code.
+# the code. Among them the values the score code would read otherwise than
+# options.json says (round 26): a text with a comma, with blanks or quotes at
+# its ends, one read as a number or as true, and a number the page sends as
+# 1e-7 or 1e+21 - mdb refuses each.
 VALUES_OF_KIND = {
-    float: [0.5, math.nan, math.inf],
+    float: [0.5, math.nan, math.inf, 1e-07, 1e21],
     int: [3],
     bool: [True, False],
-    str: ['', 'low', '2', 'a,b'],
+    str: ['', 'low', '2', 'a,b', ' a ', '"a"', 'TRUE'],
     type(None): [None],
 }
 
@@ -143,7 +146,7 @@ def values_of(name, annotation):
         elif kind == 'list':
             if of is not str:
                 raise SystemExit(f'OptionSpec.{name}: a list of {of}, which this script has no values for')
-            found.extend([[], ['low', 'high'], ['high', 'low', 'max', 'min', 'mid', 'off'], ['low', 'a,b']])
+            found.extend([[], ['low', 'high'], ['high', 'low', 'max', 'min', 'mid', 'off'], ['low', 'a,b'], [' low', 'high'], ['True', 'False']])
         elif of in VALUES_OF_KIND:
             found.extend(VALUES_OF_KIND[of])
         else:

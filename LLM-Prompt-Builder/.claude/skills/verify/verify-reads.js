@@ -537,6 +537,17 @@ const OPTION_RULES = (numberFields) => {
     const kind = type ? 'a string option' : 'an option of no type';
     for (const value of [0, 0.5, 'x', '', 'a:b', true, false]) add(`${kind} whose default is a text, a number or a boolean`, 'my_option', typed({ default: value }), true);
     for (const value of ['a,b', ',']) add(`${kind} whose default is a text with a comma, which a run cannot send`, 'my_option', typed({ default: value }), false);
+    // Round 26 lows: what the score code reads otherwise - the blanks and then
+    // the quotes off the ends, true and false in any case, what int() and
+    // float() read, a number the page writes as 1e-7 or 1e+21.
+    for (const value of [' a ', 'a ', '\ta', 'a\n', '\x1ca', 'a\x85', '　a', '"a"', "'a'", '"a', "a'", 'TRUE', 'True', 'true', 'False', 'fAlSe', '5', '+5', '05', '1_000', '١٢', '0.5', '5.', '.5', '1_0.5', '1.e5', '1.5e-7'])
+      add(`${kind} whose default is a text the score code reads otherwise`, 'my_option', typed({ default: value }), false);
+    for (const value of ['a b', 'say "hi" now', "it's", '﻿a', 'truth', '1e5', '1E5', 'nan', 'inf', 'Infinity', 'nan.', '1.2.3', 'v1.2', '2024-10-21', '1__0', '{x}'])
+      add(`${kind} whose default is a text the score code reads as written`, 'my_option', typed({ default: value }), true);
+    if (!type) {
+      for (const value of [1e-7, -1e-7, 5e-324, 1e21, 2e22]) add(`${kind} whose default is a number the page sends as 1e-7 or 1e+21, read as a text`, 'my_option', { default: value }, false);
+      for (const value of [1.5e-7, 1.5e21, 1e20, 1e-6, 0, -0.5, 4000]) add(`${kind} whose default is a number the page sends as a number`, 'my_option', { default: value }, true);
+    }
     for (const value of [null, ['x'], { x: 1 }]) add(`${kind} whose default is ${value === null ? 'null' : Array.isArray(value) ? 'a list' : 'an object'}`, 'my_option', typed({ default: value }), false);
     add(`${kind} without its default`, 'my_option', typed({ label: 'x' }), false);
     add(`${kind} with values that are no texts, which are not read`, 'my_option', typed({ default: 'x', values: [1, 2] }), true);
@@ -554,7 +565,12 @@ const OPTION_RULES = (numberFields) => {
   add('an enum one of whose values has a comma', 'my_option', { type: 'enum', default: 'a', values: ['a', 'b,c'] }, false);
   add('an enum whose default has a comma', 'my_option', { type: 'enum', default: 'b,c', values: ['a', 'b,c'] }, false);
   add('an enum whose values have a colon', 'my_option', { type: 'enum', default: 'a:b', values: ['a:b', 'c'] }, true);
+  add('an enum one of whose values the score code reads otherwise', 'my_option', { type: 'enum', default: 'high', values: [' low', 'high'] }, false);
+  add('an enum of the texts True and False', 'my_option', { type: 'enum', default: 'True', values: ['True', 'False'] }, false);
+  add('an enum of texts that are numbers', 'my_option', { type: 'enum', default: '1', values: ['1', '2'] }, false);
   for (const key of ['a,b', 'a:b', ',', ':']) add('an option whose name has a comma or a colon', key, { default: 'x' }, false);
+  for (const key of [' a', 'a ', '\ta', 'a\n', '　a', "'a'", '"a', "a'", ' temperature']) add('an option whose name has a blank or a quote at an end, which the score code takes off', key, { default: 'x' }, false);
+  for (const key of ['a b', "a'b", '﻿a']) add('an option whose name has a blank or a quote inside', key, { default: 'x' }, true);
   for (const key of ['model', 'options', '__proto__', 'constructor', 'a-b', 'a%2Db', '']) add('an option of a name of any other text', key, { default: 'x' }, true);
   add('an enum whose values are a text', 'my_option', { type: 'enum', default: 'a', values: 'a' }, false);
   for (const value of [true, false, 'true', 'false']) add('a bool whose default is true or false', 'my_option', { type: 'bool', default: value }, true);
@@ -565,6 +581,9 @@ const OPTION_RULES = (numberFields) => {
     add('an option of a field of the page that is no number, drawn as any other', key, { default: 'low', label: 'x' }, true);
     add('an option of a field of the page that is no number, whose label is no text', key, { default: 'low', label: 5 }, false);
     add('an option of a field of the page whose default is a text with a comma', key, { default: 'a,b' }, false);
+    add('an option of a field of the page whose default is a text the score code reads as a number', key, { default: '0.5' }, false);
+    add('a number of a field of the page the page sends as 1e-7, read as a text', key, { default: 1e-7 }, false);
+    add('a number of a field of the page the page sends with a point', key, { default: 1.5e-7 }, true);
     add('an enum of a field of the page', key, { type: 'enum', default: 'a', values: ['a'] }, true);
     add('an enum of a field of the page without its values', key, { type: 'enum', default: 0.5 }, false);
     add('a bool of a field of the page whose default is 1', key, { type: 'bool', default: 1 }, false);

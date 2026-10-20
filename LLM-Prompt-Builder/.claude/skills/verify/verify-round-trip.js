@@ -751,7 +751,7 @@ function sendersCensus() {
   // run sends each as written; and the run loaded - from the tracker in
   // memory and from the one Save Experiments wrote - chooses each option as
   // it was sent.
-  const OPTION_NAME_PROBES = ['a', 'a-b', 'a%2Db', 'a%', 'a-seg', 'a-seg-0', 'a-seg-1', '-', '%', 'a,b', 'a:b'];
+  const OPTION_NAME_PROBES = ['a', 'a-b', 'a%2Db', 'a%', 'a-seg', 'a-seg-0', 'a-seg-1', '-', '%', 'a,b', 'a:b', ' a', 'a ', "'a'", '"a"', ' temperature', 'a b'];
   {
     await road('options of every name an element of the page has, drawn, sent and loaded again', async (page) => {
       await openPage(page);

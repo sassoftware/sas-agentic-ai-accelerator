@@ -39,9 +39,12 @@ class Issue:
     hint: Optional[str] = None
 
     def format(self) -> str:
-        text = f"[{self.rule}] {self.model_id}: {self.message}"
+        """The issue on one line, and its hint on a line of its own: a name
+        the message or the hint holds - an option's name with a line break -
+        is shown on that line (one_line)."""
+        text = f"[{self.rule}] {one_line(self.model_id)}: {one_line(self.message)}"
         if self.hint:
-            text += f"\n        fix: {self.hint}"
+            text += f"\n        fix: {one_line(self.hint)}"
         return text
 
 

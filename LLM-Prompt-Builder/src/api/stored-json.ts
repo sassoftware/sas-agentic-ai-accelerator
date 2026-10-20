@@ -405,28 +405,78 @@ export const optionControlId = (index: number, key: string, option: unknown): st
 const isKeyName = (value: unknown): boolean => typeof value === 'string' && value !== '';
 
 /**
+ * The blanks Python's str.strip() takes off the ends of a text - the
+ * characters of str.isspace() -, which the parser of the score code
+ * (_options_parser.py.j2) takes off the ends of a name and of a value before
+ * the quotes. JavaScript's trim() takes another set (U+FEFF, and not
+ * U+001C-U+001F or U+0085).
+ */
+const PARSER_BLANKS = '\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const BLANKS_AT_ENDS = new RegExp(`^[${PARSER_BLANKS}]+|[${PARSER_BLANKS}]+$`, 'g');
+const QUOTES_AT_ENDS = /^["']+|["']+$/g;
+/** What int() of Python reads (a sign, decimal digits of any script, a "_" between two), and float() of one with a point. */
+const DIGITS = String.raw`\p{Nd}(?:_?\p{Nd})*`;
+const INT_TEXT = new RegExp(String.raw`^[+-]?${DIGITS}$`, 'u');
+const FLOAT_TEXT = new RegExp(String.raw`^[+-]?(?:${DIGITS}\.(?:${DIGITS})?|\.${DIGITS})(?:[eE][+-]?${DIGITS})?$`, 'u');
+
+/** A name or a value as the parser of the score code reads it: without the blanks and then the quotes at its ends. */
+const strippedByScoreCode = (text: string): string => text.replace(BLANKS_AT_ENDS, '').replace(QUOTES_AT_ENDS, '');
+
+/**
+ * Whether the score code reads `text`, a value of the options string a run
+ * sends, as that text (read_by_score_code of generator.py): it has no blank
+ * and no quote at its ends, is not true or false in any case, and is no
+ * number to float() (with a point) or int() (without one). "5", "TRUE",
+ * " a " and "'a'" are not.
+ */
+export const isReadAsWritten = (text: string): boolean =>
+  strippedByScoreCode(text) === text &&
+  !['true', 'false'].includes(text.toLowerCase()) &&
+  !(text.includes('.') ? FLOAT_TEXT : INT_TEXT).test(text);
+
+/**
+ * Whether a run sends the number as a text the score code reads as a text
+ * (sent_number of generator.py): the page writes a number as String() does,
+ * in exponent notation below 0.000001 and from 10^21 on, and one of one
+ * significant digit there has no point - 1e-7, 1e+21 -, which float() is not
+ * tried on and int() does not read.
+ */
+export const isSentAsText = (value: number): boolean => {
+  const shown = String(value);
+  return shown.includes('e') && !shown.includes('.');
+};
+
+/**
  * options.json of an LLM: every option as the page draws it and sends it in a
  * run. The rule mdb writes the file by (check_options_json of
  * Model-Definition-Builder/cli/src/mdb/core/generator.py), word for word:
  *
  *     options.json         object: option name -> option
- *     option name          no "," and no ":"
+ *     option name          no "," and no ":", and no blank and no quote at
+ *                          its ends
  *     option               object that holds "default", and no NaN or
  *                          Infinity (JSON has neither)
  *     option.type          text, where given (absent or null: not given)
  *     option.label         text, where given (absent or null: not given)
  *     option.description   text, where given (absent or null: not given)
- *     type "enum"          values: a non-empty list of texts, none with ","
+ *     type "enum"          values: a non-empty list of texts, none with ",",
+ *                          each read as written
  *                          default: one of values
  *     type "bool"          default: true or false
  *     option "API_KEY"     default: a non-empty text
- *     any other option     default: a text without ",", a number, true or
- *                          false
+ *     any other option     default: a text without "," read as written, a
+ *                          number sent as a number, true or false
  *
  * A run sends the options as one text, {name:value,name:value}, which the
  * score code splits at each "," and each name from its value at the first
  * ":" - so a name holds neither, and a text a run can send of the file (the
- * default of an option, a value of an enum) no ",". The default of any
+ * default of an option, a value of an enum) no ",". The parser of the score
+ * code takes the blanks and then the quotes off the ends of a name and of a
+ * value, reads true and false in any case as true and false, and a value as
+ * a number where float() reads one that holds a point or int() one that does
+ * not - so a name has no blank and no quote at its ends, a text the run
+ * sends is read as written (isReadAsWritten), and a number is not one the
+ * run sends as 1e-7 or 1e+21 (isSentAsText). The default of any
  * other option is drawn as it is written: a number in a
  * number field, sent as a number (isNumberOption), anything else in a text
  * field, sent as text - a default that is null, a list or an object cannot
@@ -438,25 +488,29 @@ const isKeyName = (value: unknown): boolean => typeof value === 'string' && valu
  *     field of its own (NUMBER_FIELD_OPTIONS) not at all.
  * An option the page could draw only as something else - an enum without its
  * values in a number field, a box off for a default of 1, a provider key
- * named by a number - or send only as something else - a default "a,b" read
- * as "a" - makes the file one the page cannot read.
+ * named by a number - or the score code read only as something else - a
+ * default "a,b" read as "a", " a " as "a", "TRUE" as true, 1e-7 as a text,
+ * a name " temperature" as temperature - makes the file one the page cannot
+ * read.
  */
 export function isModelOptions(value: unknown): boolean {
+  const sentAsWritten = (item: unknown): boolean =>
+    typeof item === 'string' ? !item.includes(',') && isReadAsWritten(item) : typeof item !== 'number' || !isSentAsText(item);
   return (
     isObject(value) &&
     Object.entries(value).every(([key, option]) => {
       if (!isObject(option) || !('default' in option)) return false;
-      if (key.includes(',') || key.includes(':')) return false;
+      if (key.includes(',') || key.includes(':') || strippedByScoreCode(key) !== key) return false;
       if (key === 'API_KEY') return isKeyName(option.default);
       if (option.type !== undefined && option.type !== null && typeof option.type !== 'string') return false;
-      if (NUMBER_FIELD_OPTIONS.includes(key) && isNumberOption(option)) return true;
+      if (NUMBER_FIELD_OPTIONS.includes(key) && isNumberOption(option)) return sentAsWritten(option.default);
       if (!fits(option, MODEL_OPTION)) return false;
       if (option.type === 'enum') {
         const values = option.values;
-        return Array.isArray(values) && values.length > 0 && values.every((item) => typeof item === 'string' && !item.includes(',')) && (values as unknown[]).includes(option.default);
+        return Array.isArray(values) && values.length > 0 && values.every((item) => typeof item === 'string' && sentAsWritten(item)) && (values as unknown[]).includes(option.default);
       }
       if (option.type === 'bool') return [true, false, 'true', 'false'].includes(option.default as never);
-      return ['string', 'number', 'boolean'].includes(typeof option.default) && !(typeof option.default === 'string' && option.default.includes(','));
+      return ['string', 'number', 'boolean'].includes(typeof option.default) && sentAsWritten(option.default);
     })
   );
 }

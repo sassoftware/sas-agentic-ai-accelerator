@@ -179,17 +179,22 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
 
     # Options: keep the folder's defaults; API_KEY becomes auth.key_name.
     # What is read of options.json - the default of each option, the key name
-    # of API_KEY where one is given - keeps check_options_json, so a folder
-    # that breaks it is refused with the line naming the option.
+    # of API_KEY where the file has an API_KEY - keeps check_options_json, so
+    # a folder that breaks it is refused with the line naming the option. An
+    # API_KEY whose default is no text or an empty one (0, false, "", null)
+    # is refused like one whose default is 5: taken as "no key", it made the
+    # definition auth.mode none, and the regenerated options.json lost the
+    # API_KEY the score code still read.
     from .generator import check_options_json
     if not isinstance(options_doc, dict):
         check_options_json(options_doc)
-    api_key_entry = options_doc.pop("API_KEY", None)
-    if api_key_entry and not isinstance(api_key_entry, dict):
-        check_options_json({"API_KEY": api_key_entry})
-    key_name = (api_key_entry or {}).get("default")
-    if key_name and not isinstance(key_name, str):
-        check_options_json({"API_KEY": {"default": key_name}})
+    key_name = None
+    if "API_KEY" in options_doc:
+        api_key_entry = options_doc.pop("API_KEY")
+        read_key = ({"default": api_key_entry["default"]}
+                    if isinstance(api_key_entry, dict) and "default" in api_key_entry else api_key_entry)
+        check_options_json({"API_KEY": read_key})
+        key_name = read_key["default"]
     if key_name in ("ProviderName", "Provider"):
         # The base template's placeholder leaked into some folders (PR #6 finding);
         # normalize to the provider's LLM_API_KEYS KeyName

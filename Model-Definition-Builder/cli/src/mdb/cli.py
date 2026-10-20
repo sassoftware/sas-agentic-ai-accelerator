@@ -27,8 +27,9 @@ from typer.core import TyperGroup
 from . import __version__
 from .core import drift, facts
 from .core.generator import (
-    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, _render_options_json,
-    check_options_file, drop_family_value_maps, effective_score_file, list_custom_options, render_assets,
+    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, OptionError, OptionRuleError,
+    _render_options_json, check_options_file, drop_family_value_maps, effective_score_file, list_custom_options,
+    render_assets,
 )
 from .core.importer import import_folder
 from .core.manifest import (
@@ -343,9 +344,16 @@ def _print_issues(issues) -> bool:
     has_error = False
     for issue in issues:
         color = {"error": "red", "warning": "yellow", "info": "dim"}[issue.severity]
-        console.print(f"[{color}]{_plain(issue.format())}[/{color}]")
+        _line(issue.format(), color)
         has_error = has_error or issue.severity == "error"
     return has_error
+
+
+def _line(text: str, style: Optional[str] = None) -> None:
+    """A line of mdb as it is: no markup read into it, and not broken at the
+    width of the console - 80 columns where the output goes to a pipe or a
+    file -, so a refusal is one line wherever it is read."""
+    console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +779,7 @@ def add(
         _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
-        console.print(f"[red]{_plain(one_line(str(exc)))}[/red]")
+        _line(one_line(str(exc)), "red")
         raise typer.Exit(1)
 
     defs_name = kind_folder_name(manifest.kind)
@@ -850,7 +858,7 @@ def generate(
             manifest = load_manifest(folder)
             rendered = render_assets(manifest, ctx.core)
         except Exception as exc:
-            console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+            _line(f"{model_id}: {one_line(str(exc))}", "red")
             failed = True
             continue
         classifications = drift.classify(folder, rendered)
@@ -878,12 +886,12 @@ def generate(
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
         console.print(f"[green]{_plain(model_id)}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
         for option_name in list_custom_options(manifest, ctx.core):
-            console.print(
-                f"[yellow]{_plain(model_id)}: option '{_plain(option_name)}' is not in the standardized vocabulary - "
+            _line(
+                f"{model_id}: option '{one_line(option_name)}' is not in the standardized vocabulary - "
                 "it is sent to the provider as-is and shows up in UIs under its raw name with your "
                 "description (no standardized label, no cross-provider translation). "
-                "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.[/yellow]"
-            )
+                "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.",
+                "yellow")
     if not check and not failed:
         console.print("Next: mdb sync --all   (keep the fact sheet in step)")
     raise typer.Exit(1 if failed else 0)
@@ -1175,7 +1183,7 @@ def load_releases(
         try:
             _, summary = build_release_table(source, csv_out)
         except (OSError, ValueError) as exc:
-            console.print(f"[red]{_plain(one_line(str(exc)))}[/red]")
+            _line(one_line(str(exc)), "red")
             raise typer.Exit(1)
         console.print(f"Wrote {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases to {_plain(csv_out)} "
                       f"({_plain(current_words(summary))}).")
@@ -1214,31 +1222,67 @@ def import_(
     if folder is None:
         console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
-    if (folder / MANIFEST_FILENAME).is_file():
+    if (folder / MANIFEST_FILENAME).is_file() and (folder / drift.LOCK_FILENAME).is_file():
         console.print(f"[yellow]{_plain(model_id)} already has a definition.yaml - nothing imported.[/yellow]")
         raise typer.Exit(0)
+    if not _import_definition(ctx, model_id, folder, apply):
+        raise typer.Exit(1)
+
+
+def _import_definition(ctx: Context, model_id: str, folder: Path, apply: bool, *, pulled: bool = False) -> bool:
+    """`mdb import` of one folder, and the import of `mdb pull --import`.
+    Returns False where it was refused; nothing is written then.
+
+    A folder without definition.yaml is reverse-engineered: definition.yaml
+    is written once the files it gives render, and with `apply` the folder
+    is converged onto them. A folder whose definition.yaml is not converged
+    yet - it has no .mdb-lock.json, as after `mdb import <id>` - is read from
+    that definition.yaml, as it was reviewed: the files it gives are listed,
+    and with `apply` the folder is converged onto them. So the two commands
+    the import prints, `mdb import <id>` and `mdb import <id> --apply`,
+    adopt a folder. `pulled` (`mdb pull --import`) reverse-engineers the
+    folder it pulled, whatever definition.yaml it holds."""
     fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
+    reviewed = not pulled and (folder / MANIFEST_FILENAME).is_file()
+    notes: list[str] = []
     try:
-        result = import_folder(folder, fact_sheet)
+        if reviewed:
+            try:
+                manifest = load_manifest(folder)
+            except Exception as exc:  # the schema of definition.yaml, as `mdb generate` prints it
+                raise GenerationError(one_line(str(exc))) from exc
+        else:
+            result = import_folder(folder, fact_sheet)
+            manifest, notes = result.manifest, result.notes
+        # Render BEFORE writing the manifest: a folder must never be left
+        # half-adopted when e.g. an option cannot be resolved
+        rendered = render_assets(manifest, ctx.core)
     except GenerationError as exc:
-        console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
-        console.print("Nothing was written - the folder stays fully hand-maintained. "
-                      "Repair its options.json, then rerun mdb import.")
-        raise typer.Exit(1)
-    # Render BEFORE writing the manifest: a folder must never be left
-    # half-adopted when e.g. an option cannot be resolved
-    try:
-        rendered = render_assets(result.manifest, ctx.core)
-    except GenerationError as exc:
-        console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
-        console.print("Nothing was written - the folder stays fully hand-maintained. "
-                      "Declare the option inline (type/description) in a definition.yaml "
-                      "or extend the vocabulary, then rerun mdb import.")
-        raise typer.Exit(1)
-    manifest_path = result.manifest.save(folder)
-    console.print(f"[green]Wrote {_plain(manifest_path)}.[/green]")
-    for note in result.notes:
-        console.print(f"  [yellow]note:[/yellow] {_plain(note)}")
+        _line(f"{model_id}: {one_line(str(exc))}", "red")
+        rerun = f"mdb import {model_id}{' --apply' if apply else ''}"
+        if reviewed:
+            _line(f"Nothing was written. Repair definition.yaml, then rerun {rerun}.")
+            return False
+        head = ("definition.yaml was not written - the pulled folder stays fully hand-maintained." if pulled
+                else "Nothing was written - the folder stays fully hand-maintained.")
+        again = f"then run mdb import {model_id}" if pulled else "then rerun mdb import"
+        if isinstance(exc, OptionRuleError):
+            _line(f"{head} Repair its options.json, {again}.")
+        elif isinstance(exc, OptionError):
+            _line(f"{head} Take the option out of its options.json or add it to the vocabulary, {again}. To keep "
+                  "it outside the vocabulary, declare it inline (type and description) in the definition.yaml "
+                  f"that mdb import then writes, and converge with mdb import {model_id} --apply.")
+        else:
+            _line(head)
+        return False
+    if reviewed:
+        manifest_path = folder / MANIFEST_FILENAME
+        _line(f"{model_id}: {MANIFEST_FILENAME} is not converged yet (no {drift.LOCK_FILENAME}) - read as it is.")
+    else:
+        manifest_path = manifest.save(folder)
+        console.print(f"[green]Wrote {_plain(manifest_path)}.[/green]", soft_wrap=True)
+    for note in notes:
+        console.print(f"  [yellow]note:[/yellow] {_plain(note)}", soft_wrap=True)
     changed = [c for c in drift.classify(folder, rendered) if c.status != drift.FileStatus.UNCHANGED]
     if changed:
         console.print("\nRegenerating would change these files (intended normalizations included):")
@@ -1248,12 +1292,13 @@ def import_(
         for c in changed:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, manifest_path.read_bytes(), rendered)
-        facts.upsert_row(fact_sheet, result.manifest)
+        facts.upsert_row(fact_sheet, manifest)
         console.print(f"[green]Converged {_plain(model_id)} ({len(changed)} file(s) rewritten).[/green]")
         console.print(f"Re-test before re-publishing: mdb validate {_plain(model_id)} --live")
     else:
         console.print(f"\nReview definition.yaml, then converge with: mdb import {_plain(model_id)} --apply")
         console.print("(or delete definition.yaml to leave the folder fully hand-maintained)")
+    return True
 
 
 @app.command()
@@ -1395,7 +1440,7 @@ def setup(
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[red]{_plain(kind)}: {_plain(one_line(str(exc)))}[/red]")
+                _line(f"{kind}: {one_line(str(exc))}", "red")
                 raise typer.Exit(1)
             for created in ensured.created:
                 console.print(f"[green]created {_plain(created)}.[/green]")
@@ -3382,7 +3427,7 @@ def register(
                                   "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{_plain(folder.name)}: {_plain(one_line(str(exc)))}[/red]")
+                _line(f"{folder.name}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
@@ -3413,7 +3458,7 @@ def unregister(
             try:
                 result = unregister_model(session, model_id)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             if result == "deleted":
@@ -3444,7 +3489,7 @@ def pull(
             try:
                 result = pull_model(session, model_id, ctx.defs_dir, force=force)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
@@ -3454,18 +3499,16 @@ def pull(
             console.print(f"[green]{_plain(model_id)}: pulled to {_plain(defs_name)}/{_plain(model_id)}/[/green] "
                           f"({len(result.files)} file(s); {_plain(source)})")
             if adopt and not result.had_definition:
+                # As `mdb import` takes the folder: a refusal names the option
+                # and the repair on lines of their own, and ends with exit 1.
                 folder = ctx.defs_dir(result.kind) / model_id
-                fact_sheet = ctx.fact_sheet(result.kind)
                 try:
-                    imported = import_folder(folder, fact_sheet)
-                    imported.manifest.save(folder)
-                    for note in imported.notes:
-                        console.print(f"  [yellow]note:[/yellow] {_plain(note)}")
-                    console.print(f"[green]{_plain(model_id)}: wrote definition.yaml - review it, then converge with "
-                                  f"'mdb import {_plain(model_id)} --apply'.[/green]")
+                    if not _import_definition(ctx, model_id, folder, apply=False, pulled=True):
+                        failed = True
                 except Exception as exc:
-                    console.print(f"[yellow]{_plain(model_id)}: pulled, but could not reverse-engineer "
-                                  f"definition.yaml ({_plain(one_line(str(exc)))}) - the folder stays hand-maintained.[/yellow]")
+                    _line(f"{model_id}: pulled, but could not reverse-engineer definition.yaml "
+                          f"({one_line(str(exc))}) - the folder stays hand-maintained.", "red")
+                    failed = True
             elif result.had_definition:
                 console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
                               f"'mdb generate {_plain(model_id)}'.")
@@ -3534,7 +3577,7 @@ def publish(
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:
-                console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             if state in ("requested", "completed"):
@@ -4098,7 +4141,7 @@ def retire(
         try:
             rendered = render_assets(manifest, ctx.core)
         except GenerationError as exc:
-            console.print(f"[red]{_plain(model_id)}: {_plain(one_line(str(exc)))}[/red]")
+            _line(f"{model_id}: {one_line(str(exc))}", "red")
             raise typer.Exit(1)
         blockers = [c for c in drift.classify(folder, rendered)
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
@@ -4274,7 +4317,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         problems.append(f"build/render failed: {one_line(str(exc))}")
     if problems:
         for problem in problems:
-            console.print(f"[red]FAIL: {_plain(problem)}[/red]")
+            _line(f"FAIL: {problem}", "red")
         raise typer.Exit(1)
     console.print(f"[green]{_plain(adapter_id)}: conformance checks passed.[/green]")
 

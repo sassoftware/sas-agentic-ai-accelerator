@@ -10,6 +10,7 @@ and tests all share one code path.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,18 @@ KEY_OPTION_TEMPLATES = (
 
 class GenerationError(RuntimeError):
     pass
+
+
+class OptionError(GenerationError):
+    """An option the score template cannot take as the manifest declares it:
+    one outside the vocabulary without an inline type, one its score template
+    family does not support, two that exclude each other. `mdb import` names
+    the options.json of the folder as the place to repair it."""
+
+
+class OptionRuleError(GenerationError):
+    """An option that breaks the rule of check_options_json. `mdb import`
+    names the options.json of the folder as the place to repair it."""
 
 
 def key_env_var(manifest: ModelManifest) -> str:
@@ -136,7 +149,7 @@ def _trim_number(value: float) -> str:
 def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, Any]:
     vocab = core.vocabulary.get(name, {})
     if not vocab and spec.type is None:
-        raise GenerationError(
+        raise OptionError(
             f"Option '{name}' is not in the option vocabulary and declares no inline type. "
             "Add it to definition-core/static/option-vocabulary.json, or declare it inline "
             "with type/description (it then passes through to the provider under its own name)."
@@ -243,7 +256,7 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         # thinking {type: enabled}, which a model with adaptive thinking
         # refuses, and reasoning_effort sends output_config.effort, which an
         # older model refuses.
-        raise GenerationError(
+        raise OptionError(
             "Options 'reasoning_effort' and 'thinking_budget' exclude each other: reasoning_effort "
             "(output_config.effort) is for Claude models with adaptive thinking, thinking_budget "
             "(thinking type enabled) for older ones - keep the one the model takes."
@@ -279,7 +292,7 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
             continue
         family_map = resolved["families"].get(family)
         if family_map is None:
-            raise GenerationError(
+            raise OptionError(
                 f"Option '{name}' is not supported by score template family '{family}'. "
                 "Remove the option or extend the vocabulary."
             )
@@ -507,93 +520,166 @@ def _shown(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+#: The quotes the parser of the score code takes off the ends of a name and
+#: of a value, after the blanks (str.strip()).
+_PARSER_QUOTES = "\"'"
+
+
+def read_by_score_code(text: str) -> Any:
+    """What the parser of a generated score code (_options_parser.py.j2)
+    reads of `text`, a value of the options string a run sends: the blanks
+    and then the quotes off its ends, true and false in any case as true and
+    false, a number where float() reads one that holds a point or int() one
+    that does not, and else the text."""
+    value = text.strip().strip(_PARSER_QUOTES)
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return float(value) if "." in value else int(value)
+    except ValueError:
+        return value
+
+
+def _read_as_written(text: str) -> bool:
+    read = read_by_score_code(text)
+    return isinstance(read, str) and read == text
+
+
+def sent_number(value: Any) -> Optional[str]:
+    """How the Prompt Builder writes the number `value` into the options
+    string where the score code reads it as a text, else None. The page
+    writes a number as JavaScript does (String(n)): in exponent notation for
+    a number below 0.000001 or from 10^21 on, and one of one significant
+    digit there has no point - 1e-7, 1e+21 -, which float() is not tried on
+    and int() does not read."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return "Infinity"  # what JavaScript reads of a JSON number past the largest double
+    if number == 0 or not math.isfinite(number) or 1e-6 <= abs(number) < 1e21:
+        return None
+    mantissa, exponent = repr(number).split("e")
+    if "." in mantissa:
+        return None
+    return f"{mantissa}e{'+' if int(exponent) > 0 else '-'}{abs(int(exponent))}"
+
+
 def check_options_json(entries: Any) -> None:
     """Refuse an options.json the Prompt Builder would draw or send other
-    than it says. `generate` (and every command that renders) applies it to
-    the file it writes, `register` to the file it uploads.
+    than it says, or the score code read other than it says. `generate` (and
+    every command that renders) applies it to the file it writes, `register`
+    to the file it uploads.
 
     The rule - JSON as the page reads it:
 
         options.json         object: option name -> option
-        option name          no "," and no ":"
+        option name          no "," and no ":", and no blank and no quote at
+                             its ends
         option               object that holds "default", and no NaN or
                              Infinity (JSON has neither)
         option.type          text, where given (absent or null: not given)
         option.label         text, where given (absent or null: not given)
         option.description   text, where given (absent or null: not given)
-        type "enum"          values: a non-empty list of texts, none with ","
+        type "enum"          values: a non-empty list of texts, none with ",",
+                             each read as written
                              default: one of values
         type "bool"          default: true or false
         option "API_KEY"     default: a non-empty text
-        any other option     default: a text without ",", a number, true or
-                             false
+        any other option     default: a text without "," read as written, a
+                             number sent as a number, true or false
 
     A run of the Builder sends the options as one text,
     {name:value,name:value}, which the score code splits at each "," and each
     name from its value at the first ":" - so a name holds neither, and a text
     a run can send of the file (the default of an option, a value of an enum)
-    no ",".
+    no ",". The parser of the score code (_options_parser.py.j2) takes the
+    blanks and then the quotes off the ends of a name and of a value, reads
+    true and false in any case as true and false, and reads a value as a
+    number where float() reads one that holds a point or int() one that does
+    not (read_by_score_code). So a name has no blank and no quote at its
+    ends, and a text the run sends is read as written: no blank and no quote
+    at its ends, not true or false in any case, no number - "5", "TRUE", " a "
+    and "'a'" are not. The Builder writes a number as JavaScript does, and the
+    score code reads 1e-7 and 1e+21, which hold no point, as texts
+    (sent_number); a number is one the Builder writes otherwise. The default
+    of API_KEY, which a run does not send, is the name of the provider key.
 
     Nothing else is checked: not `range`, not `values` of an option that is
-    no enum. Nor the rest of what the parser of the score code
-    (_options_parser.py.j2) does with a value of that text: it takes the
-    blanks and then the quotes off its ends, reads true and false in any case
-    as true and false, and reads a value as a number where float() reads one
-    that holds a point or int() one that does not; and the Prompt Builder
-    leaves an empty option of type string out of a run.
+    no enum. The Prompt Builder leaves an empty option of type string out of
+    a run, and the score code then uses its own default.
 
-    Raises GenerationError with a sentence naming the first option that
+    Raises OptionRuleError with a sentence naming the first option that
     breaks the rule.
     """
     if not isinstance(entries, dict):
-        raise GenerationError(f"options.json is {_shown(entries)}, not an object of options.")
+        raise OptionRuleError(f"options.json is {_shown(entries)}, not an object of options.")
     for name, option in entries.items():
         if "," in name or ":" in name:
-            raise GenerationError(
+            raise OptionRuleError(
                 f"Option '{name}' has a comma or a colon in its name - the Builder sends the options as "
                 "{name:value,name:value}, so a name holds neither.")
+        if name.strip().strip(_PARSER_QUOTES) != name:
+            raise OptionRuleError(
+                f"Option '{name}' has a blank or a quote at an end of its name - the score code takes them "
+                f"off and would read the option as {_shown(name.strip().strip(_PARSER_QUOTES))}.")
         if not isinstance(option, dict) or "default" not in option:
-            raise GenerationError(f"Option '{name}' is {_shown(option)}, not an object that holds a default.")
+            raise OptionRuleError(f"Option '{name}' is {_shown(option)}, not an object that holds a default.")
         try:
             json.dumps(option, allow_nan=False, default=str)
         except ValueError:
-            raise GenerationError(f"Option '{name}' holds NaN or Infinity, which JSON does not hold.") from None
+            raise OptionRuleError(f"Option '{name}' holds NaN or Infinity, which JSON does not hold.") from None
         for field in ("type", "label", "description"):
             if option.get(field) is not None and not isinstance(option[field], str):
-                raise GenerationError(f"Option '{name}' has the {field} {_shown(option[field])}, which is not a text.")
+                raise OptionRuleError(
+                    f"Option '{name}' has the {field} {_shown(option[field])}, which is not a text.")
         default = option["default"]
         if option.get("type") == "enum":
             values = option.get("values")
             if not (isinstance(values, list) and values and all(isinstance(value, str) for value in values)):
-                raise GenerationError(
+                raise OptionRuleError(
                     f"Option '{name}' is an enum option whose values are {_shown(values)} - an enum option "
                     "needs a non-empty list of texts as its values.")
             if any("," in value for value in values):
-                raise GenerationError(
+                raise OptionRuleError(
                     f"Option '{name}' has the values {_shown(values)} - the Builder sends the options as "
                     "{name:value,name:value}, so a value of an enum holds no comma.")
             if default not in values:
-                raise GenerationError(
+                raise OptionRuleError(
                     f"Option '{name}' has the default {_shown(default)}, which is not one of its values "
                     f"{_shown(values)}.")
+            for value in values:
+                if not _read_as_written(value):
+                    raise OptionRuleError(
+                        f"Option '{name}' has the value {_shown(value)} - the score code would read it as "
+                        f"{_shown(read_by_score_code(value))}, not as that text.")
         if option.get("type") == "bool" and not isinstance(default, bool):
-            raise GenerationError(
+            raise OptionRuleError(
                 f"Option '{name}' is a bool option with the default {_shown(default)} - the default of a bool "
                 "option is true or false.")
         if name == "API_KEY" and not (isinstance(default, str) and default):
-            raise GenerationError(
+            raise OptionRuleError(
                 f"Option 'API_KEY' has the default {_shown(default)} - its default is the name of the "
                 "provider key, a non-empty text.")
-        if (name != "API_KEY" and option.get("type") not in ("enum", "bool")
-                and not isinstance(default, (str, int, float))):
-            raise GenerationError(
+        if name == "API_KEY" or option.get("type") in ("enum", "bool"):
+            continue
+        if not isinstance(default, (str, int, float)):
+            raise OptionRuleError(
                 f"Option '{name}' has the default {_shown(default)} - the default of an option is a text, "
                 "a number, true or false.")
-        if (name != "API_KEY" and option.get("type") not in ("enum", "bool")
-                and isinstance(default, str) and "," in default):
-            raise GenerationError(
+        if isinstance(default, str) and "," in default:
+            raise OptionRuleError(
                 f"Option '{name}' has the default {_shown(default)} - the Builder sends the options as "
                 "{name:value,name:value}, so a text default holds no comma.")
+        if isinstance(default, str) and not _read_as_written(default):
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the score code would read it as "
+                f"{_shown(read_by_score_code(default))}, not as that text.")
+        if sent_number(default) is not None:
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the Builder sends it as "
+                f"{sent_number(default)}, which the score code reads as a text, not as a number.")
 
 
 def check_options_file(path: Path) -> None:
