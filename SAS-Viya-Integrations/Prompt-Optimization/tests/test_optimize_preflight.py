@@ -369,10 +369,67 @@ def test_an_answer_that_is_no_json_error_is_its_text_without_markup(http_failure
     assert http_failure(Response(502, text="<html><body><h1>502 Bad Gateway</h1>\n<hr>nginx</body></html>")) == \
         "HTTP 502 (Bad Gateway): 502 Bad Gateway nginx."
     assert http_failure(Response(500, text="")) == "HTTP 500 (Internal Server Error)."
-    assert http_failure(Response(503, text="x" * 500)) == "HTTP 503 (Service Unavailable): " + "x" * 200 + "."
-    # a model container that answers with an error of its own
-    assert http_failure(Response(500, {"error": "The provider refused the key."})) == \
+    assert http_failure(Response(503, text="x" * 500)) == "HTTP 503 (Service Unavailable): " + "x" * 300 + "..."
+    # a JSON string and a JSON list are their text, shortened
+    assert http_failure(Response(500, "The provider refused the key.")) == \
         "HTTP 500 (Internal Server Error): The provider refused the key."
+    assert http_failure(Response(400, [{"loc": ["body", "inputs"], "msg": "field required"}])) == \
+        'HTTP 400 (Bad Request): [{"loc":["body","inputs"],"msg":"field required"}].'
+    assert http_failure(Response(400, ["y" * 400])).endswith("y" * 290 + "...")
+    # a provider's error inside "error", and a FastAPI-style list in "detail"
+    assert http_failure(Response(401, {"error": {"message": "The provider refused the key.", "type": "auth"}})) == \
+        "HTTP 401 (Unauthorized): The provider refused the key."
+    assert http_failure(Response(400, {"detail": [{"msg": "field required"}]})) == \
+        'HTTP 400 (Bad Request): [{"msg":"field required"}].'
+
+
+def scr_error(line, transaction="23579f6e-cb00-432c-9f68-9424c07700db"):
+    """A model container (SCR) whose score code raised, as it answered on SAS Viya 2026.09 (2026-10-20):
+    HTTP 422 with the reason in capitals, and the source line of the raise behind the status in errorMessage."""
+    return Response(422, {"errorCode": 422, "errorMessage": "422 Unprocessable Entity:" + " " * 32 + line,
+                          "httpStatus": "422 UNPROCESSABLE_ENTITY", "id": transaction,
+                          "remediation": "Contact an administrator to view the full traceback logs. "
+                                         f"The transaction id is {transaction}.", "version": "2"},
+                    reason="UNPROCESSABLE ENTITY")
+
+
+def test_an_error_of_a_model_container_is_the_text_of_its_raise_and_where_to_look(http_failure):
+    remediation = "Contact an administrator to view the full traceback logs. The transaction id is 23579f6e-cb00-432c-9f68-9424c07700db."
+    # the score code of this release: the message of the raise is on the line SCR answers with
+    assert http_failure(scr_error('raise RuntimeError("No API key: pass the provider key in the API_KEY option of the call.")')) == \
+        "HTTP 422 (Unprocessable Entity): No API key: pass the provider key in the API_KEY option of the call. " + remediation
+    # a line that is no raise of a plain string is kept as it is
+    assert http_failure(scr_error('raise RuntimeError(f"OpenAI answered {status}: {text}")')) == \
+        'HTTP 422 (Unprocessable Entity): raise RuntimeError(f"OpenAI answered {status}: {text}"). ' + remediation
+    # the containers published before it answered a KeyError with only the marks under the line
+    assert http_failure(scr_error("~~~~~~~^^^^^^^^^^^")) == "HTTP 422 (Unprocessable Entity). " + remediation
+
+
+def test_an_answer_never_carries_a_key_and_is_cut(http_failure):
+    said = http_failure(Response(401, {"error": {"message": "Incorrect API key provided: sk-proj-abcdef1234567890ABCDEF. "
+                                                            "Header Authorization: Bearer eyJhbGciOi.J9abc123def456 was refused, "
+                                                            "api_key=AIzaSyA1234567890abcdefgh"}}))
+    assert "abcdef1234567890" not in said and "eyJhbGciOi" not in said and "AIzaSyA1234567890" not in said, said
+    assert said.startswith("HTTP 401 (Unauthorized): Incorrect API key provided: sk-***"), said
+    # words are no keys
+    assert http_failure(Response(401, {"message": "Basic authentication failed for the password authentication."})) == \
+        "HTTP 401 (Unauthorized): Basic authentication failed for the password authentication."
+    long = http_failure(sas_error(400, "m" * 1000, remediation="r" * 1000))
+    assert long == "HTTP 400 (Bad Request): " + "m" * 300 + "... " + "r" * 300 + "..."
+
+
+def test_a_model_container_that_raised_is_written_with_its_message_into_the_result(tmp_path, monkeypatch):
+    """call_scr: the text of the raise is the error of the run - in the log of the job and in its tracker entry."""
+    viya = Viya(refuse={("POST", "/scr/"): scr_error('raise RuntimeError("No API key: pass the provider key in the API_KEY option of the call.")')})
+    sas = run_job(tmp_path, monkeypatch, viya)
+
+    said = ("The call of the model container target_llm was answered with HTTP 422 (Unprocessable Entity): "
+            "No API key: pass the provider key in the API_KEY option of the call. Contact an administrator to view the "
+            "full traceback logs. The transaction id is 23579f6e-cb00-432c-9f68-9424c07700db.")
+    assert viya.model_calls()
+    assert sas.symbols["_opt_rc"] != "0"
+    assert sas.symbols["_opt_error"] == said
+    assert json.loads(viya.files[PROMPT]["Prompt-Optimization-Tracker.json"][1])[0]["error"] == said
 
 
 def test_the_upload_that_was_refused_in_finding_b_is_written_as_a_sentence(tmp_path, monkeypatch):

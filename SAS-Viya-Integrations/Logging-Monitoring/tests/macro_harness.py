@@ -8,7 +8,8 @@ generates for a value of a setting, and which lines it writes to the log. This m
     %if ... %then %do / %else %if ... %then %do / %else %do / %end, and %if ... %then %let
     %do <variable> = <from> %to <to>
     &name. references, %superq, %str, %length, %scan, %eval, %sysevalf and %sysfunc with the
-    functions it is handed (countw is built in)
+    functions it is handed (countw and max are built in)
+    the automatic macro variable SYSCC, 0 where a test sets none
     conditions with GT, LT, GE, LE, EQ, NE (and > < =), joined by and
 
 and nothing else: a statement of the macro language it does not know stops it with an
@@ -138,7 +139,9 @@ class Macros:
 
     def __init__(self, symbols=None, functions=None):
         self.symbols = {name.lower(): str(value) for name, value in (symbols or {}).items()}
-        self.functions = dict({"countw": countw}, **(functions or {}))
+        # SYSCC is there in every SAS session: 0 until a step ends with a warning or an error
+        self.symbols.setdefault("syscc", "0")
+        self.functions = dict({"countw": countw, "max": lambda args: max(int(plain(arg)) for arg in args)}, **(functions or {}))
 
     def __getitem__(self, name):
         return plain(self.symbols[name.lower()])

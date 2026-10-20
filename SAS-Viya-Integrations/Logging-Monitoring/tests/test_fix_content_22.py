@@ -98,10 +98,10 @@ def test_every_action_whose_answer_a_program_reads_takes_a_refusal_for_no_answer
         "Logging-Monitoring/Build-RAG-Cost-View.sas": Counter({"table.tableExists": 1, "table.tableInfo": 1}),
         "Logging-Monitoring/Get-All-Prompts.sas": Counter({"table.tableExists": 2, "table.caslibInfo": 1}),
         "Logging-Monitoring/Link-Logs-To-Models.sas": Counter({"table.tableExists": 5, "table.fileInfo": 2}),
-        "Logging-Monitoring/Load-Fact-Sheets.sas": Counter({"table.tableExists": 3, "table.tableInfo": 1}),
+        "Logging-Monitoring/Load-Fact-Sheets.sas": Counter({"table.tableExists": 4, "table.tableInfo": 1}),
         "Logging-Monitoring/Log-Parser-Code.sas": Counter({"table.tableExists": 4, "table.fileInfo": 2, "table.columnInfo": 1, "table.tableInfo": 1}),
         # tableInfo twice: the rows of the release table, and the rows and the time of the four tables for the page (2026-10-20)
-        "Setup/Load-Accelerator-Tables.sas": Counter({"table.tableExists": 5, "table.fileInfo": 1, "table.tableInfo": 2, "table.columnInfo": 1,
+        "Setup/Load-Accelerator-Tables.sas": Counter({"table.tableExists": 7, "table.fileInfo": 1, "table.tableInfo": 2, "table.columnInfo": 1,
                                                       "table.loadTable": 1}),
     }
 
@@ -392,7 +392,8 @@ def test_nothing_is_loaded_over_a_table_cas_did_not_answer_for_behind_a_refused_
     """Behind a refused promote the program asks whether a table of the name is in memory before it loads the saved
     file: where CAS refuses that question, nothing is loaded, and the line is the one of a table not loaded again."""
     sheets = _sheets()
-    cas = RefusingCAS(asks={("table.tableExists", "LLM_FACT_SHEET", 1)}, refuse={("table.promote", "LLM_FACT_SHEET")})
+    # the first question for the table is the one in front of the drop (2026-10-20), the second the one behind the promote
+    cas = RefusingCAS(asks={("table.tableExists", "LLM_FACT_SHEET", 2)}, refuse={("table.promote", "LLM_FACT_SHEET")})
     cas.table("Public", "LLM_FACT_SHEET", sheets.COLUMNS, rows=28, of="the table of before")
     cas.file("Public", "LLM_FACT_SHEET.sashdat", sheets.COLUMNS, rows=28, of="the table of before")
     cas.table("Public", "LLM_FACT_SHEET_NEW", sheets.COLUMNS, rows=30, of="the sheet", scope="session")

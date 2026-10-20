@@ -30,11 +30,14 @@ import macro_harness
 
 
 class Macros(macro_harness.Macros):
-    """macro_harness.Macros with %upcase, which the release table macro uses."""
+    """macro_harness.Macros with %upcase, which the release table macro uses, and %symexist, which the swap of
+    Load-Fact-Sheets.sas asks _lfs_outcomes with."""
 
     def call(self, name, inner):
         if name == "upcase":
             return self.resolve(inner).upper()
+        if name == "symexist":
+            return "1" if inner.strip().lower() in self.symbols else "0"
         return super().call(name, inner)
 
 
@@ -402,8 +405,10 @@ class FakeCAS:
     def run(self, casl):
         """Runs the CASL of one PROC CAS step. Returns the macro variables it set with CALL SYMPUTX - this step, not an
         earlier one: a step that sets no value leaves a macro variable at the value the macro gave it in front of the
-        step (self.symbols keeps every value set so far, for a test to read)."""
+        step (self.symbols keeps every value set so far, for a test to read). A step in which an action wrote an ERROR
+        line leaves SYSCC at 1012, as PROC CAS does (measured on 2026-10-20 for a refused table.promote)."""
         set_here = {}
+        errors_before = len(self.errors)
 
         def index(text, part):
             return str(text).find(str(part)) + 1
@@ -417,4 +422,6 @@ class FakeCAS:
         namespace = {"_cas": self, "_symputx": symputx, "_rows": rows, "exists": lambda result, name: hasattr(result, name),
                      "upcase": lambda text: str(text).upper(), "index": index}
         exec(compile(as_python(casl), "CASL", "exec"), namespace)
+        if len(self.errors) > errors_before:
+            set_here["SYSCC"] = "1012"
         return set_here

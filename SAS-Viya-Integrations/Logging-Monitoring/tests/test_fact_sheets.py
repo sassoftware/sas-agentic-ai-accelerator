@@ -148,12 +148,14 @@ def test_the_counted_upload_takes_the_place_of_the_table_and_nothing_loads_the_s
     # every outcome but a saved table is a WARNING that says what the table holds; none is an ERROR or ends the program
     warnings = re.findall(r"%put (WARNING: [^;]*);", swap)
     # content-23: and the one of a step that halted before it said what became of the sheet
-    assert len(warnings) == 5 and "ERROR" not in swap.upper()
+    # 2026-10-20: three lines for a table that was left - what the drop did - where there was one
+    assert len(warnings) == 7 and "ERROR" not in swap.upper()
     for warning in warnings:
         assert "&_lfs_caslib..&_lfs_table." in warning and not set(warning) & set("%'\"")
     # one test for a sheet that was not read, and one for each WARNING
     # content-23: and the line of a step that halted before it said what became of the sheet
-    assert swap.count("%if") == swap.count("%put") + 1 and swap.count("%else %if") == 4
+    # and two more: the condition code behind a refused promote or save the step took care of, and the outcome for the job
+    assert swap.count("%if") == swap.count("%put") + 3 and swap.count("%else %if") == 6
 
 
 def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_mode():
@@ -172,8 +174,12 @@ def test_an_error_for_one_sheet_does_not_put_a_batch_session_into_syntax_check_m
     in_order(code, "options nosyntaxcheck;", "cas mySess;", "%macro _lfs_read(", "%_lfs_read(llm_fact_sheet.csv",
              "delete _lfs_llm_fact_sheet _lfs_embedding_fact_sheet _lfs_decision_fact_sheet;", "cas mySess terminate;",
              "options &_lfs_syntaxcheck.;")
-    # the condition code is left as the program found or made it: an error stays an error of the job
-    assert not re.search(r"syscc", code, flags=re.IGNORECASE)
+    # the condition code is left as the program found or made it - an error stays an error of the job -, but for the
+    # ERROR line of a refused promote or save the swap took care of (2026-10-20): it is put back to what it was in front of
+    # the step, and to 4 at least
+    assert re.findall(r"%let\s+syscc\s*=[^;]*;", code, flags=re.IGNORECASE) == ["%let syscc = %sysfunc(max(&_lfs_cc., 4));"]
+    assert "%let _lfs_cc = &syscc.;\n    proc cas;" in code
+    assert "    %if &_lfs_handled. EQ 1 %then %do;\n        %let syscc = %sysfunc(max(&_lfs_cc., 4));\n    %end;\n" in code
 
 
 def test_the_macro_and_its_flag_are_gone_at_the_end():
@@ -310,7 +316,12 @@ def test_a_session_without_an_answer_loads_nothing_either():
 
 BEFORE = {"columns": COLUMNS, "rows": 28, "of": "the table of before"}
 COULD_NOT = "WARNING: The sheet could not take the place of the table Public.LLM_FACT_SHEET - messages above"
-KEPT = COULD_NOT + ". The table of that name that is in memory was left as it is."
+LEFT = COULD_NOT + ". The table of that name that is in memory was left as it is: "
+KEPT = LEFT + "it could not be dropped."
+KEPT_NONE = (LEFT + "none was in memory when this run went to drop it, and one was loaded before the promote - by a second run of "
+             "this program at the same time, say.")
+KEPT_DROPPED = (LEFT + "this run had dropped the table, and one was loaded again before the promote - by a second run of this "
+                "program at the same time, say.")
 RESTORED = COULD_NOT + ". The table was loaded again from the file it was saved to before."
 GONE = (COULD_NOT + " - and the table was not loaded again from the file it was saved to before: load that file, or run this "
         "program again.")
@@ -329,8 +340,13 @@ def library(refuse=(), saved=True):
 
 
 def swapped(cas, **more):
+    return swapped_with(cas, **more)[0]
+
+
+def swapped_with(cas, **more):
+    """The lines of the log and the macro variables the swap leaves."""
     generated, log, asked, macros = follow("_lfs_swap", cas, **dict({"_lfs_ok": "1"}, **more))
-    return log
+    return log, macros
 
 
 def in_memory(cas):
@@ -392,9 +408,67 @@ def test_each_outcome_has_one_sentence_and_the_sentences_differ():
     assert swapped(cas, _lfs_ok="0") == [] and cas.calls == [] and in_memory(cas) == BEFORE
     swap = swap_macro()
     assert re.findall(r"%if &_lfs_outcome\. EQ (\w+) %then", swap) == ["kept", "restored", "replace", "save"]
+    assert len({KEPT, KEPT_NONE, KEPT_DROPPED}) == 3
     in_order(swap, 'table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;',
              'table.tableExists result = still status = stillAsked / caslib = "&_lfs_caslib." name = "&_lfs_table.";',
-             'if still.exists != 0 then outcome = "kept";', "table.loadTable status = restored /")
+             "else if still.exists != 0 then do;", 'outcome = "kept";', "table.loadTable status = restored /")
+
+
+class SecondRun(casl_harness.FakeCAS):
+    """A second run of the program at the same time: it loads the table between the drop and the promote of this run -
+    measured on 2026-10-20 with two runs of Load-Accelerator-Tables started 3 seconds apart, the second refused with
+    'ERROR: The target table DECISION_FACT_SHEET of the promotion already exists'."""
+
+    def __call__(self, action, parameters):
+        if action == "table.promote" and not self.exists("Public", parameters["target"]):
+            self.table("Public", parameters["target"], COLUMNS, rows=30, of="the sheet of the second run")
+        return super().__call__(action, parameters)
+
+
+@pytest.mark.parametrize("there, line", [(True, KEPT_DROPPED), (False, KEPT_NONE)], ids=["dropped by this run", "none to drop"])
+def test_a_table_a_second_run_loaded_in_between_is_left_and_the_run_ends_with_a_warning(there, line):
+    """The promote is refused with an ERROR line of CAS, which leaves SYSCC at 1012 (measured on 2026-10-20): SAS Job
+    Execution showed its page Job Error, not the page of the job. The swap took care of it - the table of the second run
+    is left -, so the condition code is put back to what it was in front of the step, and to 4 at least."""
+    cas = SecondRun()
+    if there:
+        cas.table("Public", "LLM_FACT_SHEET", COLUMNS, rows=28, of="the table of before")
+    cas.file("Public", "LLM_FACT_SHEET.sashdat", COLUMNS, rows=28, of="the table of before")
+    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=30, of="the sheet", scope="session")
+
+    log, macros = swapped_with(cas, SYSCC="0", _lfs_outcomes="ACCELERATOR_RELEASES:loaded")
+    assert log == [line]
+    assert cas.errors == ["ERROR: table.promote: the table LLM_FACT_SHEET_NEW could not be promoted as LLM_FACT_SHEET"]
+    assert in_memory(cas)["of"] == "the sheet of the second run" and cas.session == {}
+    assert macros["syscc"] == "4" and macros["_lfs_outcomes"] == "ACCELERATOR_RELEASES:loaded LLM_FACT_SHEET:kept"
+    # an error in front of the step stays an error
+    cas = SecondRun()
+    cas.table("Public", "LLM_FACT_SHEET_NEW", COLUMNS, rows=30, of="the sheet", scope="session")
+    assert swapped_with(cas, SYSCC="8")[1]["syscc"] == "8"
+
+
+@pytest.mark.parametrize("refuse, outcome", [({("table.dropTable", "LLM_FACT_SHEET")}, "kept"),
+                                             ({("table.promote", "LLM_FACT_SHEET")}, "restored"),
+                                             ({("table.save", "LLM_FACT_SHEET")}, "save")],
+                         ids=["the table that could not be dropped", "loaded again from its file", "not saved"])
+def test_each_outcome_the_swap_took_care_of_ends_as_a_warning(refuse, outcome):
+    log, macros = swapped_with(library(refuse=refuse), _lfs_outcomes="")
+
+    assert len(log) == 1 and log[0].startswith("WARNING: ")
+    assert macros["syscc"] == "4" and macros["_lfs_handled"] == "1" and macros["_lfs_outcomes"] == f"LLM_FACT_SHEET:{outcome}"
+
+
+@pytest.mark.parametrize("saved", [True, False], ids=["the load is refused", "there is no saved file"])
+def test_a_table_that_is_gone_stays_an_error_of_the_job(saved):
+    """A refused promote behind which the table could not be loaded again is no outcome the swap took care of: the
+    condition code stays as CAS left it, and the program run on its own (without _lfs_outcomes) records nothing."""
+    cas = library(refuse={("table.promote", "LLM_FACT_SHEET")} | ({("table.loadTable", "LLM_FACT_SHEET")} if saved else set()), saved=saved)
+    log, macros = swapped_with(cas)
+
+    assert log == [GONE] and macros["syscc"] == "1012" and macros["_lfs_handled"] == "0" and "_lfs_outcomes" not in macros
+    # a swap that went through leaves the condition code as it found it
+    log, macros = swapped_with(library(), SYSCC="0", _lfs_outcomes="")
+    assert log == [] and macros["syscc"] == "0" and macros["_lfs_outcomes"] == "LLM_FACT_SHEET:loaded"
 
 
 def test_the_readme_says_of_the_program_what_it_does():

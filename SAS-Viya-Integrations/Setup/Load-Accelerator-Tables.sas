@@ -66,11 +66,19 @@
  * of that file is not in the CAS library: the job is there to load the four.
  * An error of SAS or of CAS on the way is an
  * error of the job as well; it stops no table behind it from being loaded.
+ * Except where the program took care of it: an upload whose promote CAS
+ * refused - a second run of the job at the same time had loaded a table of
+ * that name, say - leaves the table that is in memory, or loads the table
+ * again from its saved file, and a table that holds the upload and could not
+ * be saved stays in memory. Each is a WARNING, and the ERROR line CAS wrote
+ * for it no longer fails the job: the condition code is put back to 4, so
+ * that SAS Job Execution shows the page of the job, not its page "Job Error".
  *
  * THE PAGE. Started from its address in SAS Job Execution the job writes a
  * short page to _webout: each of the four tables with its rows and whether
  * this run loaded it, left it as it was or did not find it in the CAS library
- * at the end. The log keeps every message. Run in SAS Studio, where a session
+ * at the end - and of a table the upload could not take the place of, that it
+ * was left or loaded again from its saved file. The log keeps every message. Run in SAS Studio, where a session
  * has no _webout, the program writes no page.
  *
  * Parameters of the job definition:
@@ -121,6 +129,11 @@ options nosyntaxcheck;
 %let _lat_failed = 0;
 /* the tables that are not in the CAS library at the end of the run */
 %let _lat_missing = ;
+/* <table>:<outcome> of each table whose upload was to take its place - the release table here, the fact sheets in
+   Load-Fact-Sheets.sas, which adds to _lfs_outcomes where it is there. The page names a table that was left or
+   loaded again from its file (kept, restored) and one that was not saved (save) */
+%let _lat_outcomes = ;
+%let _lfs_outcomes = ;
 
 /* The parameters stand in statements below, so each is looked at as text
    first: a quotation mark, a percent sign, an ampersand or a semicolon in one
@@ -255,7 +268,7 @@ run;
    would put values under the wrong names. CAS then reads the file with the
    options the ingestion job of a RAG setup uploads its run history with. */
 %macro _lat_release_table;
-    %local _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there _lat_taken _lat_helper;
+    %local _lat_dropped _lat_handled _lat_cc _lat_file _lat_copy _lat_rows _lat_header _lat_outcome _lat_staged _lat_i _lat_n _lat_v _lat_there _lat_taken _lat_helper;
     %if &_lat_ready. NE 1 %then %return;
     %let _lat_file = %sysfunc(pathname(work))/accelerator_releases.csv;
     %let _lat_rows = -1;
@@ -331,10 +344,15 @@ run;
     %let _lat_outcome = unknown;
     %let _lat_staged = -1;
     %let _lat_helper = unknown;
+    %let _lat_dropped = unknown;
+    %let _lat_handled = 0;
+    /* the condition code before the step: a refused promote or save that the step took care of puts it back below */
+    %let _lat_cc = &syscc.;
     %let _lat_n = %sysfunc(countw(&_lat_vars., %str( )));
     proc cas;
         outcome = "upload";
         staged = -1;
+        handled = 0;
         upload path = "&_lat_file."
             casOut = {caslib = "&caslib.", name = "&releaseTable._NEW", replace = true}
             importOptions = {fileType = "csv", allowEmbeddedNewLines = true,
@@ -438,9 +456,18 @@ run;
                 table.dropTable / caslib = "&caslib." name = "_LAT_SAVED" quiet = true;
             end;
         end;
+        /* The swap of Load-Fact-Sheets.sas: what the drop did is kept for the WARNING of a table that is left, and a
+           refused promote drops the upload and leaves a table of the name that is in memory - one a second run of the
+           job at the same time loaded, say - or loads the table again from the file it was saved to */
         if staged == &_lat_rows. and outcome == "rows" then do;
             outcome = "replace";
+            there = 1;
+            table.tableExists result = held status = heldAsked / caslib = "&caslib." name = "&releaseTable.";
+            if heldAsked.severity == 0 then there = held.exists;
             table.dropTable status = dropped / caslib = "&caslib." name = "&releaseTable." quiet = true;
+            if dropped.severity != 0 then drop = "refused";
+            else if there == 0 then drop = "none";
+            else drop = "dropped";
             table.promote status = promoted / caslib = "&caslib." name = "&releaseTable._NEW"
                 targetLib = "&caslib." target = "&releaseTable.";
             if promoted.severity == 0 then do;
@@ -448,7 +475,26 @@ run;
                 table.save status = stored / table = {caslib = "&caslib.", name = "&releaseTable."}
                     caslib = "&caslib." name = "&releaseTable." replace = true;
                 if stored.severity == 0 then outcome = "loaded";
+                else handled = 1;
             end;
+            else do;
+                table.dropTable / caslib = "&caslib." name = "&releaseTable._NEW" quiet = true;
+                table.tableExists result = still status = stillAsked / caslib = "&caslib." name = "&releaseTable.";
+                if stillAsked.severity != 0 then outcome = "replace";
+                else if still.exists != 0 then do;
+                    outcome = "kept";
+                    handled = 1;
+                end;
+                else do;
+                    table.loadTable status = restored / caslib = "&caslib." path = "&releaseTable..sashdat"
+                        casOut = {caslib = "&caslib.", name = "&releaseTable.", promote = true};
+                    if restored.severity == 0 then do;
+                        outcome = "restored";
+                        handled = 1;
+                    end;
+                end;
+            end;
+            call symputx("_lat_dropped", drop, "L");
         end;
         else do;
             /* an upload that does not hold every row takes the place of no table */
@@ -457,7 +503,20 @@ run;
         /* "L": local to this macro - without a scope CASL writes to the global symbol table */
         call symputx("_lat_outcome", outcome, "L");
         call symputx("_lat_staged", staged, "L");
+        call symputx("_lat_handled", handled, "L");
     quit;
+
+    /* A refused promote or save is an ERROR line of CAS, and the condition code of the session is then 1012: SAS Job
+       Execution shows its page "Job Error" in place of the page of the job (measured on 2026-10-20, two runs of the
+       job started 3 seconds apart). Where the step took care of it - the table that is in memory was left, the table
+       was loaded again from its file, or it holds the upload and was not saved - the condition code is put back to
+       what it was before the step, and to 4 at least, as a WARNING leaves it; any other outcome leaves it as CAS did */
+    %if &_lat_handled. EQ 1 %then %do;
+        %let syscc = %sysfunc(max(&_lat_cc., 4));
+    %end;
+    %if %symexist(_lat_outcomes) %then %do;
+        %let _lat_outcomes = &_lat_outcomes. &releaseTable.:&_lat_outcome.;
+    %end;
 
     %if &_lat_outcome. EQ foreign %then %do;
         %put ERROR: Load-Accelerator-Tables: the table &caslib..&releaseTable. is no release table - it lacks columns of one - and was left as it is: the parameter releaseTable names another table.;
@@ -490,8 +549,16 @@ run;
         %put WARNING: Load-Accelerator-Tables: the &_lat_rows. rows of ACCELERATOR_RELEASES.csv could not be uploaded to the CAS library &caslib. (messages above), the table &caslib..&releaseTable. was left as it is.;
     %else %if &_lat_outcome. EQ rows %then
         %put WARNING: Load-Accelerator-Tables: the upload of ACCELERATOR_RELEASES.csv holds &_lat_staged. rows where the file has &_lat_rows., the table &caslib..&releaseTable. was left as it is.;
+    %else %if &_lat_outcome. EQ kept and &_lat_dropped. EQ refused %then
+        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above). The table of that name that is in memory was left as it is: it could not be dropped.;
+    %else %if &_lat_outcome. EQ kept and &_lat_dropped. EQ none %then
+        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above). The table of that name that is in memory was left as it is: none was in memory when this run went to drop it, and one was loaded before the promote - by a second run of the job at the same time, say.;
+    %else %if &_lat_outcome. EQ kept %then
+        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above). The table of that name that is in memory was left as it is: this run had dropped the table, and one was loaded again before the promote - by a second run of the job at the same time, say.;
+    %else %if &_lat_outcome. EQ restored %then
+        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above). The table was loaded again from the file it was saved to before.;
     %else %if &_lat_outcome. EQ replace %then
-        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above). The table holds what it held before or is no longer in memory.;
+        %put WARNING: Load-Accelerator-Tables: the upload could not take the place of the table &caslib..&releaseTable. (messages above), and the table was not loaded again from the file it was saved to before: load that file, or run the job again.;
     %else %if &_lat_outcome. EQ save %then
         %put WARNING: Load-Accelerator-Tables: the release table &caslib..&releaseTable. holds its &_lat_rows. rows in memory and could not be saved (messages above).;
     %else
@@ -587,7 +654,8 @@ filename _latlfs clear;
     %end;
     data _null_;
         file _webout lrecl=32767;
-        length _lat_line $ 2000 _lat_lib _lat_name $ 300 _lat_before _lat_after _lat_class _lat_state $ 200 _lat_rows $ 40;
+        length _lat_line $ 2000 _lat_lib _lat_name $ 300 _lat_before _lat_after _lat_class _lat_state $ 200 _lat_rows $ 40
+            _lat_all $ 1000 _lat_outcome $ 40;
         _lat_lib = htmlencode(strip(symget('caslib')));
         put '<!DOCTYPE html>';
         put '<html lang="en"><head><meta charset="utf-8"><title>SAS Agentic AI Accelerator - Load Accelerator Tables</title>';
@@ -611,14 +679,32 @@ filename _latlfs clear;
                 || ' at the end of the run, or CAS did not say whether they are: ' || strip(htmlencode(strip(symget('_lat_missing')))) || '.</p>';
             put _lat_line;
             put '<table><thead><tr><th>Table</th><th>Rows</th><th>This run</th></tr></thead><tbody>';
+            _lat_all = upcase(catx(' ', symget('_lat_outcomes'), symget('_lfs_outcomes')));
             do _lat_i = 1 to 4;
                 _lat_name = scan(catx(' ', symget('releaseTable'), 'LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET'), _lat_i, ' ');
                 _lat_before = scan(symget('_lat_before'), _lat_i, ' ');
                 _lat_after = scan(symget('_lat_after'), _lat_i, ' ');
                 _lat_rows = scan(_lat_after, 1, '/');
+                /* what the swap of this table ended with, where it got to one */
+                _lat_outcome = '';
+                do _lat_j = 1 to countw(_lat_all, ' ');
+                    if scan(scan(_lat_all, _lat_j, ' '), 1, ':') = upcase(strip(_lat_name)) then _lat_outcome = lowcase(scan(scan(_lat_all, _lat_j, ' '), 2, ':'));
+                end;
                 _lat_class = 'missing';
                 if _lat_rows = 'unknown' then _lat_state = 'CAS did not list the tables of the CAS library';
                 else if _lat_rows = 'none' then _lat_state = 'Not in the CAS library';
+                else if _lat_outcome = 'kept' then do;
+                    _lat_class = 'kept';
+                    _lat_state = 'Left as it was: the upload could not take its place - the WARNING in the log says why';
+                end;
+                else if _lat_outcome = 'restored' then do;
+                    _lat_class = 'kept';
+                    _lat_state = 'Loaded again from its saved file: the upload could not take its place - the WARNING in the log says why';
+                end;
+                else if _lat_outcome = 'save' then do;
+                    _lat_class = 'kept';
+                    _lat_state = 'Loaded by this run and not saved: its saved file is the one of before';
+                end;
                 else if scan(_lat_before, 1, '/') = 'unknown' then do;
                     _lat_class = 'ok';
                     _lat_state = 'In the CAS library';
@@ -654,5 +740,5 @@ options &_lat_syntaxcheck.;
 %if &_lat_ready. NE 1 or &_lat_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _lat_vars _lat_ready _lat_failed _lat_missing _lat_clean_cas_session _lat_syntaxcheck _lat_before _lat_after / nowarn;
+%symdel _lat_vars _lat_ready _lat_failed _lat_missing _lat_clean_cas_session _lat_syntaxcheck _lat_outcomes _lfs_outcomes _lat_before _lat_after / nowarn;
 %symdel _lfs_path _lfs_caslib / nowarn;

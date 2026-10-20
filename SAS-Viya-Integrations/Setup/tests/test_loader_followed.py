@@ -244,9 +244,65 @@ def test_a_first_run_loads_the_table_and_writes_no_error(no_table_when_empty):
     assert log == [LOADED] and macros["_lat_failed"] == "0" and cas.errors == []
     assert loaded(cas) == {"columns": columns(), "rows": 755, "of": "upload"} and saved(cas)["of"] == "upload" and cas.session == {}
     assert [action for action, _ in cas.calls] == ["table.tableExists", "upload", "table.tableExists", "table.tableInfo", "table.tableExists",
-                                                   "table.fileInfo", "table.dropTable", "table.promote", "table.save"]
+                                                   "table.fileInfo", "table.tableExists", "table.dropTable", "table.promote", "table.save"]
+    # a run that went through leaves the condition code as it found it
+    assert macros["syscc"] == "0" and macros["_lat_handled"] == "0"
     # the first action asks for a table of the name the file is uploaded under
     assert cas.calls[0][1] == {"caslib": "Public", "name": RELEASES + "_NEW"}
+
+
+class SecondRun(casl_harness.FakeCAS):
+    """A second run of the job at the same time, which loads the release table between the drop and the promote of this
+    run - measured on 2026-10-20 for the fact sheets: two runs started 3 seconds apart, the second refused with 'ERROR:
+    The target table DECISION_FACT_SHEET of the promotion already exists', and SYSCC 1012 made SAS Job Execution show its
+    page Job Error in place of the page of the job."""
+
+    def __call__(self, action, parameters):
+        if action == "table.promote" and not self.exists("Public", parameters["target"]):
+            self.table("Public", parameters["target"], columns(), rows=755, of="the upload of the second run")
+        return super().__call__(action, parameters)
+
+
+LEFT = ("WARNING: Load-Accelerator-Tables: the upload could not take the place of the table Public.ACCELERATOR_RELEASES (messages above). "
+        "The table of that name that is in memory was left as it is: ")
+
+
+@pytest.mark.parametrize("there, line", [
+    (True, LEFT + "this run had dropped the table, and one was loaded again before the promote - by a second run of the job at the "
+                  "same time, say."),
+    (False, LEFT + "none was in memory when this run went to drop it, and one was loaded before the promote - by a second run of the "
+                   "job at the same time, say.")], ids=["dropped by this run", "none to drop"])
+def test_a_release_table_a_second_run_loaded_in_between_is_left_and_the_run_ends_with_a_warning(there, line):
+    cas = SecondRun(upload_rows=755)
+    if there:
+        cas.table("Public", RELEASES, columns(), rows=707, of="the table of before")
+    log, macros = release(cas, SYSCC="0", _lat_outcomes="")
+
+    assert log == [line] and macros["_lat_failed"] == "0"
+    assert cas.errors == ["ERROR: table.promote: the table ACCELERATOR_RELEASES_NEW could not be promoted as ACCELERATOR_RELEASES"]
+    assert loaded(cas)["of"] == "the upload of the second run" and cas.session == {}
+    # the ERROR line of CAS left SYSCC at 1012; the step took care of it, so it is put back to 4: the page of the job shows
+    assert macros["syscc"] == "4" and macros["_lat_outcomes"] == "ACCELERATOR_RELEASES:kept"
+
+
+def test_a_refused_promote_loads_the_release_table_again_and_one_that_stays_gone_is_an_error():
+    cas = casl_harness.FakeCAS(upload_rows=755, refuse={("table.promote", RELEASES)})
+    cas.table("Public", RELEASES, columns(), rows=707, of="the table of before")
+    cas.file("Public", RELEASES + ".sashdat", columns(), rows=707, of="the table of before")
+    log, macros = release(cas, SYSCC="0", _lat_outcomes="")
+
+    assert log == ["WARNING: Load-Accelerator-Tables: the upload could not take the place of the table Public.ACCELERATOR_RELEASES "
+                   "(messages above). The table was loaded again from the file it was saved to before."]
+    assert loaded(cas)["of"] == "the table of before" and macros["syscc"] == "4" and macros["_lat_outcomes"] == "ACCELERATOR_RELEASES:restored"
+
+    cas = casl_harness.FakeCAS(upload_rows=755, refuse={("table.promote", RELEASES)})
+    cas.table("Public", RELEASES, columns(), rows=707, of="the table of before")
+    log, macros = release(cas, SYSCC="0")
+    assert log == ["WARNING: Load-Accelerator-Tables: the upload could not take the place of the table Public.ACCELERATOR_RELEASES "
+                   "(messages above), and the table was not loaded again from the file it was saved to before: load that file, or run "
+                   "the job again."]
+    # no table: an error of the job, as CAS left it - and the look at the end fails the job for the table that is not there
+    assert loaded(cas) is None and macros["syscc"] == "1012" and macros["_lat_handled"] == "0"
 
 
 def test_a_release_table_in_memory_is_replaced_also_the_one_of_2_2_0():
@@ -413,10 +469,12 @@ def test_the_warning_of_a_taken_name_alone_does_not_fail_the_job(sheets):
                           "they are: LLM_FACT_SHEET "
                           "EMBEDDING_FACT_SHEET DECISION_FACT_SHEET. The lines above say why."]
     assert end["_lat_failed"] == ("0" if sheets else "1") and end["_lat_ready"] == "1"
-    # the one statement that sets the condition code reads these two, and nothing else of the program sets it
+    # the one statement that sets the condition code of a failed job reads these two; the only other statement that sets
+    # it puts it back to a WARNING behind a promote or a save the release table step took care of
     code = re.sub(r"/\*.*?\*/", "", program(), flags=re.DOTALL)
     assert code.count("%if &_lat_ready. NE 1 or &_lat_failed. EQ 1 %then %do;\n    %let SYSCC = 1012;\n%end;\n") == 1
-    assert len(re.findall(r"syscc\s*=", code, flags=re.IGNORECASE)) == 1
+    assert re.findall(r"syscc\s*=[^;]*;", code, flags=re.IGNORECASE) == ["syscc = %sysfunc(max(&_lat_cc., 4));", "SYSCC = 1012;"]
+    assert macros["syscc"] == "0"
 
 
 def test_the_two_causes_of_a_saved_file_that_is_not_replaced_have_a_line_each():
@@ -528,7 +586,10 @@ def test_the_statements_that_look_at_the_saved_file():
             '                            casOut = {caslib = "&caslib.", name = "_LAT_SAVED", replace = true};') in code
     # the name: asked for, loaded, looked at, dropped - and named in the ERROR line of a file that could not be loaded or
     # lacks columns, and twice in the one of a file that was not looked at
-    assert code.count("_LAT_SAVED") == 7 and "promote = true" not in code
+    assert code.count("_LAT_SAVED") == 7 and code.count("promote = true") == 1
+    # the one load with PROMOTE is the one of the saved release table, behind a promote that was refused
+    assert ('table.loadTable status = restored / caslib = "&caslib." path = "&releaseTable..sashdat"\n'
+            '                        casOut = {caslib = "&caslib.", name = "&releaseTable.", promote = true};') in code
     # the table of the session is dropped by the flag of the load, not by its name
     assert "if fromFile == 1 then do;" in code and code.count("fromFile = 1;") == 1 and code.count("fromFile = 0;") == 1
     # the header and the parameter say which table is looked at

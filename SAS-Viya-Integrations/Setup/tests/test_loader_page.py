@@ -126,7 +126,8 @@ def test_the_two_reads_stand_around_the_loads_and_inside_the_cas_session():
     positions = [text.index(marker) for marker in order]
     assert positions == sorted(positions)
     assert "%let _lat_before = ;\n%let _lat_after = ;\n" in text
-    assert re.search(r"%symdel [^;]*\b_lat_before _lat_after / nowarn;", text)
+    assert re.search(r"%symdel [^;]*\b_lat_outcomes _lfs_outcomes _lat_before _lat_after / nowarn;", text)
+    assert "%let _lat_outcomes = ;\n%let _lfs_outcomes = ;\n" in text
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +203,31 @@ def test_the_page_names_each_table_with_its_rows_and_what_this_run_did_with_it()
     assert "htmlencode(strip(symget('_lat_missing')))" in step
     # the four tables in the order of the check at the end
     assert "scan(catx(' ', symget('releaseTable'), 'LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET'), _lat_i, ' ')" in step
+
+
+def test_a_table_the_upload_could_not_take_the_place_of_says_so_on_the_page():
+    """2026-10-20: two runs of the job started 3 seconds apart - the promote of the second was refused, which ended the job
+    with SYSCC 1012 and the page Job Error of SAS Job Execution. The swap takes care of it now and the job ends with a
+    WARNING, so the page shows; it names what became of that table from <table>:<outcome> of the release table step and
+    of Load-Fact-Sheets.sas, before it compares the two reads."""
+    step = page_step()
+    html = "".join(re.findall(r"'([^']*)'", step))
+
+    assert "_lat_all = upcase(catx(' ', symget('_lat_outcomes'), symget('_lfs_outcomes')));" in step
+    in_order = ["else if _lat_rows = 'none' then _lat_state = 'Not in the CAS library';",
+                "else if _lat_outcome = 'kept' then do;",
+                "_lat_state = 'Left as it was: the upload could not take its place - the WARNING in the log says why';",
+                "else if _lat_outcome = 'restored' then do;",
+                "_lat_state = 'Loaded again from its saved file: the upload could not take its place - the WARNING in the log says why';",
+                "else if _lat_outcome = 'save' then do;",
+                "_lat_state = 'Loaded by this run and not saved: its saved file is the one of before';",
+                "else if scan(_lat_before, 1, '/') = 'unknown' then do;"]
+    positions = [step.index(statement) for statement in in_order]
+    assert positions == sorted(positions)
+    assert "td.kept{" in html
+    # the fact sheet program adds its outcomes only where the job has the macro variable
+    sheets = (REPOSITORY / "SAS-Viya-Integrations" / "Logging-Monitoring" / "Load-Fact-Sheets.sas").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert "    %if %symexist(_lfs_outcomes) %then %do;\n        %let _lfs_outcomes = &_lfs_outcomes. &_lfs_table.:&_lfs_outcome.;\n" in sheets
 
 
 def test_the_readmes_and_the_guide_say_what_the_page_shows():

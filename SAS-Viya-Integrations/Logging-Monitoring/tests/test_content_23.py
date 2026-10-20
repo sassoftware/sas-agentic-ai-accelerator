@@ -63,6 +63,9 @@ NOT_ASKED = {
     "_lnk_log_scope": "-1", "_lnk_log_saved": "-1", "_lnk_log_exists": "-1", "_lnk_catalog_exists": "-1", "_lnk_runs_exists": "-1",
     "_lnk_failed": "1",
     "_lfs_taken": "refused", "_lfs_staged": "-1", "_lfs_outcome": "unknown",
+    # what the drop of a swap did, and whether the step took care of a refused promote or save (2026-10-20): not said,
+    # and not - a step that halts leaves the condition code as CAS left it
+    "_lfs_dropped": "unknown", "_lfs_handled": "0", "_lat_dropped": "unknown", "_lat_handled": "0",
     "_log_target_rows": "-3", "_log_cas_refused": "1", "_log_target_scope": "0", "_log_target_unloaded": "0", "_log_target_loaded": "0",
     "_log_kept_rows": "-1", "_log_took_rows": "-1", "_log_failed": "1",
     "_lat_taken": "refused", "_lat_outcome": "unknown", "_lat_staged": "-1", "_lat_helper": "unknown",
@@ -127,8 +130,8 @@ def test_every_macro_variable_a_proc_cas_step_sets_starts_at_the_value_of_a_ques
         counted[name] += len(steps)
     assert counted == {"Custom-Steps/LLM - Get All Prompts.step": 2, "Logging-Monitoring/Get-All-Prompts.sas": 2,
                        "Logging-Monitoring/Build-RAG-Cost-View.sas": 1, "Logging-Monitoring/Link-Logs-To-Models.sas": 8,
-                       "Logging-Monitoring/Load-Fact-Sheets.sas": 3, "Custom-Steps/LLM - Log Parser.step": 11,
-                       "Logging-Monitoring/Log-Parser-Code.sas": 11, "Setup/Load-Accelerator-Tables.sas": 7}
+                       "Logging-Monitoring/Load-Fact-Sheets.sas": 5, "Custom-Steps/LLM - Log Parser.step": 11,
+                       "Logging-Monitoring/Log-Parser-Code.sas": 11, "Setup/Load-Accelerator-Tables.sas": 9}
     # the frozen programs are the ones the rules name, and no other program is left out
     assert set(FROZEN) == {"RAG-Ingestion/Ingest-Documents.sas", "RAG-Ingestion/Test-Retrieval.sas", "Prompt-Optimization/Optimize-Prompt-DSPy.sas"}
     every = {path.relative_to(INTEGRATIONS).as_posix() for path in INTEGRATIONS.rglob("*.sas") if "/tests/" not in path.as_posix()}
@@ -654,7 +657,7 @@ def test_a_swap_whose_step_halted_says_that_nothing_said_what_became_of_the_shee
     counter.table("Public", "LLM_FACT_SHEET", sheets.COLUMNS, rows=28, of="the table of before")
     counter.file("Public", "LLM_FACT_SHEET.sashdat", sheets.COLUMNS, rows=28, of="the table of before")
     counter.table("Public", "LLM_FACT_SHEET_NEW", sheets.COLUMNS, rows=30, of="the sheet", scope="session")
-    assert sheets.swapped(counter) == [] and counter.count == 3
+    assert sheets.swapped(counter) == [] and counter.count == 4
     for halt_from in range(1, counter.count + 1):
         cas = HaltingCAS(halt_from=halt_from)
         cas.table("Public", "LLM_FACT_SHEET", sheets.COLUMNS, rows=28, of="the table of before")

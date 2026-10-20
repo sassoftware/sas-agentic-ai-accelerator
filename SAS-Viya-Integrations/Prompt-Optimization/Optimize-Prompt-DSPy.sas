@@ -322,34 +322,84 @@ def http_failure(response):
     Found): No model with ID x was found." SAS Viya answers with a JSON error
     (version 2: message, remediation, httpStatusCode), which was written into
     the message as it came, in a log that turns its quotation marks into
-    backticks. A message that only repeats the name of the status is left
-    out; an answer that is no JSON error gives its text, without markup and
-    cut at 200 characters. The sentence ends with a full stop."""
+    backticks. A model container (SCR) answers a call whose score code raised
+    with HTTP 422 and a JSON error of its own (errorCode, errorMessage,
+    httpStatus, id, remediation, version - measured on SAS Viya 2026.09):
+    its errorMessage is "422 Unprocessable Entity:" and the source line of
+    the raise, so the text of a raise such as RuntimeError("No API key: ...")
+    is its message, and a line of only the marks under a traceback is left
+    out. A message that only repeats the name of the status is left out; an
+    answer that is no JSON error, a JSON list or a JSON string gives its
+    text, without markup. The message and the remediation are each cut at
+    300 characters, and anything that looks like a key or a token is
+    masked: the sentence is written into the log and the tracker. Nothing
+    of the request (its headers, its body) is in it. The sentence ends with
+    a full stop."""
     import http.client
     status = int(getattr(response, "status_code", 0) or 0)
-    reason = str(getattr(response, "reason", "") or http.client.responses.get(status, "") or "").strip()
+    standard = http.client.responses.get(status, "")
+    reason = str(getattr(response, "reason", "") or standard or "").strip()
+    if reason.isupper():
+        # SCR answers "UNPROCESSABLE ENTITY" (Python 3.13 names 422
+        # "Unprocessable Content")
+        reason = standard if reason.casefold() == standard.casefold() else reason.title()
     message, remediation = "", ""
     text = str(getattr(response, "text", "") or "")
     try:
         body = json.loads(text) if text.strip() else None
     except Exception:
         body = None
+
+    def flat(value):
+        return re.sub(r"\s+", " ", str(value)).strip()
+
     if isinstance(body, dict):
-        for key in ("message", "error", "detail", "error_description"):
+        for key in ("message", "errorMessage", "error", "detail", "error_description"):
             value = body.get(key)
+            if isinstance(value, dict):  # {"error": {"message": ...}} of a provider
+                value = value.get("message") or value.get("errorMessage")
+            if isinstance(value, (list, tuple)) and value:
+                value = json.dumps(value, separators=(",", ":"), default=str)
             if isinstance(value, str) and value.strip():
-                message = value.strip()
+                message = flat(value)
                 break
         if isinstance(body.get("remediation"), str):
-            remediation = body["remediation"].strip()
+            remediation = flat(body["remediation"])
+    elif isinstance(body, str):
+        message = flat(body)
+    elif isinstance(body, list) and body:
+        message = json.dumps(body, separators=(",", ":"), default=str)
     elif body is None and text.strip():
-        message = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", text)).strip()[:200]
+        message = flat(re.sub(r"<[^>]*>", " ", text))
+    if message and status:
+        # "422 Unprocessable Entity: <line>" - the status again, before the line
+        message = re.sub(rf"^{status}\s+[A-Za-z][A-Za-z '-]{{0,40}}:\s*", "", message).strip()
+    raised = re.fullmatch(r"raise\s+[\w.]+\(\s*(['\"])(.*)\1\s*\)", message)
+    if raised:
+        message = raised.group(2).strip()
+    if not re.search(r"\w", message):
+        message = ""  # "~~~~~~~^^^^^^^^^^^", the marks under a traceback line
+
+    def masked(value):
+        value = re.sub(r"(?i)\b(bearer|basic)\s+(?=[\w.~+/=-]*\d)[\w.~+/=-]{8,}", r"\1 ***", value)
+        value = re.sub(r"(?i)\b(api[_-]?key|x-api-key|authorization|access[_-]?token|token|secret|password)(\s*[:=]\s*['\"]?)[\w.~+/=-]{8,}", r"\1\2***", value)
+        return re.sub(r"\b(sk|pk|rk|xox[abp]|AIza|ghp|gho)[-_][\w-]{12,}", r"\1-***", value)
+
+    def cut(value, limit=300):
+        value = masked(value)
+        return value if len(value) <= limit else value[:limit].rstrip() + "..."
+
+    message, remediation = cut(message), cut(remediation)
+
+    def unstopped(value):  # a closing full stop goes, an ellipsis stays
+        return value if value.endswith("...") else value.rstrip(".")
+
     said = f"HTTP {status}" + (f" ({reason})" if reason else "")
     if message and message.casefold() != reason.casefold():
-        said += ": " + message.rstrip(".")
+        said += ": " + unstopped(message)
     if remediation and remediation.casefold() != message.casefold():
-        said += ". " + remediation.rstrip(".")
-    return said + "."
+        said += (" " if said.endswith("...") else ". ") + unstopped(remediation)
+    return said if said.endswith("...") else said + "."
 
 
 def viya(method, path, expect_json=True, **kwargs):

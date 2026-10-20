@@ -249,23 +249,31 @@ def test_the_table_is_dropped_only_behind_an_upload_that_holds_every_row():
              'table.save status = stored / table = {caslib = "&caslib.", name = "&releaseTable."}',
              'if stored.severity == 0 then outcome = "loaded";',
              'table.dropTable / caslib = "&caslib." name = "&releaseTable._NEW" quiet = true;')
-    # the upload is dropped in the ELSE group of the statement that replaces
+    # the upload is dropped in the ELSE group of the statement that replaces, and behind a promote that was refused
     replace = release[release.index('if staged == &_lat_rows. and outcome == "rows" then do;'):release.index('call symputx("_lat_outcome"')]
-    assert replace.count("else do;") == 1 and replace.index("else do;") < replace.index('name = "&releaseTable._NEW" quiet = true;')
+    assert replace.count('name = "&releaseTable._NEW" quiet = true;') == 2
+    assert replace.rindex("else do;") < replace.rindex('name = "&releaseTable._NEW" quiet = true;')
+    in_order(replace, "if promoted.severity == 0 then do;", "else do;", 'table.dropTable / caslib = "&caslib." name = "&releaseTable._NEW" quiet = true;',
+             'table.tableExists result = still status = stillAsked / caslib = "&caslib." name = "&releaseTable.";',
+             'outcome = "kept";', 'table.loadTable status = restored /', 'outcome = "restored";')
     # the table itself is dropped in one statement, and promoted and saved in one each
     assert release.count('name = "&releaseTable." quiet = true') == 1 and release.count("table.promote") == 1 and release.count("table.save") == 1
     # every way the upload can end is one line of the log, and only the one that loaded is a NOTE
     outcomes = re.findall(r"%if &_lat_outcome\. EQ (\w+) %then", release)
-    assert outcomes == ["foreign", "foreignfile", "unlisted", "refused", "savedtaken", "loaded", "upload", "rows", "replace", "save"]
+    assert outcomes == ["foreign", "foreignfile", "unlisted", "refused", "savedtaken", "loaded", "upload", "rows", "kept", "restored",
+                        "replace", "save"]
     said = re.findall(r"%put (\w+): Load-Accelerator-Tables: ([^;]*);", release)
-    # fix-content-22: the ERROR line of a question CAS refused in front of the upload, and the one of an action it refused behind it
-    assert [kind for kind, _ in said] == ["WARNING"] * 4 + ["ERROR", "WARNING"] + ["ERROR"] * 5 + ["NOTE"] + ["WARNING"] * 5
+    # fix-content-22: the ERROR line of a question CAS refused in front of the upload, and the one of an action it refused behind it;
+    # three lines for a table that was left behind a refused promote - what the drop did -, one each for loaded again and gone
+    assert [kind for kind, _ in said] == ["WARNING"] * 4 + ["ERROR", "WARNING"] + ["ERROR"] * 5 + ["NOTE"] + ["WARNING"] * 9
     for kind, text in said:
         assert not set(text) & set("%'\"") and text.count("(") == text.count(")"), text
         assert set(re.findall(r"&(\w+)", text)) <= {"contentRoot", "caslib", "releaseTable", "_lat_rows", "_lat_staged", "_lat_taken",
                                                      "_lat_helper"}, text
-        if kind == "WARNING" and "may not be loaded" not in text and "could not be saved" not in text and "holds what it held before" not in text:
+        if kind == "WARNING" and "may not be loaded" not in text and "could not be saved" not in text and "could not take the place" not in text:
             assert text.endswith("was left as it is.") or "was left as it is. " in text, text
+        if "could not take the place" in text:
+            assert "was left as it is: " in text or "loaded again from the file it was saved to before" in text, text
 
 
 def test_a_file_that_is_not_there_or_holds_other_columns_leaves_the_table():
@@ -418,7 +426,9 @@ def test_the_job_fails_for_a_refusal_and_for_a_table_that_is_not_there_at_the_en
              "%let _lat_failed = 1;")
     # the statement that sets the condition code is the last one, behind the session and the option
     block = "%if &_lat_ready. NE 1 or &_lat_failed. EQ 1 %then %do;\n    %let SYSCC = 1012;\n%end;\n"
-    assert text.count(block) == 1 and len(re.findall(r"syscc\s*=", text, flags=re.IGNORECASE)) == 1
+    assert text.count(block) == 1
+    # the one other statement that sets it puts it back to a WARNING behind a refused promote or save the step took care of
+    assert re.findall(r"syscc\s*=[^;]*;", text, flags=re.IGNORECASE) == ["syscc = %sysfunc(max(&_lat_cc., 4));", "SYSCC = 1012;"]
     behind = [statement.strip() for statement in text.split(block)[1].split(";") if statement.strip()]
     assert behind and all(statement.startswith("%symdel ") for statement in behind)
     in_order(text, "cas _latSess terminate;", "options &_lat_syntaxcheck.;", block)

@@ -21,7 +21,11 @@
       Load-Accelerator-Tables does it for the release table. The upload is
       a table of the CAS session with the name <table>_NEW: where a table
       of that name is there before the sheet is loaded, the sheet is not
-      loaded and neither table is touched, with a WARNING.
+      loaded and neither table is touched, with a WARNING. A promote that
+      CAS refuses - a second run at the same time loaded the table, say -
+      leaves the table that is in memory or loads it again from its saved
+      file, with a WARNING; the ERROR line of CAS then fails no run, since
+      the condition code is put back to 4 (see _lfs_swap).
 
     The job definition Load-Accelerator-Tables includes this file from the
       content folder and loads the release table beside the three sheets.
@@ -209,15 +213,46 @@ options nosyntaxcheck;
    is loaded again from the file it was saved to before, which nothing has
    written over. Each outcome other than a saved table is a WARNING that
    says which of them it is. Nothing happens for a sheet that was not read
-   completely. */
+   completely.
+   What the drop did is said with a table that was left: dropped, not in
+   memory, or refused. A drop with quiet = true says nothing for a table that
+   is not there, and a table of the name that is in memory after a drop that
+   went through was loaded in between - by a second run of the program at the
+   same time, say (measured on 2026-10-20: two runs of the job
+   Load-Accelerator-Tables started 3 seconds apart, and the promote of the
+   second was refused with "The target table ... of the promotion already
+   exists").
+   A refused promote or save is an ERROR line of CAS, which leaves the
+   condition code of the session at 1012, and SAS Job Execution then shows
+   its page "Job Error" in place of the page of the job (measured the same
+   day). Where the program took care of it - the table that is in memory was
+   left, the table was loaded again from its file, or the table holds the
+   sheet and was not saved - the condition code is put back to what it was
+   before the step, and to 4 at least, as a WARNING leaves it: the job ends
+   with warnings and its page says what became of the table. Any other
+   outcome leaves the condition code as CAS left it. The outcome is added to
+   _lfs_outcomes, as <table>:<outcome>, where the program that includes this
+   one has that macro variable. */
 %macro _lfs_swap(_lfs_table);
-    %local _lfs_outcome;
+    %local _lfs_outcome _lfs_dropped _lfs_handled _lfs_cc;
     %if &_lfs_ok. NE 1 %then %return;
     /* unknown until the step below says what became of the sheet: a step that halts sets nothing */
     %let _lfs_outcome = unknown;
+    %let _lfs_dropped = unknown;
+    %let _lfs_handled = 0;
+    %let _lfs_cc = &syscc.;
     proc cas;
         outcome = "replace";
+        handled = 0;
+        /* what the drop did, for the WARNING of a table that is left: quiet = true says nothing for a table that is not
+           there. A question CAS refused counts as a table that is there */
+        there = 1;
+        table.tableExists result = held status = heldAsked / caslib = "&_lfs_caslib." name = "&_lfs_table.";
+        if heldAsked.severity == 0 then there = held.exists;
         table.dropTable status = dropped / caslib = "&_lfs_caslib." name = "&_lfs_table." quiet = true;
+        if dropped.severity != 0 then drop = "refused";
+        else if there == 0 then drop = "none";
+        else drop = "dropped";
         table.promote status = promoted / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW"
             targetLib = "&_lfs_caslib." target = "&_lfs_table.";
         if promoted.severity == 0 then do;
@@ -225,6 +260,7 @@ options nosyntaxcheck;
             table.save status = stored / table = {caslib = "&_lfs_caslib.", name = "&_lfs_table."}
                 caslib = "&_lfs_caslib." name = "&_lfs_table." replace = true;
             if stored.severity == 0 then outcome = "loaded";
+            else handled = 1;
         end;
         else do;
             table.dropTable / caslib = "&_lfs_caslib." name = "&_lfs_table._NEW" quiet = true;
@@ -232,17 +268,35 @@ options nosyntaxcheck;
                refused the question, nothing is loaded either and the outcome stays "replace" */
             table.tableExists result = still status = stillAsked / caslib = "&_lfs_caslib." name = "&_lfs_table.";
             if stillAsked.severity != 0 then outcome = "replace";
-            else if still.exists != 0 then outcome = "kept";
+            else if still.exists != 0 then do;
+                outcome = "kept";
+                handled = 1;
+            end;
             else do;
                 table.loadTable status = restored / caslib = "&_lfs_caslib." path = "&_lfs_table..sashdat"
                     casOut = {caslib = "&_lfs_caslib.", name = "&_lfs_table.", promote = true};
-                if restored.severity == 0 then outcome = "restored";
+                if restored.severity == 0 then do;
+                    outcome = "restored";
+                    handled = 1;
+                end;
             end;
         end;
         call symputx("_lfs_outcome", outcome, "L");
+        call symputx("_lfs_dropped", drop, "L");
+        call symputx("_lfs_handled", handled, "L");
     run; quit;
-    %if &_lfs_outcome. EQ kept %then
-        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table of that name that is in memory was left as it is.;
+    %if &_lfs_handled. EQ 1 %then %do;
+        %let syscc = %sysfunc(max(&_lfs_cc., 4));
+    %end;
+    %if %symexist(_lfs_outcomes) %then %do;
+        %let _lfs_outcomes = &_lfs_outcomes. &_lfs_table.:&_lfs_outcome.;
+    %end;
+    %if &_lfs_outcome. EQ kept and &_lfs_dropped. EQ refused %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table of that name that is in memory was left as it is: it could not be dropped.;
+    %else %if &_lfs_outcome. EQ kept and &_lfs_dropped. EQ none %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table of that name that is in memory was left as it is: none was in memory when this run went to drop it, and one was loaded before the promote - by a second run of this program at the same time, say.;
+    %else %if &_lfs_outcome. EQ kept %then
+        %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table of that name that is in memory was left as it is: this run had dropped the table, and one was loaded again before the promote - by a second run of this program at the same time, say.;
     %else %if &_lfs_outcome. EQ restored %then
         %put WARNING: The sheet could not take the place of the table &_lfs_caslib..&_lfs_table. - messages above. The table was loaded again from the file it was saved to before.;
     %else %if &_lfs_outcome. EQ replace %then

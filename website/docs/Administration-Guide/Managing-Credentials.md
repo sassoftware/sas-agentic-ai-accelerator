@@ -444,7 +444,11 @@ them.
   `Create-LLM-Call.sas` write keeps the entry name in `%let API_KEY=OpenAI;`
   and reads the key of that entry when it runs, from the domain named in its
   line `%let API_KEY_DOMAIN=agentic-ai-keys;` and under the identity of its
-  SAS session; the call sends the key in the place of the name. The key is
+  SAS session; the call sends the key in the place of the name. That line is
+  written as it stands: the steps and the program do not read the
+  *Credential domain* option of the Prompt Builder (`credentialDomain`). A
+  site whose keys are in another domain edits that one line of the
+  generated code. The key is
   not written to the log, and the macro variable `options` - what
   `LLM-Call-Result-Table.sas` puts into the result table - keeps the name.
   The request goes through the temporary file `llmIn`, which then holds the
