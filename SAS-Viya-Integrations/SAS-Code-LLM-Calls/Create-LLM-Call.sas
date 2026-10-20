@@ -17,7 +17,9 @@
       domain agentic-ai-keys that holds the provider key, not the
       key. The code reads the key of that entry when it runs, under
       the identity of its SAS session, and sends it in the place of
-      the name; the log says so in a NOTE.
+      the name; the log says so in a NOTE. The temporary file of
+      the request, which then holds the key, is deleted right
+      behind the call.
 
     slo is short for:
       SAS Large Language Model Options
@@ -297,6 +299,9 @@ data work._slo_final_http;
     _slo_code = 'out=llmOut;';
     output;
     _slo_code = 'run; quit;';
+    output;
+    * The file of the request holds the provider key where the options have API_KEY. Clearing its fileref deletes the temporary file right behind the call - also behind a call that failed;
+    _slo_code = 'filename llmIn clear;';
     output;
     _slo_code = 'libname llmOut json;';
     output;

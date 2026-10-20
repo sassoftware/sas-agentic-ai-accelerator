@@ -170,8 +170,24 @@ PROVIDER_KEY = ("      - The code for a model whose options file has the option 
 # The sentence of the About tab of both steps on the provider key
 KEY_ABOUT = ("The option API_KEY of a model names the entry of the credential domain agentic-ai-keys that holds the provider key, "
              "not the key: the code reads the key of that entry when it runs, under the identity of its SAS session, and sends it "
-             "in the place of the name. The key is not written to the log, and the macro variable options keeps the name. The line "
-             "%let API_KEY_DOMAIN of the code names the domain.")
+             "in the place of the name. The key is not written to the log, and the macro variable options keeps the name. The "
+             "temporary file of the request, which holds the key, is deleted right behind the call. The line %let API_KEY_DOMAIN of "
+             "the code names the domain.")
+# The entry of the newest version in the changelog of both steps (Create LLM Call 1.7, Get Options 1.6)
+REQUEST_CLEARED = ("      - The code deletes the temporary file of the request right behind the call, also behind a call that failed: it "
+                   "clears the fileref llmIn. Where the options have API_KEY that file holds the provider key, and version <before> left "
+                   "it in the WORK folder of the SAS session until the session ended")
+# The lines of the step that writes the HTTP call that changed for it, as (the lines of before, the lines of now)
+REQUEST_CLEARED_GENERATION = [
+    ("""    _slo_code = 'run; quit;';
+    output;
+    _slo_code = 'libname llmOut json;';""", """    _slo_code = 'run; quit;';
+    output;
+    * The file of the request holds the provider key where the options have API_KEY. Clearing its fileref deletes the temporary file right behind the call - also behind a call that failed;
+    _slo_code = 'filename llmIn clear;';
+    output;
+    _slo_code = 'libname llmOut json;';"""),
+]
 
 
 def key_step(text):
@@ -492,6 +508,7 @@ def test_the_about_tab_and_the_changelog_say_what_the_step_does():
             "temporary file, which the fileref _slo_LLM names until the SAS session ends.") in about
     assert about.endswith(" " + KEY_ABOUT)
     assert changelog.split("\n") == [
+        "* Version: 1.7 (20OCT2026)", REQUEST_CLEARED.replace("<before>", "1.6"),
         "* Version: 1.6 (20OCT2026)", PROVIDER_KEY.replace("<before>", "1.5"),
         "* Version: 1.5 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.4"),
         "* Version: 1.4 (13OCT2026)"] + [line.replace("<before>", "1.3") for line in NO_MODEL_AND_TRIMMED] + [
@@ -832,13 +849,55 @@ def test_the_code_for_a_model_with_api_key_reads_the_key_from_the_credential_dom
     assert "set work._slo_final_macro_vars work._slo_final_key work._slo_final_json_input work._slo_final_http;" in text
     assert "delete _slo_options _slo_final_macro_vars _slo_final_key _slo_final_json_input _slo_final_http _slo_final;" in text
 
-    # the expression finds the entry it names and no other, whatever characters its name holds
-    keys = {"OpenAI": "sk-test-openai-0123456789", "OpenAI2": "sk-other", "Azure OpenAI": "azure-key-42", "Voyage.ai": "pa-voyage"}
-    answer = answer_of_the_domain(keys)
+    # the expression finds the entry it names and no other, for each name the Model Definition Builder takes - the name
+    # as the code holds it, from the line %let API_KEY=...; the step writes of the default of the option
+    keys = {"OpenAI": "sk-test-openai-0123456789", "OpenAI2": "sk-other", "Voyage.ai": "pa-voyage", "team-openai_2": "sk-team"}
+    answer = answer_of_the_domain(dict(keys, **{"Azure OpenAI": "azure-key-42"}))
     for entry, key in keys.items():
-        assert key_read(KEY_CODE, answer, entry) == key
+        assert key_name_rule().fullmatch(entry), entry
+        assert key_read(KEY_CODE, answer, as_the_code_holds_it(text, entry)) == key
     assert key_read(KEY_CODE, answer, "Anthropic") == "" and key_read(KEY_CODE, "", "OpenAI") == ""
     assert key_read(KEY_CODE, '{"errorCode":404,"message":"The credential was not found."}', "OpenAI") == ""
+
+
+def key_name_rule():
+    """The rule of the Model Definition Builder for the name of a credential-domain entry (KEY_NAME_PATTERN of
+    mdb/core/manifest.py), which auth.key_name and the default of the option API_KEY of an options.json keep."""
+    source = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "core" / "manifest.py").read_text(
+        encoding="utf-8").replace("\r\n", "\n")
+    return re.compile(re.search(r'^KEY_NAME_PATTERN = re\.compile\(r"([^"]+)"\)$', source, flags=re.MULTILINE).group(1))
+
+
+def as_the_code_holds_it(text, default):
+    """The value of &API_KEY. in the code a program writes for the default of the option API_KEY: the step writes
+    '%let API_KEY=' || compress(default) || ';' - COMPRESS with one argument takes every blank out -, and %LET takes
+    the blanks off the ends of what is left."""
+    assert "    _slo_code = '%let ' || compress(option_name) || '=' || compress(default) || ';';\n" in text
+    return default.replace(" ", "").strip()
+
+
+@pytest.mark.parametrize("name", list(PROGRAMS))
+def test_a_name_the_code_could_not_send_is_refused_by_the_model_definition_builder(name):
+    """Round-29 review. An entry named with a blank, such as 'Azure OpenAI', never reached the expression: the line
+    %let API_KEY=AzureOpenAI; holds the name without its blank, so the code asked for another entry - or for none. A
+    '/' would end the Perl expression, and ',', ':', ';', '&', '%' and quotation marks break the options string, the
+    %LET statement or the JSON of the request. The Model Definition Builder takes letters, digits, '.', '_' and '-' only,
+    in auth.key_name and in the default of API_KEY of an options.json, and every options file of the repository keeps it."""
+    text = PROGRAMS[name]()
+    rule = key_name_rule()
+
+    assert as_the_code_holds_it(text, "Azure OpenAI") == "AzureOpenAI"
+    assert key_read(KEY_CODE, answer_of_the_domain({"Azure OpenAI": "azure-key-42"}), as_the_code_holds_it(text, "Azure OpenAI")) == ""
+    assert key_read(KEY_CODE, answer_of_the_domain({"Azure OpenAI": "azure-key-42", "AzureOpenAI": "sk-other"}),
+                    as_the_code_holds_it(text, "Azure OpenAI")) == "sk-other"
+    for refused in ("Azure OpenAI", " OpenAI", "team/openai", "a,b", "a:b", "a;b", "a&b", "a%b", 'a"b', "a'b", "a{b", "", "Ö"):
+        assert not rule.fullmatch(refused), refused
+    # the definitions; _Base_Definition is the template of a hand-written folder, whose placeholder mdb import replaces
+    defaults = [json.loads(path.read_text(encoding="utf-8"))["API_KEY"]["default"]
+                for path in sorted(REPOSITORY.glob("*-Definitions/*/options.json"))
+                if not path.parent.name.startswith("_") and "API_KEY" in json.loads(path.read_text(encoding="utf-8"))]
+    assert defaults and all(rule.fullmatch(default) and as_the_code_holds_it(text, default) == default for default in defaults)
+    assert sorted(set(defaults)) == ["AWSBedrock", "Anthropic", "AzureOpenAI", "Google", "Mistral", "OpenAI", "OpenRouter", "VoyageAI"]
 
 
 @pytest.mark.parametrize("name", list(PROGRAMS))
@@ -869,6 +928,34 @@ def test_the_call_sends_the_key_and_the_macro_variable_options_keeps_the_name(na
     assert json.loads(sent + "}")["value"] == "{API_KEY:sk-test-0123,max_completion_tokens:4000,reasoning_effort:medium}"
 
 
+@pytest.mark.parametrize("name", list(PROGRAMS))
+def test_the_file_of_the_request_is_deleted_right_behind_the_call(name):
+    """Round-29 review. The line that is sent - the key in the place of the name - is put into the file of the request,
+    filename llmIn temp, and the code never cleared that fileref: the key stayed in a temporary file of the WORK folder
+    until the SAS session ended. FILENAME ... CLEAR of a temporary file deletes the file, and it is a global statement,
+    which runs whatever the PROC HTTP step before it did - so the file is gone behind a call that failed as well. The code
+    of a model without API_KEY clears it the same way; nothing reads the file behind the call."""
+    text = PROGRAMS[name]()
+    start = text.index("data work._slo_final_http;")
+    model = 'compress("&_slo_LLM_name./&_slo_LLM_name.")'
+    http = written(text[start:text.index("run;\n", start)].replace(model, '"gpt_5_mini/gpt_5_mini"'))
+    start = text.index("data work._slo_final_json_input;")
+    json_input = written(text[start:text.index("run;\n", text.index("keep _slo_code;", start))], "top_p")
+    key = written(key_step(text))
+
+    # the call reads the file, and the statement right behind its RUN statement clears the fileref
+    assert http == ["filename llmOut temp;", "proc http", "method='Post'", 'url="&_slo_LLMSCR./gpt_5_mini/gpt_5_mini"', "in=llmIn",
+                    "ct='application/json'", "out=llmOut;", "run; quit;", "filename llmIn clear;", "libname llmOut json;"]
+    assert json_input.count("filename llmIn temp;") == 1 and json_input.count("file llmIn;") == 1
+    # every temporary file the code writes the key or the answer of the credentials service into is cleared behind the
+    # step that reads it; llmOut, the answer of the model, stays for the JSON library
+    code = key + json_input + http
+    assert [line.split()[1] for line in code if re.fullmatch(r"filename \w+ temp;", line)] == ["llmKey", "llmIn", "llmOut"]
+    assert key.index("filename llmKey temp;") < key.index("infile llmKey lrecl=32767 truncover;") < key.index("filename llmKey clear;")
+    assert [line.split()[1] for line in code if re.fullmatch(r"filename \w+ clear;", line)] == ["llmKey", "llmIn"]
+    assert "llmIn" not in " ".join(code[code.index("filename llmIn clear;") + 1:])
+
+
 def test_the_code_the_step_writes_is_the_code_of_version_1_1():
     """The steps that make the code from the options and the block that saves it are the ones of 1.1 (and of
     LLM - Get Options 1.0): for an options file version 1.1 read, the code is the same."""
@@ -887,9 +974,10 @@ def test_the_code_the_step_writes_is_the_code_of_version_1_1():
         return block
 
     text, get = program(), PROGRAMS["LLM - Get Options"]()
-    # ... but for the lines of an options file without any option (Create LLM Call 1.5, Get Options 1.4) and the lines
-    # of the provider key (Create LLM Call 1.6, Get Options 1.5)
-    assert hashlib.sha256(before(generation(text), key_generation(text) + EMPTY_GENERATION).encode("utf-8")).hexdigest() == GENERATION_OF_1_1
+    # ... but for the lines of an options file without any option (Create LLM Call 1.5, Get Options 1.4), the lines
+    # of the provider key (Create LLM Call 1.6, Get Options 1.5) and the line that clears the file of the request (1.7, 1.6)
+    changes = key_generation(text) + EMPTY_GENERATION + REQUEST_CLEARED_GENERATION
+    assert hashlib.sha256(before(generation(text), changes).encode("utf-8")).hexdigest() == GENERATION_OF_1_1
     assert generation(get) == generation(text)
     # the block that saves the code is the one of 1.1 but for the lines of the path (1.3) ...
     assert hashlib.sha256(before(saved(text), QUOTED).encode("utf-8")).hexdigest() == SAVING_OF_1_1
@@ -913,14 +1001,16 @@ def test_the_two_steps_say_what_they_read():
     for texts in (get_texts["textDocumentation"], control("textDocumentation")["text"]):
         assert texts.endswith("\n* The code it writes for a model with the option API_KEY asks the Credentials service of SAS Viya for "
                               "/credentials/domains/<domain>/secrets?lookupInGroup=true")
-    assert control("textChangelog")["text"].startswith("* Version: 1.6 (20OCT2026)\n" + PROVIDER_KEY.replace("<before>", "1.5")
+    assert control("textChangelog")["text"].startswith("* Version: 1.7 (20OCT2026)\n" + REQUEST_CLEARED.replace("<before>", "1.6")
+                                                       + "\n* Version: 1.6 (20OCT2026)\n" + PROVIDER_KEY.replace("<before>", "1.5")
                                                        + "\n* Version: 1.5 (18OCT2026)\n")
     assert "\n* Version: 1.4 (13OCT2026)\n" in control("textChangelog")["text"]
     assert "\n* Version: 1.3 (13OCT2026)\n" in control("textChangelog")["text"] and "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
-    assert get_texts["textChangelog"].split("\n")[:2] == ["* Version: 1.5 (20OCT2026)", PROVIDER_KEY.replace("<before>", "1.4")]
-    assert get_texts["textChangelog"].split("\n")[2:4] == ["* Version: 1.4 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.3")]
-    assert get_texts["textChangelog"].split("\n")[4:7] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
-    assert get_texts["textChangelog"].split("\n")[7:11] == [
+    assert get_texts["textChangelog"].split("\n")[:2] == ["* Version: 1.6 (20OCT2026)", REQUEST_CLEARED.replace("<before>", "1.5")]
+    assert get_texts["textChangelog"].split("\n")[2:4] == ["* Version: 1.5 (20OCT2026)", PROVIDER_KEY.replace("<before>", "1.4")]
+    assert get_texts["textChangelog"].split("\n")[4:6] == ["* Version: 1.4 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.3")]
+    assert get_texts["textChangelog"].split("\n")[6:9] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
+    assert get_texts["textChangelog"].split("\n")[9:13] == [
         "* Version: 1.2 (13OCT2026)",
         "      - With the box Save the code to a filename ticked and no path, the values the step comes with, version 1.1 wrote the code "
         "file and then ended with ERROR 180-322 and a failed job (measured on 2026-10-13): the statement that assigns the temporary file "
@@ -1130,3 +1220,28 @@ def test_the_two_steps_look_a_model_up_with_the_same_statements():
         assert text.count("%let _slo_chosen = ") == 1 and text.count("&_slo_chosen.") == 2 and "_slo_chosen " in text.split("\n")[-1]
         assert text.count("%if &_slo_chosen. EQ 1 %then %do;\nproc http\n") == 1 and text.count("\nproc http\n") == 1
         assert text.count(f"%if &_slo_chosen. NE 1 %then %do;\n    %let _slo_why = {NO_MODEL};\n%end;\n") == 1
+
+
+def newest_version(step_name):
+    """The version of the first entry of the changelog of a step of Custom-Steps, '* Version: <v> (<date>)'."""
+    found = re.search(r"\* Version: (\d+\.\d+) \(", (STEPS / f"{step_name}.step").read_bytes().decode("utf-8"))
+    assert found, step_name
+    return found.group(1)
+
+
+def test_the_guides_name_the_version_each_step_is():
+    """Round-29 review: Setup-Additional-UIs said '*MM - Get Model Information* is version 1.1' one paragraph before
+    'is version 1.2'. Every sentence of the guides that says which version a step of the accelerator is - '*<step>* is
+    version <v>', and the step it names right behind it, ', and *<step>* <v>' - names the newest entry of the
+    changelog of that step."""
+    claims = []
+    for guide in sorted((REPOSITORY / "website" / "docs").rglob("*.md")):
+        text = guide.read_text(encoding="utf-8")
+        for found in re.finditer(r"\*((?:LLM|MM) - [^*]+)\* is version (\d+\.\d+)(?:, and \*((?:LLM|MM) - [^*]+)\* (\d+\.\d+))?", text):
+            claims.append((guide.name, found.group(1), found.group(2)))
+            if found.group(3):
+                claims.append((guide.name, found.group(3), found.group(4)))
+    assert [(guide, step, version) for guide, step, version in claims if newest_version(step) != version] == []
+    assert sorted(claims) == [("Setup-Additional-UIs.md", "LLM - Create LLM Call", "1.7"),
+                              ("Setup-Additional-UIs.md", "LLM - Get Options", "1.6"),
+                              ("Setup-Additional-UIs.md", "MM - Get Model Information", "1.2")]

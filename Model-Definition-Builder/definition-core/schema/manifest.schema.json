@@ -23,6 +23,7 @@
                         }
                     ],
                     "default": null,
+                    "pattern": "^[A-Za-z0-9._-]+$",
                     "title": "Key Name"
                 },
                 "env_var": {

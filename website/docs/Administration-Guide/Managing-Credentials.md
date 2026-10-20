@@ -440,13 +440,24 @@ them.
   calling user, so access to the vector store follows the same identity
   rules end to end.
 - The **SAS code of an LLM call** that the custom steps *LLM - Create LLM
-  Call* (1.6) and *LLM - Get Options* (1.5) and the program
+  Call* (1.7) and *LLM - Get Options* (1.6) and the program
   `Create-LLM-Call.sas` write keeps the entry name in `%let API_KEY=OpenAI;`
   and reads the key of that entry when it runs, from the domain named in its
   line `%let API_KEY_DOMAIN=agentic-ai-keys;` and under the identity of its
   SAS session; the call sends the key in the place of the name. The key is
   not written to the log, and the macro variable `options` - what
   `LLM-Call-Result-Table.sas` puts into the result table - keeps the name.
+  The request goes through the temporary file `llmIn`, which then holds the
+  key: the code clears that fileref right behind the call, also behind a
+  call that failed, and SAS deletes the file. Code of *LLM - Create LLM
+  Call* 1.6, *LLM - Get Options* 1.5 and the program before this release
+  left the file in the WORK folder until the SAS session ended - generate
+  it again, or add `filename llmIn clear;` behind its PROC HTTP step. The
+  code finds an entry whose name has letters, digits, `.`, `_` and `-`
+  only: it writes the name with `COMPRESS` (an entry named `Azure OpenAI`
+  is looked up as `AzureOpenAI` and not found) and into a Perl expression
+  that a `/` ends. The Model Definition Builder refuses any other name in
+  `key_name` and in the `API_KEY` default of an `options.json`.
   Where the domain holds no such entry for that identity, the code writes
   `WARNING: No key was read for the entry ...` and sends an empty `API_KEY`.
   Code these programs wrote before sent the entry name as the key, and the

@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 
 from mdb import cli
 from mdb.core.generator import GenerationError, check_options_json
-from mdb.core.manifest import MANIFEST_FILENAME
+from mdb.core.manifest import KEY_NAME_RULE, MANIFEST_FILENAME
 from mdb.core.paths import DEFINITION_DIRS, FACT_SHEETS
 
 BUILDER = "the Builder sends the options as {name:value,name:value}"
@@ -49,6 +49,12 @@ REFUSED = {
     "an enum value with a comma": (
         {"m": {"type": "enum", "default": "low", "values": ["low", "a,b"]}},
         f"Option 'm' has the values [\"low\", \"a,b\"] - {BUILDER}, so a value of an enum holds no comma."),
+    # a run does not send the default of API_KEY, but the SAS code of an LLM call writes it into %let API_KEY=...;
+    # and a Perl expression: the round-29 review takes letters, digits, '.', '_' and '-' only (test_fix_review_29)
+    "an API_KEY default with a comma": (
+        {"API_KEY": {"default": "Open,AI"}},
+        f"Option 'API_KEY' has the default \"Open,AI\" is no name of a credential-domain entry the SAS code of an LLM "
+        f"call can send: {KEY_NAME_RULE}."),
     "an enum default with a comma": (
         {"m": {"type": "enum", "default": "a,b", "values": ["a,b"]}},
         f"Option 'm' has the values [\"a,b\"] - {BUILDER}, so a value of an enum holds no comma."),
@@ -59,7 +65,6 @@ TAKEN = {
     "a text default with a colon": {"stop": {"default": "a:b"}},
     "a string default with a colon": {"stop": {"type": "string", "default": "a:b"}},
     "an enum value with a colon": {"m": {"type": "enum", "default": "a:b", "values": ["a:b", "c"]}},
-    "an API_KEY default with a comma (a run does not send it)": {"API_KEY": {"default": "Open,AI"}},
     "a label and a description with a comma": {"x": {"default": 1, "label": "a,b", "description": "c, d"}},
     "a range with a comma": {"x": {"default": 1, "range": "0, 1"}},
     "a name with a dash and a percent": {"a-b%c": {"default": 1}},

@@ -66,6 +66,11 @@ def _detect_family(score_text: str) -> tuple[str, str, str]:
     if "api.anthropic.com" in score_text:
         return "llm", "anthropic_messages", "anthropic"
     if _looks_like_azure(score_text):
+        # azure_openai_env reads the deployment and the key from the
+        # container's environment; read as azure_openai_v1 it became a
+        # definition without API_KEY whose scorer asked every call for one
+        if "DEPLOYMENT_ENV = " in score_text:
+            return "llm", "azure_openai_env", "azure-foundry-env"
         return "llm", "azure_openai_v1", "azure-foundry"
     if "generativelanguage.googleapis.com" in score_text:
         return "llm", "gemini_generate", "google"
@@ -172,7 +177,8 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
                 "environment-neutral (AZURE_OPENAI_RESOURCE decides per deployment)."
             )
         if not model_version:
-            deploy_match = re.search(r"deploymentName\s*=\s*'([^']+)'", score_text)
+            # azure_openai_env names its default defaultDeploymentName
+            deploy_match = re.search(r"[dD]eploymentName\s*=\s*'([^']+)'", score_text)
             model_version = deploy_match.group(1) if deploy_match else model_id
         notes.append("Azure definitions are converged onto the GA v1 endpoint - the generated scorer "
                      "differs from legacy dated-api-version scripts by design.")
@@ -272,6 +278,18 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
         auth = AuthBlock(mode="env", env_var=env_match.group(1))
         notes.append(f"The score code reads the key from the container environment variable "
                      f"{env_match.group(1)} - auth.mode env, no API_KEY option.")
+    # A folder of a template that sends the key a call carries, with no API_KEY
+    # in its options.json and no variable in its score code: as auth.mode none
+    # it would give a scorer that refuses every call for an option the model
+    # does not declare (generator.key_env_var refuses that definition). A
+    # scorer that stays hand-maintained (extra_overrides) is not regenerated.
+    if auth.mode == "none" and template in KEY_OPTION_TEMPLATES and not extra_overrides:
+        from .generator import NO_API_KEY_FAILURE, OptionRuleError
+        raise OptionRuleError(
+            f"options.json has no option API_KEY, and the score template '{template}' sends the provider key a call "
+            f"carries in it - every call would fail with '{NO_API_KEY_FAILURE}' Add \"API_KEY\": {{\"default\": "
+            "\"<entry>\"} to options.json, <entry> the name of the entry of the credential domain that holds the key "
+            "(such as OpenAI).")
 
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(

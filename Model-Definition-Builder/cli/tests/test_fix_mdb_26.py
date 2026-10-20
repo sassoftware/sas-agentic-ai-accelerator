@@ -29,7 +29,7 @@ from typer.testing import CliRunner
 
 from mdb import cli
 from mdb.core import generator, importer, validator
-from mdb.core.generator import GenerationError, _render_options_json, check_options_json
+from mdb.core.generator import GenerationError, OptionRuleError, _render_options_json, check_options_json
 from mdb.core.importer import import_folder
 from mdb.core.manifest import (
     MANIFEST_FILENAME, AuthBlock, MetadataBlock, ModelManifest, OptionSpec, PricingBlock, ProviderBlock,
@@ -317,6 +317,13 @@ def test_import_reads_every_options_json_mdb_writes_as_written(tmp_path, monkeyp
     legacy = {"azure_openai_resource", "azure_api_version", "api_version", "endpoint_url", "azure_deployment"}
     for document in documents:
         check_options_json(document)
+        if "API_KEY" not in document:
+            # the folder's score template sends the key of API_KEY: an options.json without it is refused (round-29
+            # review, test_fix_review_29), so the rest of it is read beside a key name
+            (folder / "options.json").write_text(json.dumps(document), encoding="utf-8")
+            with pytest.raises(OptionRuleError, match="options.json has no option API_KEY"):
+                import_folder(folder, folder.parent / FACT_SHEETS["llm"])
+            document = {**document, "API_KEY": {"default": "OpenAI"}}
         (folder / "options.json").write_text(json.dumps(document), encoding="utf-8")
         manifest = import_folder(folder, folder.parent / FACT_SHEETS["llm"]).manifest
         key = document.get("API_KEY", {}).get("default")

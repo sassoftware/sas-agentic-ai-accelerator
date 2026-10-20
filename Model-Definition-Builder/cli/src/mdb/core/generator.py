@@ -19,7 +19,7 @@ from typing import Any, Optional
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .. import __version__
-from .manifest import ModelManifest, OptionSpec, described
+from .manifest import ModelManifest, OptionSpec, described, key_name_refusal
 
 SCORE_TEMPLATE_SUFFIX = ".py.j2"
 # Score templates that address a model by Azure DEPLOYMENT NAME and build their
@@ -61,11 +61,29 @@ class OptionRuleError(GenerationError):
     names the options.json of the folder as the place to repair it."""
 
 
+#: The sentence a call of such a score code fails with when it carries no
+#: API_KEY option (partials/_option_api_key.py.j2).
+NO_API_KEY_FAILURE = "No API key: pass the provider key in the API_KEY option of the call."
+
+
 def key_env_var(manifest: ModelManifest) -> str:
     """The container environment variable an `auth.mode: env` definition
     reads its key from, '' for any other mode. Refuses env mode on a score
-    template that sends no API_KEY - it would have no key to replace."""
+    template that sends no API_KEY - it would have no key to replace -, and
+    auth.mode none on one that sends it: options.json then has no API_KEY,
+    and every call would fail for an option the model does not declare. A
+    score code kept by hand (generation.overrides, such as the self-hosted
+    Llama and Phi folders of the repository) is not the template's, and
+    is not refused."""
     auth = manifest.provider.auth
+    if (auth.mode == "none" and manifest.runtime.template in KEY_OPTION_TEMPLATES
+            and effective_score_file(manifest) not in manifest.generation.overrides):
+        raise GenerationError(
+            f"auth.mode 'none' gives an options.json without API_KEY, and the score template "
+            f"'{manifest.runtime.template}' sends the provider key a call carries in the API_KEY option - every call "
+            f"would fail with '{NO_API_KEY_FAILURE}' Set auth.mode 'api_key' with auth.key_name (the entry of the "
+            "credential domain that holds the key, such as OpenAI), or auth.mode 'env' (the key from a container "
+            "environment variable, auth.env_var).")
     if auth.mode != "env":
         return ""
     if manifest.runtime.template not in KEY_OPTION_TEMPLATES:
@@ -586,7 +604,8 @@ def check_options_json(entries: Any) -> None:
                              each read as written
                              default: one of values
         type "bool"          default: true or false
-        option "API_KEY"     default: a non-empty text
+        option "API_KEY"     default: a non-empty text of letters, digits, ".",
+                             "_" and "-" (KEY_NAME_PATTERN)
         any other option     default: a text without "," read as written, a
                              number sent as a number, true or false
 
@@ -662,6 +681,8 @@ def check_options_json(entries: Any) -> None:
             raise OptionRuleError(
                 f"Option 'API_KEY' has the default {_shown(default)} - its default is the name of the "
                 "provider key, a non-empty text.")
+        if name == "API_KEY" and key_name_refusal(default, "Option 'API_KEY' has the default"):
+            raise OptionRuleError(key_name_refusal(default, "Option 'API_KEY' has the default"))
         if name == "API_KEY" or option.get("type") in ("enum", "bool"):
             continue
         if not isinstance(default, (str, int, float)):

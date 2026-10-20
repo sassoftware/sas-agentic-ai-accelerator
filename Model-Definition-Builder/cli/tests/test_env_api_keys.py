@@ -22,6 +22,7 @@ import http.server
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -32,7 +33,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from conftest import PROCESS_TIMEOUT
+from conftest import PROCESS_TIMEOUT, bash_candidates
 
 from mdb import cli
 from mdb.core import radar
@@ -648,23 +649,51 @@ def test_import_keeps_env_mode(tmp_path, monkeypatch, repo_root):
         assert "API_KEY" not in json.loads((folder / "options.json").read_text(encoding="utf-8"))
 
 
-def test_import_of_the_environment_configured_azure_template_is_unchanged(repo_root, tmp_path):
-    """azure_openai_env names API_KEY_ENV too, and is no key-option template: its import stays what it was."""
+def test_import_of_the_environment_configured_azure_template_keeps_its_template(repo_root, tmp_path, core):
+    """azure_openai_env names API_KEY_ENV too, and is no key-option template: its import stays auth.mode none. Round-29
+    review: the import read its folder as azure_openai_v1, a template that sends the key of the API_KEY option, and
+    with auth.mode none the scorer it gave refused every call with 'No API key: pass the provider key in the API_KEY
+    option of the call.'. It reads the template, the adapter and the deployment of the score code now, and its scorer
+    is the one of the definition of the repository."""
     from mdb.core.importer import import_folder
     folder = tmp_path / "azure_openai_env"
     shutil.copytree(repo_root / "LLM-Definitions" / "azure_openai_env", folder)
     (folder / MANIFEST_FILENAME).unlink()
     result = import_folder(folder, repo_root / "LLM-Definitions" / FACT_SHEETS["llm"])
-    assert result.manifest.provider.auth.mode == "none"
+    manifest = result.manifest
+    assert manifest.provider.auth.mode == "none"
     assert not any("auth.mode env" in note for note in result.notes)
+    assert (manifest.runtime.template, manifest.provider.adapter, manifest.provider.model_version) == (
+        "azure_openai_env", "azure-foundry-env", "gpt-5.6-luna")
+    committed = load_manifest(repo_root / "LLM-Definitions" / "azure_openai_env")
+    score = effective_score_file(committed)
+    assert render_assets(manifest, core)[score] == render_assets(committed, core)[score]
+    assert b"No API key: pass the provider key" not in render_assets(manifest, core)[score]
+
+
+def _bash_that_sees_the_environment():
+    """A bash that runs a script with the environment it is handed, None where there is none. With the launcher of
+    the Windows Subsystem for Linux, the first `bash` of the PATH of a PowerShell session, the test read an empty
+    value and failed in every run started from PowerShell - alone or in the full suite, in any checkout - and passed
+    in every run started from Git Bash (round-29 review; conftest.bash_candidates). Each candidate is asked for a
+    variable of the environment before it is taken."""
+    for candidate in bash_candidates():
+        try:
+            seen = subprocess.run([candidate, "-c", 'printf "%s" "$MDB_BASH_PROBE"'], capture_output=True, text=True,
+                                  env=dict(os.environ, MDB_BASH_PROBE="probe-7"), timeout=PROCESS_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if seen.returncode == 0 and seen.stdout == "probe-7":
+            return candidate
+    return None
 
 
 def test_the_secret_patch_line_puts_the_value_the_shell_holds(tmp_path, monkeypatch, repo_root):
     """The line `mdb deploy` prints for a Secret that exists, run by bash with kubectl stood in for: the merge
     patch carries each variable's value from the shell's environment, as JSON."""
-    bash = shutil.which("bash")
+    bash = _bash_that_sees_the_environment()
     if bash is None:
-        pytest.skip("no bash")
+        pytest.skip("no bash that runs a script with the environment it is handed")
     _env_definition(tmp_path, monkeypatch, repo_root, "https://api.openai.com/v1/chat/completions")
     result, printed = _deployed(tmp_path, monkeypatch, tmp_path / "yaml", "gpt_x")
     assert result.exit_code == 0, printed

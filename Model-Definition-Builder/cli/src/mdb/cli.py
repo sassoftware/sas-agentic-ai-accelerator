@@ -4243,7 +4243,7 @@ class {cls}(OpenAICompatAdapter):
             id="{name}",
             display_name="{title}",  # TODO
             provider_tag="{title}",  # TODO: the tag shown in SAS Model Manager
-            key_name="{title}",      # TODO: must match your LLM_API_KEYS KeyName
+            key_name="{key}",      # TODO: must match your LLM_API_KEYS KeyName (letters, digits, . _ -)
             env_key_var="{env}_API_KEY",
             base_url="https://api.example.com/v1",  # TODO: OpenAI-compatible base URL
             docs_url="https://example.com/keys",    # TODO
@@ -4280,7 +4280,7 @@ def provider_scaffold(name: str = typer.Argument(..., help="Adapter id (kebab-ca
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "adapter.py").write_text(
         SCAFFOLD_ADAPTER.format(name=name, cls=cls, title=snake.title().replace("_", " "),
-                                env=snake.upper()), encoding="utf-8")
+                                key=snake.title().replace("_", ""), env=snake.upper()), encoding="utf-8")
     console.print(f"[green]Scaffolded {_plain(root)}/[/green] - fill in the TODOs, then:")
     console.print(f"  pip install -e {_plain(root)} && mdb provider check {_plain(name)}")
 

@@ -238,14 +238,26 @@ def test_import_refuses_an_api_key_it_would_take_as_no_key(case, tmp_path, monke
     assert _files(folder) == before
 
 
-def test_a_folder_without_an_api_key_is_still_imported_without_a_key(tmp_path, monkeypatch, repo_root):
+def test_a_folder_without_an_api_key_whose_template_sends_one_is_refused(tmp_path, monkeypatch, repo_root):
+    """Round-29 review. A folder of a template that sends the key a call carries (gpt_5_mini: openai_chat) without
+    API_KEY in its options.json was imported as auth.mode none, and its regenerated scorer refused every call with
+    'No API key: pass the provider key in the API_KEY option of the call.' - for an option the model does not
+    declare. The import now refuses it, naming options.json and what to add (test_fix_review_29 for the generator)."""
     folder = _hand_maintained(tmp_path, monkeypatch, repo_root)
     options = _options(folder)
     del options["API_KEY"]
     _write_options(folder, options)
+    before = _files(folder)
     out = _printed(monkeypatch)
-    assert _mdb("import", "gpt_5_mini").exit_code == 0, out.getvalue()
-    assert load_manifest(folder).provider.auth.mode == "none"
+    assert _mdb("import", "gpt_5_mini").exit_code == 1, out.getvalue()
+    assert out.getvalue().splitlines() == [
+        "gpt_5_mini: options.json has no option API_KEY, and the score template 'openai_chat' sends the provider key a "
+        "call carries in it - every call would fail with 'No API key: pass the provider key in the API_KEY option of "
+        "the call.' Add \"API_KEY\": {\"default\": \"<entry>\"} to options.json, <entry> the name of the entry of the "
+        "credential domain that holds the key (such as OpenAI).",
+        "Nothing was written - the folder stays fully hand-maintained. Repair its options.json, then rerun "
+        "mdb import."]
+    assert _files(folder) == before
 
 
 # -- mdb pull --import refuses as mdb import does -----------------------------
@@ -408,7 +420,9 @@ READ_AS_WRITTEN = {
     "a number with a point in exponent notation": {"epsilon": {"default": 1.5e-07}},
     "a number below 10^21": {"budget": {"default": 10 ** 20}},
     "a bool": {"stream": {"type": "bool", "default": False}},
-    "the provider key, which a run does not send": {"API_KEY": {"default": " Open AI "}},
+    # a name the score code would read as true, which it never reads: the run sends the key in its place (a name with
+    # a blank, " Open AI ", is refused since the round-29 review, test_fix_review_29)
+    "the provider key, which a run does not send": {"API_KEY": {"default": "TRUE"}},
 }
 
 

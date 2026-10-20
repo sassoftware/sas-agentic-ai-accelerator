@@ -9,6 +9,7 @@ phase-2 web app consumes.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional, Union
@@ -64,6 +65,28 @@ class OptionSpec(BaseModel):
 #: The name of an environment variable as a container and a Kubernetes Secret
 #: key both take it.
 ENV_VAR_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+#: The name of a credential-domain entry (auth.key_name, the default of the
+#: option API_KEY): letters, digits, '.', '_' and '-'. The SAS code an LLM
+#: call is generated as (Create-LLM-Call.sas, the custom steps LLM - Create LLM
+#: Call and LLM - Get Options) writes it with COMPRESS into `%let API_KEY=...;`,
+#: which takes a blank out, and finds the entry with a Perl expression that a
+#: '/' would end; ',', ':', ';', '&', '%' and quotation marks break the options
+#: string, the %LET statement or the JSON of the request.
+KEY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+KEY_NAME_RULE = ("letters, digits, '.', '_' and '-' only, no blank and no '/' - the code writes the name into "
+                 "%let API_KEY=...; and looks the entry up with a Perl expression. Rename the entry of the "
+                 "credential domain (such as AzureOpenAI for 'Azure OpenAI') and set that name")
+
+
+def key_name_refusal(name: Any, what: str) -> Optional[str]:
+    """The sentence that refuses `name` as the name of a credential-domain
+    entry, `what` naming where it stands; None where the name is one."""
+    if isinstance(name, str) and KEY_NAME_PATTERN.fullmatch(name):
+        return None
+    return (f"{what} {json.dumps(name, ensure_ascii=False, default=str)} is no name of a credential-domain entry "
+            f"the SAS code of an LLM call can send: {KEY_NAME_RULE}.")
+
 
 #: The variable an `auth.mode: env` definition reads its key from when it names
 #: none: the name .env.example (and the adapter's own env_key_var) uses for that
@@ -121,7 +144,8 @@ class AuthBlock(BaseModel):
     # none:    the model takes no provider key.
     mode: Literal["api_key", "env", "none"] = "api_key"
     # Must equal the options.json API_KEY default and the LLM_API_KEYS CAS-table KeyName
-    key_name: Optional[str] = None
+    # (KEY_NAME_PATTERN: letters, digits, '.', '_' and '-')
+    key_name: Optional[str] = Field(None, json_schema_extra={"pattern": KEY_NAME_PATTERN.pattern})
     # auth.mode env only: the container environment variable that holds the
     # key. Absent, the adapter's default (DEFAULT_KEY_ENV) is used.
     env_var: Optional[str] = Field(None, json_schema_extra={"pattern": ENV_VAR_PATTERN.pattern})
@@ -130,6 +154,8 @@ class AuthBlock(BaseModel):
     def _key_name_required(self) -> "AuthBlock":
         if self.mode == "api_key" and not self.key_name:
             raise ValueError("auth.key_name is required when auth.mode is 'api_key'")
+        if self.key_name and key_name_refusal(self.key_name, "auth.key_name"):
+            raise ValueError(key_name_refusal(self.key_name, "auth.key_name"))
         if self.mode == "env" and self.key_name:
             raise ValueError(
                 "auth.key_name is not used when auth.mode is 'env' - the key comes from the container "

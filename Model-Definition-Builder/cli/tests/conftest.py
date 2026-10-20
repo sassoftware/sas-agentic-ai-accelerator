@@ -18,6 +18,23 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 #: and its trace was not kept. The limit is there for a process that hangs, not to time one that is slow.
 PROCESS_TIMEOUT = 1800
 
+
+def bash_candidates() -> list:
+    """The bash programs a test that runs a shell script may take, in order: the first `bash` of the PATH, then on
+    Windows the Git Bash next to the git of the PATH. On Windows the first `bash` of a PowerShell or cmd session is
+    commonly the launcher of the Windows Subsystem for Linux (...\\WindowsApps\\bash.exe), which knows no `C:/...`
+    path and hands Linux no variable of the Windows environment; Git Bash puts its own bash first on the PATH, so a
+    test run from Git Bash and one run from PowerShell found different programs (round-29 review). Each test asks
+    a candidate for what it needs before it takes it."""
+    import os
+    import shutil
+    candidates = [shutil.which("bash")]
+    git = shutil.which("git")
+    if os.name == "nt" and git:
+        for folder in Path(git).resolve().parents:
+            candidates += [folder / "bin" / "bash.exe", folder / "usr" / "bin" / "bash.exe"]
+    return [str(candidate) for candidate in candidates if candidate is not None and Path(candidate).is_file()]
+
 #: The folder of the checkout a build writes that the package manifest names a file in: `npm run build` in
 #: LLM-Prompt-Builder (vite, `outDir: 'dist'`) empties it and writes it again about two seconds later. A test
 #: that loads the package manifest in that time fails with `form 'LLM-Prompt-Builder/dist/index.html' does not

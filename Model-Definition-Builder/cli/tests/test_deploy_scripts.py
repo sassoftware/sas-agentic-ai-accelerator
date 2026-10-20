@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PROCESS_TIMEOUT
+from conftest import PROCESS_TIMEOUT, bash_candidates
 
 FOLDER = Path(__file__).resolve().parents[3] / "SAS-Viya-Integrations" / "Other"
 POWERSHELL = shutil.which("powershell.exe") if os.name == "nt" else None
@@ -33,16 +33,18 @@ def _bash_that_reads_this_checkout():
     hands it. On Windows the first `bash` of a PowerShell or cmd session is
     commonly the launcher of the Windows Subsystem for Linux, which knows no
     `C:/...` path: with it the script is `No such file or directory`, which
-    says nothing about the script. Git Bash reads the path."""
-    bash = shutil.which("bash")
-    if bash is None:
-        return None
-    try:
-        seen = subprocess.run([bash, "-c", f'test -f "{(FOLDER / "deploy-rag-content.sh").as_posix()}"'],
-                              capture_output=True, timeout=PROCESS_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return bash if seen.returncode == 0 else None
+    says nothing about the script. Git Bash reads the path, and is tried
+    after it (conftest.bash_candidates): the tests ran from Git Bash and
+    were skipped from PowerShell before the round-29 review."""
+    for bash in bash_candidates():
+        try:
+            seen = subprocess.run([bash, "-c", f'test -f "{(FOLDER / "deploy-rag-content.sh").as_posix()}"'],
+                                  capture_output=True, timeout=PROCESS_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if seen.returncode == 0:
+            return bash
+    return None
 
 
 BASH = _bash_that_reads_this_checkout()
