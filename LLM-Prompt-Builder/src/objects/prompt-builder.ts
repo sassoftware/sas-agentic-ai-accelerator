@@ -16,6 +16,9 @@ import {
   isReservedModelName,
   NUMBER_FIELD_OPTIONS,
   optionControlId,
+  optionsFromText,
+  optionsText,
+  optionsTextEntries,
   readStoredJson,
   StoredFileUnusable,
   TRACKER_META_KEYS,
@@ -596,28 +599,14 @@ function openModelManagerLink(
 }
 
 /**
- * Parse an SCR options string (`{key:value,key:value}`, unquoted) back into an
- * object. Values are coerced to number/boolean when they look like one, else
- * kept as strings — so non-numeric options (`reasoning_effort:medium`,
- * `API_KEY:OpenAI`, `normalize:true`) round-trip without breaking parsing.
+ * The options of a saved run, from the options string Save Experiments stored
+ * with it (`{key:value,key:value}`, see optionsFromText): each option with the
+ * value it was sent with. Neither a name nor a value is trimmed or taken out
+ * of quotes, so an option named ` padded` or a text `say "hi"` is loaded as it
+ * was sent.
  */
 function parseScrOptionsString(optionsStr: string | null | undefined): Record<string, unknown> {
-  // No prototype: an option named __proto__ is a field like any other.
-  const result: Record<string, unknown> = Object.create(null);
-  if (!optionsStr) return result;
-  const inner = String(optionsStr).trim().replace(/^\{/, '').replace(/\}$/, '');
-  if (inner.trim() === '') return result;
-  inner.split(',').forEach((pair) => {
-    const sep = pair.indexOf(':');
-    if (sep === -1) return;
-    const key = pair.slice(0, sep).trim();
-    if (!key) return;
-    const rawValue = pair.slice(sep + 1).trim().replace(/^["']|["']$/g, '');
-    if (/^-?\d+(\.\d+)?$/.test(rawValue)) result[key] = Number(rawValue);
-    else if (rawValue === 'true' || rawValue === 'false') result[key] = rawValue === 'true';
-    else result[key] = rawValue;
-  });
-  return result;
+  return optionsFromText(optionsStr);
 }
 
 /**
@@ -3039,6 +3028,29 @@ export async function buildPromptBuilder(
         return;
       }
 
+      // A run sends the options of a model as one text, {name:value,...},
+      // which the score code splits at each comma: a text with a comma would
+      // be read up to the comma, and saved, loaded up to it as well. The
+      // defaults of options.json hold none (isModelOptions); a comma typed
+      // into the field of an option stops the run here, with the option named.
+      const optionsWithComma = promptBuilderSelectedModels.flatMap(({ currentlySelectedModel }) =>
+        Object.entries(currentlySelectedModel.options)
+          .filter(([key, value]) => key !== 'API_KEY' && typeof value === 'string' && value.includes(','))
+          .map(([key]) => `${key} (${currentlySelectedModel.name})`)
+      );
+      if (optionsWithComma.length > 0) {
+        if (promptBuilderRunExperimentErrorText) {
+          promptBuilderRunExperimentErrorText.innerText = `${promptBuilderInterfaceText?.promptBuilderRunOptionComma}`.replace(
+            '{options}',
+            optionsWithComma.join(', ')
+          );
+        }
+        promptBuilderRunExperimentTargetButton.disabled = false;
+        promptBuilderRunExperimentTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderRunExperimentsButton}`;
+        experimentRunning = false;
+        return;
+      }
+
       const systemPrompt = (
         document.getElementById(`${paneID}-obj-${promptBuilderObject?.id}-system-prompt`) as HTMLTextAreaElement
       ).value;
@@ -4477,6 +4489,16 @@ export async function buildPromptBuilder(
               if (optionInput instanceof HTMLInputElement) syncSegmentedControl(optionInput);
             }
           });
+          // An option of type string the run did not send had an empty field
+          // (a run leaves such an option out, and the score code uses its
+          // own default): it is emptied, so the run loaded does not send the
+          // text the field holds now.
+          const sentOptions = modelData?.options ?? {};
+          Object.entries(availableLLM.options ?? {}).forEach(([optionKey, optionMeta]) => {
+            if (optionMeta?.type !== 'string' || Object.prototype.hasOwnProperty.call(sentOptions, optionKey)) return;
+            const optionInput = document.getElementById(optionControlId(llmIndex, optionKey, optionMeta)) as HTMLInputElement | null;
+            if (optionInput) optionInput.value = '';
+          });
         }
       });
       promptBuilderAvailableDecisionModels.forEach((model, index) => {
@@ -4587,7 +4609,11 @@ export async function buildPromptBuilder(
               systemPrompt: '',
               userPrompt: '',
               model: MODELKEY,
-              options: JSON.stringify(modelEntry.options).replace(/"/g, ''),
+              // The options as the run sent them. They were written as
+              // JSON.stringify with every '"' removed, which left a quote in a
+              // text as a backslash and doubled a backslash: loaded, the run
+              // then sent another text.
+              options: optionsText((modelEntry.options ?? {}) as Record<string, unknown>),
               response: modelEntry.response,
               run_time: modelEntry.run_time,
               prompt_length: modelEntry.prompt_length,
@@ -5405,26 +5431,26 @@ export async function buildPromptBuilder(
           promptExperimentCreateModelTargetButton.innerText = `${promptBuilderInterfaceText?.promptBuilderCreateModelButton}`;
           return;
         }
-        // Check if the options contains an API-Key
-        let requiresAPIKey = false;
-        const bestPromptOptionsList = (bestPromptItem as PETRow).options
-          .replace(/[{}]/g, '')
-          .split(',')
-          .map((str) => {
-            const idx = str.indexOf('API_KEY');
-            if (idx !== -1) {
-              requiresAPIKey = true;
-              promptInputs.push({
-                name: 'API_KEY',
-                description: 'This LLM call requires you to input an API-Key',
-                level: 'nominal',
-                type: 'string',
-                length: 256,
-              });
-            }
-            return idx !== -1 ? str.substring(0, idx) : str;
-          })
-          .filter((str) => str.trim() !== '');
+        // The options of the best run as it sent them (optionsTextEntries):
+        // the option named API_KEY becomes an input of the model, every
+        // other option stays as it was sent. Every brace of the text was
+        // removed and each piece cut at the first "API_KEY" before, so a text
+        // `{x}` was manifested as `x`, and an option my_API_KEY_region cut
+        // the options short and made the model ask for a key.
+        const bestPromptOptionEntries = optionsTextEntries((bestPromptItem as PETRow).options);
+        const requiresAPIKey = bestPromptOptionEntries.some(([name]) => name === 'API_KEY');
+        if (requiresAPIKey) {
+          promptInputs.push({
+            name: 'API_KEY',
+            description: 'This LLM call requires you to input an API-Key',
+            level: 'nominal',
+            type: 'string',
+            length: 256,
+          });
+        }
+        const bestPromptOptionsList = bestPromptOptionEntries
+          .filter(([name]) => name !== 'API_KEY')
+          .map(([name, value]) => `${name}:${value}`);
 
         // Create the input and user input strings for the score code
         let scoreCodeInput = '';
@@ -5854,18 +5880,12 @@ ${scoreCodeReturn}`;
         restore();
         return;
       }
-      // The options of the winning run, the key entry replaced by an input.
-      let requiresAPIKey = false;
-      const optionParts = chosen.options
-        .replace(/[{}]/g, '')
-        .split(',')
-        .filter((part) => {
-          if (part.includes('API_KEY')) {
-            requiresAPIKey = true;
-            return false;
-          }
-          return part.trim() !== '';
-        });
+      // The options of the winning run as it sent them (optionsTextEntries),
+      // the option named API_KEY replaced by an input - not every option
+      // whose name or text holds the word.
+      const chosenOptionEntries = optionsTextEntries(chosen.options);
+      const requiresAPIKey = chosenOptionEntries.some(([name]) => name === 'API_KEY');
+      const optionParts = chosenOptionEntries.filter(([name]) => name !== 'API_KEY').map(([name, value]) => `${name}:${value}`);
       const deploymentTypeHandling = (promptBuilderObject.deploymentType as string) ?? 'k8s';
       const endpointPattern =
         deploymentTypeHandling === 'aca' ? 'https://{llm.replace("_", "-")}.{endpoint}/{llm}' : '{endpoint}/{llm}/{llm}';
@@ -8394,7 +8414,20 @@ ${scoreCodeReturn}`;
           // From here on calls are in flight until the last model has answered
           // its last row.
           evaluationRunning = true;
-          const table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
+          let table: Awaited<ReturnType<typeof getCasTableRows>>;
+          try {
+            table = await getCasTableRows(evaluationLibSelect.value, evaluationTableSelect.value, evaluationServerSelect.value, maxRows);
+          } catch (error) {
+            // Said in words, with the table: not the browser's own "TypeError:
+            // Failed to fetch" (see viyaFetch for the first read of a page).
+            console.error('The rows of the evaluation table could not be read.', error);
+            if (!left()) {
+              evaluationStatus.innerText = `${promptBuilderInterfaceText?.promptBuilderEvaluateCasReadFailed}`
+                .replace('{table}', `${evaluationLibSelect.value}.${evaluationTableSelect.value}`)
+                .replace('{reason}', error instanceof Error ? error.message : String(error));
+            }
+            return;
+          }
           if (left()) return;
           const columnIndex = (name: string): number => table.columns.findIndex((column) => column.toLowerCase() === name.toLowerCase());
           const variables = collectPromptVariables();
@@ -8468,7 +8501,7 @@ ${scoreCodeReturn}`;
               : '';
         } catch (error) {
           console.error('The evaluation failed.', error);
-          if (!left()) evaluationStatus.innerText = String(error);
+          if (!left()) evaluationStatus.innerText = error instanceof Error ? error.message : String(error);
         } finally {
           evaluationRunning = false;
           evaluationButton.disabled = false;

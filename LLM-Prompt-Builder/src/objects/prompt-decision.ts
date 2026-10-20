@@ -1494,6 +1494,12 @@ export interface EvaluationRow {
   correct: boolean;
   /** The model chose the escape option: not automated, whatever its confidence. */
   abstained: boolean;
+  /**
+   * The model gave no answer to the question: its call failed, or its answer
+   * does not hold the question. Such a row is neither right nor wrong and has
+   * no confidence: it is not scored and never automated.
+   */
+  unanswered: boolean;
 }
 
 export interface QuestionMetrics {
@@ -1501,13 +1507,17 @@ export interface QuestionMetrics {
   rows: EvaluationRow[];
 }
 
-/** Coverage and accuracy when only answers at or above a confidence threshold stay automatic. */
-export function thresholdStats(rows: EvaluationRow[], threshold: number): { coverage: number; accuracy: number; covered: number } {
-  const covered = rows.filter((row) => !row.abstained && row.confidence >= threshold);
+/**
+ * Coverage and accuracy when only answers at or above a confidence threshold
+ * stay automatic. A case without an answer is never automated. The accuracy
+ * is null where no case stays automatic: there is nothing it could be of.
+ */
+export function thresholdStats(rows: EvaluationRow[], threshold: number): { coverage: number; accuracy: number | null; covered: number } {
+  const covered = rows.filter((row) => !row.abstained && !row.unanswered && row.confidence >= threshold);
   const correct = covered.filter((row) => row.correct).length;
   return {
     coverage: rows.length ? covered.length / rows.length : 0,
-    accuracy: covered.length ? correct / covered.length : 0,
+    accuracy: covered.length ? correct / covered.length : null,
     covered: covered.length,
   };
 }
@@ -1523,13 +1533,20 @@ export interface CalibrationBin {
 }
 
 export interface CalibrationStats {
-  /** Expected calibration error: the count-weighted gap between confidence and accuracy over the bins. */
-  ece: number;
-  /** Brier score of the headline confidence against correctness (0 is perfect). */
-  brier: number;
+  /**
+   * Expected calibration error: the count-weighted gap between confidence
+   * and accuracy over the bins. Null without a scored row.
+   */
+  ece: number | null;
+  /** Brier score of the headline confidence against correctness (0 is perfect). Null without a scored row. */
+  brier: number | null;
   bins: CalibrationBin[];
   /** Rows the model abstained on. */
   abstained: number;
+  /** Rows the model gave no answer to. */
+  unanswered: number;
+  /** Rows that are scored: answered, and not abstained on. */
+  scored: number;
 }
 
 /**
@@ -1539,7 +1556,11 @@ export interface CalibrationStats {
  * before the threshold is chosen.
  */
 export function calibrationStats(rows: EvaluationRow[], binCount = 10): CalibrationStats {
-  const scored = rows.filter((row) => !row.abstained);
+  // A case without an answer has no confidence to calibrate. Counted with a
+  // confidence of 0 and wrong, every failed call looked perfectly calibrated:
+  // a model whose every call failed showed an error of 0% and a Brier score
+  // of 0.000.
+  const scored = rows.filter((row) => !row.abstained && !row.unanswered);
   const bins: CalibrationBin[] = Array.from({ length: binCount }, (_, index) => ({
     low: index / binCount,
     high: (index + 1) / binCount,
@@ -1560,9 +1581,16 @@ export function calibrationStats(rows: EvaluationRow[], binCount = 10): Calibrat
       bin.accuracy /= bin.count;
     }
   });
-  const ece = scored.length ? bins.reduce((sum, bin) => sum + (bin.count / scored.length) * Math.abs(bin.accuracy - bin.confidence), 0) : 0;
-  const brier = scored.length ? scored.reduce((sum, row) => sum + (row.confidence - (row.correct ? 1 : 0)) ** 2, 0) / scored.length : 0;
-  return { ece, brier, bins, abstained: rows.length - scored.length };
+  const ece = scored.length ? bins.reduce((sum, bin) => sum + (bin.count / scored.length) * Math.abs(bin.accuracy - bin.confidence), 0) : null;
+  const brier = scored.length ? scored.reduce((sum, row) => sum + (row.confidence - (row.correct ? 1 : 0)) ** 2, 0) / scored.length : null;
+  return {
+    ece,
+    brier,
+    bins,
+    abstained: rows.filter((row) => row.abstained).length,
+    unanswered: rows.filter((row) => row.unanswered).length,
+    scored: scored.length,
+  };
 }
 
 /** The reliability diagram: accuracy per confidence bin against the diagonal, as inline SVG. */
@@ -1617,12 +1645,14 @@ export function questionRows(
     if (wanted === '') return;
     const answer = answersByCase[index]?.[question.id];
     const answered = comparableAnswer(question, answer);
+    const unanswered = answered === '';
     rows.push({
       expected: wanted,
       answered,
-      confidence: headlineOf(answer).confidence,
-      correct: answered.trim().toLowerCase() === wanted.toLowerCase(),
-      abstained: question.type === 'choice' && answered !== '' && isEscapeKey(answered),
+      confidence: unanswered ? 0 : headlineOf(answer).confidence,
+      correct: !unanswered && answered.trim().toLowerCase() === wanted.toLowerCase(),
+      abstained: question.type === 'choice' && !unanswered && isEscapeKey(answered),
+      unanswered,
     });
   });
   return rows;
@@ -1650,6 +1680,8 @@ export function confusionMatrix(question: DecisionQuestion, rows: EvaluationRow[
 }
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
+/** A share that may not exist, such as the accuracy of no case: a dash then. */
+const percentOrDash = (value: number | null): string => (value === null ? '\u2014' : percent(value));
 
 /** The evaluation of one model: accuracy per question, the confusion of choices, the threshold trade-off. */
 export function renderEvaluation(
@@ -1682,9 +1714,21 @@ export function renderEvaluation(
     title.classList.add('fw-semibold', 'mb-1');
     const correct = rows.filter((row) => row.correct).length;
     const calibration = calibrationStats(rows);
+    // The accuracy is that of the answers: a case the model gave no answer
+    // to - its call failed - is counted apart, not as a wrong answer.
+    const answered = rows.length - calibration.unanswered;
+    if (answered === 0) {
+      // Nothing to score: no accuracy, confusion, threshold or calibration,
+      // each of which would read as a verdict on answers there are none of.
+      title.innerText = `${question.id}: ${fill(text(bundle, 'promptBuilderEvaluateNoAnswers'), { n: rows.length })}`;
+      section.appendChild(title);
+      block.appendChild(section);
+      return;
+    }
     title.innerText =
-      `${question.id}: ${text(bundle, 'promptBuilderEvaluateAccuracy')} ${percent(correct / rows.length)} (${correct}/${rows.length})` +
-      (calibration.abstained > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateAbstained'), { n: calibration.abstained })}` : '');
+      `${question.id}: ${text(bundle, 'promptBuilderEvaluateAccuracy')} ${percent(correct / answered)} (${correct}/${answered})` +
+      (calibration.abstained > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateAbstained'), { n: calibration.abstained })}` : '') +
+      (calibration.unanswered > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateUnanswered'), { n: calibration.unanswered })}` : '');
     section.appendChild(title);
     // Confusion: rows are the expected answers, columns what was answered.
     const { labels, matrix } = confusionMatrix(question, rows);
@@ -1729,7 +1773,7 @@ export function renderEvaluation(
       const threshold = Number(slider.value) / 100;
       const stats = thresholdStats(rows, threshold);
       sliderLabel.innerText = `${text(bundle, 'promptBuilderEvaluateThresholdLabel')} ${percent(threshold)}`;
-      readout.innerText = `${text(bundle, 'promptBuilderEvaluateCoverage')} ${percent(stats.coverage)} (${stats.covered}/${rows.length}) · ${text(bundle, 'promptBuilderEvaluateAccuracyCovered')} ${percent(stats.accuracy)}`;
+      readout.innerText = `${text(bundle, 'promptBuilderEvaluateCoverage')} ${percent(stats.coverage)} (${stats.covered}/${rows.length}) · ${text(bundle, 'promptBuilderEvaluateAccuracyCovered')} ${percentOrDash(stats.accuracy)}`;
     };
     slider.addEventListener('input', update);
     update();
@@ -1747,7 +1791,7 @@ export function renderEvaluation(
       [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percent(thresholdStats(rows, threshold).coverage)}</td>`).join('') +
       '</tr>' +
       `<tr><td>${escapeHtml(text(bundle, 'promptBuilderEvaluateAccuracyCovered'))}</td>` +
-      [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percent(thresholdStats(rows, threshold).accuracy)}</td>`).join('') +
+      [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percentOrDash(thresholdStats(rows, threshold).accuracy)}</td>`).join('') +
       '</tr>';
     section.appendChild(table);
     // Calibration: whether the confidence means what it says, read before a
@@ -1760,19 +1804,25 @@ export function renderEvaluation(
     calibrationTitle.innerText = text(bundle, 'promptBuilderEvaluateCalibrationTitle');
     const calibrationNumbers = document.createElement('p');
     calibrationNumbers.classList.add('mb-1', 'pb-calibration-numbers');
-    calibrationNumbers.innerText = `${text(bundle, 'promptBuilderEvaluateEce')} ${percent(calibration.ece)} · ${text(bundle, 'promptBuilderEvaluateBrier')} ${calibration.brier.toFixed(3)}`;
+    // Without a scored answer - the model abstained on every case it
+    // answered - there is no calibration: a dash, not 0% and 0.000.
+    calibrationNumbers.innerText =
+      `${text(bundle, 'promptBuilderEvaluateEce')} ${percentOrDash(calibration.ece)} · ` +
+      `${text(bundle, 'promptBuilderEvaluateBrier')} ${calibration.brier === null ? '\u2014' : calibration.brier.toFixed(3)}`;
     const calibrationNote = document.createElement('small');
     calibrationNote.classList.add('text-muted', 'd-block');
     // A verdict needs cases: below a couple of dozen the error is mostly noise.
-    const scored = rows.length - calibration.abstained;
+    const scored = calibration.scored;
     calibrationNote.innerText = fill(
       text(
         bundle,
-        scored < 20
-          ? 'promptBuilderEvaluateCalibrationFewCases'
-          : calibration.ece > 0.1
-            ? 'promptBuilderEvaluateCalibrationPoor'
-            : 'promptBuilderEvaluateCalibrationNote'
+        scored === 0
+          ? 'promptBuilderEvaluateCalibrationNone'
+          : scored < 20
+            ? 'promptBuilderEvaluateCalibrationFewCases'
+            : (calibration.ece ?? 0) > 0.1
+              ? 'promptBuilderEvaluateCalibrationPoor'
+              : 'promptBuilderEvaluateCalibrationNote'
       ),
       { n: scored }
     );
@@ -1780,7 +1830,8 @@ export function renderEvaluation(
     calibrationText.appendChild(calibrationNumbers);
     calibrationText.appendChild(calibrationNote);
     calibrationRow.appendChild(calibrationText);
-    calibrationRow.appendChild(renderReliability(calibration, bundle));
+    // Without a scored answer the diagram would be an empty frame.
+    if (scored > 0) calibrationRow.appendChild(renderReliability(calibration, bundle));
     section.appendChild(calibrationRow);
     block.appendChild(section);
   });

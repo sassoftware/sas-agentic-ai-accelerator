@@ -49,7 +49,15 @@ const failingModels = {};
 // GET (a session that cannot be established). csrf: true makes the service ask
 // for a CSRF token once the session exists, the way a first write is answered
 // on SAS Viya: 403 with x-forbidden-reason: CSRF and the token to repeat the
-// request with. Without a service every session is back.
+// request with. redirect: true answers such a request with a redirect to the
+// sign-in (/SASLogon/oauth/authorize, client sas.casControl) that the
+// browser's fetch cannot follow, in place of the 449: it leads to the other
+// name of the mock's host (127.0.0.1 for localhost and back), another origin
+// that answers without CORS headers, so the fetch of the page fails with
+// "TypeError: Failed to fetch" - what the first read of a page from
+// /casRowSets/ got on SAS Viya (zeus, 2026-10-20). That request establishes
+// the session all the same, as a second click found there (stuck: true keeps
+// redirecting). Without a service every session is back.
 const noSession = {};
 const MOCK_CSRF_TOKEN = 'mock-csrf-token';
 // POST /__usage { model, flows, status } decides what the relationships query
@@ -673,7 +681,9 @@ http
         const fromBrowser = /Mozilla/.test(req.headers['user-agent'] || '');
         const pageItself = p === '/' || p === '/index.html' || p === '/favicon.ico';
         const sessionWarmUp = req.method === 'GET' && /^\/[^/]+\/$/.test(p);
-        if (fromBrowser && !xhr && !pageItself && !sessionWarmUp && !p.startsWith('/__') && !p.startsWith('/scr/')) {
+        // The sign-in a redirect of a service leads to (see /__nosession).
+        const signIn = p.startsWith('/SASLogon/');
+        if (fromBrowser && !xhr && !pageItself && !sessionWarmUp && !signIn && !p.startsWith('/__') && !p.startsWith('/scr/')) {
           directRequests.push(`${req.method} ${req.url}`);
         }
       }
@@ -694,7 +704,7 @@ http
         let body = {};
         try { body = JSON.parse(raw); } catch {}
         if (!body.service) Object.keys(noSession).forEach((name) => delete noSession[name]);
-        else noSession[body.service] = { stuck: Boolean(body.stuck), csrf: Boolean(body.csrf), established: false };
+        else noSession[body.service] = { stuck: Boolean(body.stuck), csrf: Boolean(body.csrf), redirect: Boolean(body.redirect), established: false };
         return json(res, 200, noSession);
       }
       if (p === '/__usage') {
@@ -767,6 +777,14 @@ http
       }
       if (p === '/favicon.ico') { res.writeHead(204); return res.end(); }
 
+      // The sign-in a redirect of a service leads to (see /__nosession): it
+      // sends the browser back to the service, without CORS headers - on
+      // the other name of the host, the fetch of the page has failed by then.
+      if (p.startsWith('/SASLogon/')) {
+        res.writeHead(302, { Location: u.searchParams.get('redirect_uri') || '/' });
+        return res.end();
+      }
+
       // A service a suite took the session away from (see /__nosession). The
       // plain GET to its root is the request that establishes the session.
       const sessionService = p.split('/')[1];
@@ -775,6 +793,14 @@ http
         if (!xhr && req.method === 'GET' && p === `/${sessionService}/`) {
           if (!sessionless.stuck) sessionless.established = true;
           return json(res, 200, { version: 1, links: [] });
+        }
+        if (xhr && !sessionless.established && sessionless.redirect) {
+          const host = String(req.headers.host || `localhost:${PORT}`);
+          const otherHost = host.startsWith('localhost') ? host.replace('localhost', '127.0.0.1') : host.replace(/^[^:]+/, 'localhost');
+          const back = encodeURIComponent(`http://${host}/${sessionService}/`);
+          if (!sessionless.stuck) sessionless.established = true;
+          res.writeHead(302, { Location: `http://${otherHost}/SASLogon/oauth/authorize?client_id=sas.casControl&response_type=code&redirect_uri=${back}` });
+          return res.end();
         }
         if (xhr && !sessionless.established) { res.writeHead(449); return res.end(); }
         if (xhr && sessionless.csrf && req.method !== 'GET' && req.headers['x-csrf-token'] !== MOCK_CSRF_TOKEN) {

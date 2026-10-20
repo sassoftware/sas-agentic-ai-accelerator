@@ -69,6 +69,15 @@ export function createTypedOptionControl(key: string, meta: TypedOptionMeta, con
     textInput.id = controlId;
     textInput.className = 'form-control form-control-sm';
     textInput.value = String(meta?.default ?? '');
+    // A run sends the options as {name:value,name:value}, which the score
+    // code splits at each comma: a text with a comma would be read up to
+    // the comma, and a run is not sent with one. The field says so while
+    // it is typed.
+    textInput.addEventListener('input', () => {
+      const comma = textInput.value.includes(',');
+      textInput.classList.toggle('is-invalid', comma);
+      textInput.setAttribute('aria-invalid', String(comma));
+    });
     return textInput;
   }
   const numberInput = document.createElement('input');

@@ -26,7 +26,12 @@
  *   - SENDERS: every call of callSCRLLM, callSCRDecision and
  *     resolveJudgeOptions in a .ts file under src, by the function it stands
  *     in, with what it sends of an options.json; each that sends an option
- *     of the file has its road.
+ *     of the file has its road;
+ *   - OPTIONS_TEXT_CALLS: every call of optionsText, optionsTextEntries and
+ *     optionsFromText (the options text a run sends, Save Experiments stores
+ *     and a manifest reads) in a .ts file under src, and no other code that
+ *     takes the text apart; the text is read back as it was written for a
+ *     quote, a backslash, braces, blanks and API_KEY inside a name or a text.
  * The round trips, each written by its writer and read back by the check of
  * the page (on the page served by the mock, and with src/api/stored-json.ts
  * itself):
@@ -66,7 +71,11 @@
  *     of a name, written by mdb: each file is taken, and on the page each
  *     option is drawn as a control of its own, sent as written, and chosen
  *     as it was sent when the run is loaded, also from the tracker Save
- *     Experiments wrote.
+ *     Experiments wrote. And texts of options as a person types them: a
+ *     comma is flagged and the run not sent; quotes, a backslash, braces, a
+ *     blank at the end of a name and an empty string field are sent as
+ *     typed, stored as sent and loaded as sent, from memory and from the
+ *     saved tracker.
  *
  * The suite goes on after a check that failed and after a road that stopped.
  * The mock is found at VERIFY_BASE (default http://localhost:4173); the
@@ -293,6 +302,42 @@ const SENDERS = {
   'objects/prompt-builder.ts evaluationButton.onclick -> callSCRDecision': 'a decision model in an evaluation: decisionCallOptions, as in a run',
 };
 
+/**
+ * Every call that writes or reads the options text of a run (optionsText,
+ * optionsTextEntries, optionsFromText of src/api/stored-json.ts), by
+ * "<file> <function> -> <callee>", with its road. The manifests read the
+ * text with every brace removed and cut at the first "API_KEY" before: no
+ * reader of the text may do anything else of it.
+ */
+const OPTIONS_TEXT_CALLS = {
+  'api/scr-api.ts callSCRLLM -> optionsText': 'the options a run of an LLM sends - the road of typed texts',
+  'api/scr-api.ts callSCRDecision -> optionsText': 'the options a decision model is sent, the same text',
+  'objects/prompt-builder.ts promptExperimentTransformData -> optionsText': 'Save Experiments stores the text the run sent - the road of typed texts',
+  'objects/prompt-builder.ts parseScrOptionsString -> optionsFromText': 'a saved run loaded: each option as it was sent - the road of typed texts',
+  'api/stored-json.ts optionsFromText -> optionsTextEntries': 'the options of the text, before each value is read',
+  'objects/prompt-builder.ts promptBulderCreateBestPromptModel -> optionsTextEntries': 'the manifest of a prompt template: the options of the best run as sent, API_KEY by its name - the road of typed texts',
+  'objects/prompt-builder.ts promptBuilderCreateDecisionModel -> optionsTextEntries': 'the manifest of a decision template: the same reading',
+};
+
+function optionsTextCensus() {
+  const found = {};
+  for (const [file, text] of Object.entries(sourceFiles())) {
+    for (const [call, count] of Object.entries(callsInSource(file, text, ['optionsText', 'optionsTextEntries', 'optionsFromText']))) found[`${file} ${call}`] = count;
+  }
+  const differences = [
+    ...Object.keys(found).filter((key) => !OPTIONS_TEXT_CALLS[key]).map((key) => `${key}, not named here`),
+    ...Object.keys(OPTIONS_TEXT_CALLS).filter((key) => !found[key]).map((key) => `${key} is named, and is no call`),
+  ];
+  // Nothing else reads the text: no brace is removed from it anywhere.
+  const otherReaders = Object.entries(sourceFiles())
+    .filter(([, text]) => /\.options\s*\.replace\(|replace\(\/\[\{\}\]\/g/.test(text))
+    .map(([file]) => file);
+  step(
+    Object.keys(found).length > 0 && differences.length === 0 && otherReaders.length === 0,
+    `every call that writes or reads the options text of a run is named with its road, and nothing else takes the text apart (${Object.keys(found).length} calls; differences: ${differences.join('; ') || 'none'}; other readers: ${otherReaders.join(', ') || 'none'})`
+  );
+}
+
 function sendersCensus() {
   const found = {};
   for (const [file, text] of Object.entries(sourceFiles())) {
@@ -327,6 +372,45 @@ function sendersCensus() {
     sendersCensus();
   } catch (error) {
     step(false, `the calls that send options to a model are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
+  }
+  try {
+    optionsTextCensus();
+  } catch (error) {
+    step(false, `the calls that write or read the options text of a run are known to this suite (${error.message}; set VERIFY_PROJECT, run npm ci)`);
+  }
+  // The options text read back as it was written, for the texts a run can
+  // send: a quote, a backslash, a brace at either end or alone, a blank at an
+  // end of a name or a value, a name or a text that holds API_KEY, and the
+  // values a number or a word true/false is written as. Before, a quote came
+  // back as a backslash, a blank was trimmed, a quote at an end taken off, a
+  // brace removed and an option cut at "API_KEY".
+  if (stored) {
+    const sentOptions = {
+      temperature: 0.5,
+      ' padded ': 'p',
+      my_text: 'say "hi"',
+      quoted: "'q'",
+      my_path: 'C:\\temp',
+      braced: '{x}',
+      closing: '}',
+      opening: '{',
+      my_API_KEY_region: 'no_API_KEY_here',
+      blank: ' a ',
+      decimal: '0.50',
+      exponent: 1e-7,
+      flag: true,
+      word: 'TRUE',
+      API_KEY: 'OpenAI',
+    };
+    const text = stored.optionsText(sentOptions);
+    const entries = stored.optionsTextEntries(text);
+    const back = stored.optionsFromText(text);
+    const notBack = Object.entries(sentOptions).filter(([name, value]) => !Object.prototype.hasOwnProperty.call(back, name) || String(back[name]) !== String(value)).map(([name]) => name);
+    const named = entries.filter(([name]) => name === 'API_KEY').length;
+    step(
+      entries.length === Object.keys(sentOptions).length && notBack.length === 0 && named === 1 && stored.optionsText(back) === text,
+      `the options text of a run is read back as it was sent - quotes, a backslash, braces, blanks at the ends of a name and of a value, API_KEY inside a name or a text (${entries.length} options of ${Object.keys(sentOptions).length}; read otherwise: ${notBack.join(', ') || 'none'}; options named API_KEY: ${named}; written again: ${stored.optionsText(back) === text ? 'the same text' : clip(stored.optionsText(back))})`
+    );
   }
 
   // ==========================================================================
@@ -909,6 +993,142 @@ function sendersCensus() {
       step(
         Boolean(upload) && fromTracker.low.length === 0 && fromTracker.high.length === 0 && fromTracker.unticked.length === 0 && pageErrors.length === 0,
         `saved and opened again, the run loaded chooses each option of every name as it was sent (tracker uploaded: ${Boolean(upload)}; not chosen otherwise before: ${clip(fromTracker.low.slice(0, 4).join('; ') || 'none')}; not as sent: ${clip(fromTracker.high.slice(0, 6).join('; ') || 'none')}; LLMs not ticked: ${fromTracker.unticked.join(', ') || 'none'}; page errors: ${pageErrors.join(' | ') || 'none'})`
+      );
+    });
+  }
+
+  // ==========================================================================
+  // Texts of options as a person types them: sent, saved and loaded as sent
+  // ==========================================================================
+  // A run sends the text of a field as it stands. A comma in it would be read
+  // by the score code as the end of the option: the run is not sent, and the
+  // option is named. Save Experiments stored the options as JSON.stringify
+  // with every '"' removed - a quote came back as a backslash, a backslash
+  // doubled -, a saved run was read back with blanks and quotes taken off the
+  // ends of a name and of a value, and an option of type string the run left
+  // out - its field was empty - kept on Load what its field held by then. The
+  // run loaded, from memory and from the saved tracker, sends what it sent.
+  {
+    const file = {
+      temperature: { default: 0.5 },
+      stop: { type: 'string', default: 'x' },
+      region: { type: 'string', default: '' },
+      ' padded': { type: 'string', default: 'p' },
+      my_text: { type: 'string', default: 'say "hi"' },
+      my_path: { type: 'string', default: 'C:\\temp' },
+      braced: { type: 'string', default: '{x}' },
+      closing: { type: 'string', default: '}' },
+      my_API_KEY_region: { type: 'string', default: 'no_API_KEY_here' },
+      free: { default: 'text of no type' },
+    };
+    await road('texts of options typed, sent, saved and loaded as they were sent; a comma refused', async (page) => {
+      const LLM = 'rtt_llm';
+      const taken = check('options.json', file);
+      await addModels(page, 'llm-proj', [['rt-txt', LLM]], JSON.stringify(file));
+      const sent = [];
+      await page.route('**/scr/**', (route) => {
+        const model = decodeURIComponent(new URL(route.request().url()).pathname.split('/')[2] || '');
+        if (model !== LLM) return route.continue();
+        const body = parsed(route.request().postData() || '{}') || {};
+        sent.push(((body.inputs || []).find((input) => input.name === 'options') || {}).value);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { response: 'r', run_time: 1, prompt_length: 1, output_length: 1 } }) });
+      });
+      await openPage(page);
+      await choose(page, 'LPB', '#LPB-project-dropdown', 'proj-1');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      await goStep(page, 'LPB', 'build');
+      const index = await page.evaluate((name) => {
+        const box = [...document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')].find((input) => input.value === name && /^model\d+$/.test(input.id));
+        return box && !box.disabled ? Number(box.id.replace(/^model/, '')) : null;
+      }, LLM);
+      if (!taken || index === null) {
+        step(false, `the options.json of typed texts is taken and its LLM offered (taken: ${taken}; offered: ${index !== null})`);
+        return;
+      }
+      const ids = Object.fromEntries(Object.keys(file).map((key) => [key, stored.optionControlId(index, key, file[key])]));
+      const fields = () => page.evaluate((all) => Object.fromEntries(Object.entries(all).map(([key, id]) => [key, document.getElementById(id)?.value ?? null])), ids);
+      const type = (values) =>
+        page.evaluate(([all, wanted]) => {
+          for (const [key, value] of Object.entries(wanted)) {
+            const field = document.getElementById(all[key]);
+            field.value = value;
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }, [ids, values]);
+      const asSent = Object.fromEntries(Object.entries(file).map(([key, option]) => [key, String(option.default)]));
+      const otherwise = (seen) => Object.keys(asSent).filter((key) => seen[key] !== asSent[key]).map((key) => `${key}: ${JSON.stringify(seen[key])}`);
+      const changed = Object.fromEntries(Object.keys(file).filter((key) => key !== 'temperature').map((key) => [key, 'CHANGED']));
+      const runOnce = async () => {
+        const before = sent.length;
+        await page.click(lpb('run-experiment'));
+        await waitUntil(async () => sent.length > before, 'the LLM of the run is called', 60000);
+        await waitUntil(async () => (await textOf(page, lpb('run-experiment'))) === 'Run Experiments', 'the run has ended', 60000);
+        await atRest();
+        return sent[sent.length - 1];
+      };
+      await page.evaluate((name) => {
+        for (const box of document.querySelectorAll('#LPB-model-selector-container input[type=checkbox]')) {
+          if (/^model\d+$/.test(box.id) && (box.value === name) !== box.checked) box.click();
+        }
+      }, LLM);
+      await page.fill(lpb('user-prompt'), 'A question for typed texts');
+      // A comma typed into the text of an option.
+      await type({ stop: 'END,STOP' });
+      const flagged = await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids.stop);
+      await page.click(lpb('run-experiment'));
+      await waitUntil(async () => (await textOf(page, lpb('run-error'))) !== '', 'the run says why it was not sent', 15000).catch(() => {});
+      await atRest();
+      const refusal = await textOf(page, lpb('run-error'));
+      step(
+        flagged && sent.length === 0 && (await savedRuns(page)) === 0 && refusal.includes(`stop (${LLM})`) && refusal.includes('comma') && (await textOf(page, lpb('run-experiment'))) === 'Run Experiments',
+        `a comma typed into the text of an option is flagged in its field, and the run is not sent - the option and its LLM are named (field flagged: ${flagged}; calls: ${sent.length}; said: ${clip(refusal || 'nothing')})`
+      );
+      await type({ stop: 'x' });
+      // The run, sent as typed: the empty field of a string option left out.
+      const want = `{${Object.entries(file)
+        .filter(([, option]) => !(option.type === 'string' && option.default === ''))
+        .map(([key, option]) => `${key}:${option.default}`)
+        .join(',')}}`;
+      const first = await runOnce();
+      step(first === want && !(await page.evaluate((id) => document.getElementById(id).classList.contains('is-invalid'), ids.stop)), `a run sends the text of each option as it stands - quotes, a backslash, braces, a blank at the end of a name, API_KEY inside a name and a text (sent: ${clip(JSON.stringify(first))}; expected: ${clip(JSON.stringify(want))})`);
+      // Every field changed, the run loaded from memory.
+      await type(changed);
+      await page.click(`${lpb('pet-0')} .pet-run-load`);
+      await waitUntil(async () => otherwise(await fields()).length === 0, 'every field holds what the run sent', 15000).catch(() => {});
+      const fromMemory = otherwise(await fields());
+      const second = fromMemory.length === 0 ? await runOnce() : null;
+      step(
+        fromMemory.length === 0 && second === want,
+        `the run loaded from memory holds each text as it was sent, the string option it left out empty, and sends what it sent (held otherwise: ${clip(fromMemory.join('; ') || 'none')}; sent: ${clip(JSON.stringify(second))})`
+      );
+      // Saved: the tracker holds the text the run sent.
+      const log = await saveExperiments(page);
+      const upload = uploadsOf(log, 'model-free', 'Prompt-Experiment-Tracker.json').pop();
+      const rows = upload ? parsed(upload.text) || [] : [];
+      const storedOptions = rows.filter((row) => row.model === LLM).map((row) => row.options);
+      step(
+        storedOptions.length === 2 && storedOptions.every((options) => options === want),
+        `Save Experiments stores the options of each run as they were sent (stored: ${clip(JSON.stringify(storedOptions))})`
+      );
+      // Opened again, every field changed, the run loaded from the saved tracker.
+      await page.route('**/modelRepository/models/model-free/contents**', (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'c-rtt-trk', name: 'Prompt-Experiment-Tracker.json', fileUri: '/files/files/rtt-trk' }] }) })
+          : route.continue()
+      );
+      await page.route('**/files/files/rtt-trk/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: upload ? upload.text : '[]' }));
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+      await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-free');
+      await goStep(page, 'LPB', 'build');
+      await waitUntil(async () => (await savedRuns(page)) === 2, 'the saved runs are drawn', 30000).catch(() => {});
+      await type(changed);
+      await page.click(`${lpb('pet-0')} .pet-run-load`);
+      await waitUntil(async () => otherwise(await fields()).length === 0, 'every field holds what the run sent', 15000).catch(() => {});
+      const fromTracker = otherwise(await fields());
+      const third = fromTracker.length === 0 ? await runOnce() : null;
+      step(
+        Boolean(upload) && fromTracker.length === 0 && third === want && pageErrors.length === 0,
+        `saved and opened again, the run loaded holds each text as it was sent and sends what it sent (held otherwise: ${clip(fromTracker.join('; ') || 'none')}; sent: ${clip(JSON.stringify(third))}; page errors: ${pageErrors.join(' | ') || 'none'})`
       );
     });
   }

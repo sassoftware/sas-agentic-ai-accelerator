@@ -671,15 +671,17 @@ function writesCensus() {
   // and a second one, and - where asked - the dataset snapshot of the first
   // in the contents. Writes to it are answered here, not by the mock.
   // `state.failNextRead` ('refused', 'abort' or 'html') makes the next read
-  // of the tracker fail; `storeThenNoAnswer` stores an upload of the tracker
+  // of the tracker fail ('abort' with its repeat); `storeThenNoAnswer` stores an upload of the tracker
   // and then gives the page no answer.
   const servedTracker = async (page, { snapshot = false, refuseUpload = false, refuseSnapshot = false, storeThenNoAnswer = false } = {}) => {
     const first = (await (await fetch(BASE + '/files/files/opttrk-1/content')).json())[0];
     const state = { entries: [first, { ...first, optimizationId: 2, jobId: 'job-second', datasetSnapshot: null }], writes: [], failNextRead: null };
     await page.route('**/files/files/opttrk-1/content', (route) => {
       const failure = state.failNextRead;
-      state.failNextRead = null;
-      if (failure === 'abort') return route.abort('failed');
+      // A read without an answer is sent again once (viyaFetch): 'abort'
+      // takes the answer of that repeat as well.
+      state.failNextRead = failure === 'abort' ? 'abort again' : null;
+      if (failure === 'abort' || failure === 'abort again') return route.abort('failed');
       if (failure === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>Bad gateway</body></html>' });
       if (failure) return refuse(route);
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.entries) });

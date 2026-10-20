@@ -4,6 +4,7 @@
  */
 
 import { viyaFetch } from './http-client';
+import { optionsText } from './stored-json';
 
 // The calls to a model container (callSCRLLM, callSCRDecision and the
 // metadata request) use fetch() directly, and that is on purpose. viyaFetch
@@ -87,12 +88,7 @@ export async function callSCRDecision(
     deploymentType === 'aca'
       ? `https://${model.replaceAll('_', '-')}.${scrEndpoint}/${model}`
       : `${scrEndpoint}/${model}/${model}`;
-  const optionsString =
-    '{' +
-    Object.entries(options)
-      .map(([key, value]) => `${key}:${value}`)
-      .join(',') +
-    '}';
+  const optionsString = optionsText(options);
   const body = JSON.stringify({
     inputs: [
       { name: 'state', value: state },
@@ -135,13 +131,9 @@ export async function callSCRLLM(
   // input in the form `{key:value,key:value}` — no quotes, no spaces — including
   // API_KEY when the model requires one. See the LLM score code (baseScore.py /
   // claudeSonnet35Score.py) and the SCR-LLM-Calls Postman collection in the
-  // accelerator for the exact contract.
-  const optionsString =
-    '{' +
-    Object.entries(options)
-      .map(([key, value]) => `${key}:${value}`)
-      .join(',') +
-    '}';
+  // accelerator for the exact contract. Save Experiments stores the same text
+  // with the run (optionsText).
+  const optionsString = optionsText(options);
 
   const body = JSON.stringify({
     inputs: [

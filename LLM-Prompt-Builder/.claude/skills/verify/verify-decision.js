@@ -351,6 +351,87 @@ const DECISION_CODE_BEFORE_THE_TLS_OPTION = '9f57ad8f5b98bac8590df1794b61d32b843
   const thresholdReadout = await page.textContent('#app-obj-LPB-evaluate-results .pb-threshold-readout');
   assert(thresholdReadout.includes('Coverage') && thresholdReadout.includes('Accuracy'), 'the threshold readout shows coverage and accuracy');
 
+  // ---- the first read of a page from /casRowSets/ ---------------------------------------
+  // On SAS Viya (zeus, 2026-10-20) the first read of a page from /casRowSets/
+  // was redirected to the sign-in, the fetch of the page failed on the way and
+  // the evaluation showed "TypeError: Failed to fetch"; a second click worked.
+  // The mock takes the session with casRowSets away the same way: the first
+  // click evaluates the table, because the page sends the read again.
+  const evaluationDone = async () =>
+    !(await page.isDisabled('#app-obj-LPB-evaluate-run')) &&
+    ((await page.$$('#app-obj-LPB-evaluate-results .pb-evaluation')).length >= 1 || (await page.textContent('#app-obj-LPB-evaluate-status')).trim() !== '');
+  const evaluateAgain = async (label) => {
+    await page.click('#app-obj-LPB-evaluate-run');
+    await waitUntil(async () => (await page.isDisabled('#app-obj-LPB-evaluate-run')) || (await evaluationDone()), `${label}: the evaluation started`, 10000);
+    await waitUntil(evaluationDone, `${label}: the evaluation ended`, 60000);
+  };
+  const sessionless = (how) => fetch(BASE + '/__nosession', { method: 'POST', body: JSON.stringify(how) });
+  await sessionless({ service: 'casRowSets', redirect: true });
+  await resetLog();
+  await evaluateAgain('no session with casRowSets');
+  log = await getLog();
+  const rowReads = log.filter((e) => e.method === 'GET' && e.url.startsWith('/casRowSets/servers/cas-shared-default/caslibs/Public/tables/DEC_CASES/rows'));
+  assert(
+    rowReads.length === 2 && rowReads[0].status === 302 && rowReads[1].status === 200,
+    `the first read of the rows, redirected to the sign-in and failed in the browser, is sent again once and answered (reads of the rows: ${rowReads.map((e) => e.status).join(', ')})`
+  );
+  evaluationText = await page.textContent('#app-obj-LPB-evaluate-results');
+  assert(
+    evaluationText.includes('team: accuracy 100%') && !(await page.textContent('#app-obj-LPB-evaluate-status')).includes('Failed to fetch'),
+    `the first click of Evaluate evaluates the table (got: ${evaluationText.slice(0, 120)})`
+  );
+  // A session that cannot be established: the read fails again, and the
+  // evaluation says so in words, with the table - not "TypeError: Failed to fetch".
+  await sessionless({ service: 'casRowSets', redirect: true, stuck: true });
+  await evaluateAgain('a session with casRowSets that cannot be established');
+  const unreadStatus = await page.textContent('#app-obj-LPB-evaluate-status');
+  assert(
+    unreadStatus.includes('The rows of Public.DEC_CASES could not be read') && unreadStatus.includes('SAS Viya did not answer') && !/TypeError/.test(unreadStatus),
+    `a table that cannot be read is named in words (got: ${unreadStatus})`
+  );
+  assert(!(await page.$('#app-obj-LPB-evaluate-results .pb-evaluation')), 'no evaluation is drawn for a table that could not be read');
+  await sessionless({});
+
+  // ---- a model that never answered, and one that answered three of four cases -------------
+  // All eight calls answered 404 on zeus, and the card still read "Expected
+  // calibration error 0% · Brier score 0.000": every failed call counted as a
+  // wrong answer with a confidence of 0, which is perfectly calibrated.
+  await fetch(BASE + '/__failmodel', { method: 'POST', body: JSON.stringify({ name: 'jev_mock', status: 404 }) });
+  await evaluateAgain('every call failed');
+  evaluationText = await page.textContent('#app-obj-LPB-evaluate-results');
+  assert(
+    evaluationText.includes('4 calls failed') && evaluationText.includes('team: no answers to score - the model answered none of the 4 cases') && evaluationText.includes('escalate: no answers to score'),
+    `a model whose every call failed has no answers to score (got: ${evaluationText.slice(0, 220)})`
+  );
+  assert(
+    !/accuracy|Expected calibration error|Brier score|Coverage/.test(evaluationText) &&
+      !(await page.$('#app-obj-LPB-evaluate-results .pb-reliability')) &&
+      !(await page.$('#app-obj-LPB-evaluate-results .pb-threshold')) &&
+      !(await page.$('#app-obj-LPB-evaluate-results .pb-confusion')),
+    'without an answer no accuracy, threshold, confusion or calibration is shown'
+  );
+  await fetch(BASE + '/__failmodel', { method: 'POST', body: JSON.stringify({}) });
+  // The first call of the next evaluation fails, the three after it answer:
+  // the accuracy is that of the three answers, and the case without one is
+  // counted apart - it was a wrong answer of confidence 0 before.
+  let decisionCalls = 0;
+  const firstCallFails = async (route) => {
+    decisionCalls += 1;
+    if (decisionCalls === 1) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"message":"no container"}' });
+    return route.continue();
+  };
+  await page.route('**/scr/jev_mock/jev_mock', firstCallFails);
+  await evaluateAgain('one call failed');
+  await page.unroute('**/scr/jev_mock/jev_mock', firstCallFails);
+  evaluationText = await page.textContent('#app-obj-LPB-evaluate-results');
+  assert(
+    evaluationText.includes('1 calls failed') &&
+      evaluationText.includes('team: accuracy 100% (3/3)') &&
+      evaluationText.includes('escalate: accuracy 100% (3/3)') &&
+      evaluationText.includes('1 not answered'),
+    `a case without an answer is counted apart, not as a wrong answer (got: ${evaluationText.slice(0, 240)})`
+  );
+
   // ---- manifest: typed outputs, no parsing block ---------------------------------------
   await goStep('finalize');
   assert(!(await page.isVisible('#app-obj-LPB-pet-manifest-integrated')), 'the integrated-call switch is hidden');

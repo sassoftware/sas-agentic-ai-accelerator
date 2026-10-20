@@ -527,6 +527,59 @@ export function isDecisionModelOptions(value: unknown): boolean {
   return key === undefined || key === null || (isObject(key) && isKeyName(key.default));
 }
 
+/**
+ * The options of a call as the one text it sends them in,
+ * {name:value,name:value}, each value as JavaScript writes it as text. A run
+ * stores the same text with each model (Save Experiments), and the manifest
+ * of a template writes the options of its best run from it. An option whose
+ * value is undefined is left out: a call sends none, and a drawn run holds
+ * one for the key entry of a model whose key name the page does not know
+ * (the tracker keeps no key, only its name).
+ */
+export const optionsText = (options: Record<string, unknown>): string =>
+  `{${Object.entries(options)
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => `${name}:${value}`)
+    .join(',')}}`;
+
+/**
+ * Each option of an options text (optionsText) as it was sent: its name and
+ * its text. The braces around the text are taken off, the rest is split at
+ * each "," and each piece at its first ":", as the score code splits it - but
+ * no blank and no quote is taken off a name or a value, and so a text with a
+ * quote, a backslash, a brace or a blank at an end comes back as it was sent.
+ * A name the page sends holds neither "," nor ":" and a text no "," - the
+ * file is refused otherwise (isModelOptions), and a run with a typed comma is
+ * not sent -, so no option is split in two. A piece without ":" is no option.
+ */
+export function optionsTextEntries(text: string | null | undefined): [string, string][] {
+  const whole = String(text ?? '').trim();
+  const inner = whole.startsWith('{') && whole.endsWith('}') ? whole.slice(1, -1) : whole;
+  if (inner === '') return [];
+  return inner.split(',').flatMap((piece): [string, string][] => {
+    const separator = piece.indexOf(':');
+    return separator === -1 ? [] : [[piece.slice(0, separator), piece.slice(separator + 1)]];
+  });
+}
+
+/**
+ * The options of a stored run, each with the value it was sent with: true or
+ * false for that word, a number for a text that is the number as JavaScript
+ * writes it (`5`, `0.5`, `-1`, `1e-7`), and the text otherwise (`0.50`
+ * stays a text). Each value written back as text is the text that was sent,
+ * so a run loaded into the fields sends what it sent.
+ */
+export function optionsFromText(text: string | null | undefined): Record<string, unknown> {
+  // No prototype: an option named __proto__ is a field like any other.
+  const options: Record<string, unknown> = Object.create(null);
+  for (const [name, value] of optionsTextEntries(text)) {
+    if (value === 'true' || value === 'false') options[name] = value === 'true';
+    else if (value.trim() !== '' && String(Number(value)) === value) options[name] = Number(value);
+    else options[name] = value;
+  }
+  return options;
+}
+
 /** The JSON files the page reads, by their name, with the check of each. */
 export const STORED_JSON_FILES = {
   'Prompt-Experiment-Tracker.json': isExperimentTracker,

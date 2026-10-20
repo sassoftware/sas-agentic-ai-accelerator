@@ -387,6 +387,7 @@ const HTML_SOURCES = {
   'objects/prompt-decision.ts Math': 'a number the page computes',
   'objects/prompt-decision.ts count': 'a number the page counts',
   'objects/prompt-decision.ts percent': 'a number the page computes, as a percentage',
+  'objects/prompt-decision.ts percentOrDash': 'a number the page computes, as a percentage, or a dash where there is none',
   'ui/create-modal.ts text': 'a text of a create dialog, from the locale files',
   'ui/external-link.ts label': 'the markup of the link itself, put back after the note that it was copied',
   'ui/markdown.ts DOMPurify': 'the markdown of a response made markup, sanitized by DOMPurify',
@@ -927,14 +928,15 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
     }
   };
   // One request that matches `match` fails - refused, or without an answer;
-  // the requests after it go through.
+  // the requests after it go through. A read without an answer is sent again
+  // once (viyaFetch), so 'abort' takes the answer of that repeat as well.
   const failOnce = async (page, match, how) => {
-    let failed = false;
+    let failures = how === 'abort' ? 2 : 1;
     await page.route(
       (url) => match(new URL(url)),
       (route) => {
-        if (failed || route.request().method() !== 'GET') return route.continue();
-        failed = true;
+        if (failures === 0 || route.request().method() !== 'GET') return route.continue();
+        failures -= 1;
         if (how === 'abort') return route.abort('failed');
         return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ httpStatusCode: 500, message: 'refused by the suite' }) });
       }

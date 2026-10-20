@@ -116,7 +116,29 @@ export async function viyaFetch(
     fetchOptions.body = options.body;
   }
 
-  let response = await fetchWithin(url, fetchOptions);
+  let response: Response;
+  try {
+    response = await fetchWithin(url, fetchOptions);
+  } catch (error) {
+    // A read the browser got no answer for (fetch rejects with a TypeError;
+    // a request given up after REQUEST_TIMEOUT_MS rejects with the reason of
+    // its abort). Seen live on the first read of a page from /casRowSets/,
+    // the rows of a CAS table: the request was redirected to the sign-in of
+    // SAS Viya (/SASLogon/oauth/authorize, client sas.casControl) and the
+    // evaluation showed "TypeError: Failed to fetch", while a second click
+    // was answered. The read is sent again, once, after the session warm-up
+    // a 449 gets (establishServiceSession); with X-Requested-With the
+    // repeated read goes through the sign-in itself, as the second click
+    // did. A write is not sent again: it may have been carried out, and its
+    // callers read back what is stored (writeOrReadBack).
+    if (!(error instanceof TypeError) || !['GET', 'HEAD'].includes(fetchOptions.method ?? 'GET')) throw error;
+    await establishServiceSession(state.config.viyaHost, path);
+    try {
+      response = await fetchWithin(url, fetchOptions);
+    } catch (again) {
+      throw again instanceof TypeError ? new ViyaUnreachable(path, again) : again;
+    }
+  }
 
   // No session with this service yet: establish it and send the request
   // again, once. A second 449 goes back to the caller as it is. This comes
@@ -155,6 +177,24 @@ export class ViyaRefused extends Error {
     message = `Viya request to ${path} failed with HTTP ${status}`
   ) {
     super(message);
+  }
+}
+
+/**
+ * A read the browser got no answer for, also when it was sent again after
+ * the session with its service was established: the message says so in
+ * words, where the browser's own error says only "Failed to fetch".
+ */
+export class ViyaUnreachable extends Error {
+  constructor(
+    path: string,
+    readonly lost: unknown
+  ) {
+    super(
+      `SAS Viya did not answer the request to ${path.split('?')[0]}, also not when it was sent again ` +
+        `(the browser reports: ${lost instanceof Error ? lost.message : String(lost)}). ` +
+        'Reload the page and try again; if it fails again, ask your administrator whether the service is running.'
+    );
   }
 }
 
