@@ -3835,6 +3835,12 @@ def deploy(
                           f"({_plain(', '.join(model_id for model_id, _, _ in routes))}): applying it removes the "
                           "route of every other model the router serves. Render all models with --all.[/yellow]",
                           soft_wrap=True)
+        if dns is None:
+            # A wrong resolver fails no apply: the router starts, and every
+            # request answers 502 once NGINX cannot look the Service up.
+            console.print(f"The router resolves the model Services with {_plain(DEFAULT_DNS)}, the kube-dns address of AKS. "
+                          "On another cluster pass --dns with its cluster DNS address: kubectl get service kube-dns "
+                          "-n kube-system -o jsonpath='{.spec.clusterIP}'", soft_wrap=True)
     if dns is not None and not contour:
         console.print("[yellow]--dns is the resolver of the contour router - it does not apply to --ingress "
                       "nginx.[/yellow]")

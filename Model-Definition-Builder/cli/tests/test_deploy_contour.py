@@ -173,9 +173,21 @@ def test_dns_is_the_routers_resolver(defs, tmp_path, monkeypatch):
     assert result.exit_code == 0, printed
     conf = _kind(_documents(tmp_path / "yaml" / "llm-router.yaml"), "ConfigMap")["data"]["default.conf"]
     assert "resolver 10.96.0.10 valid=30s ipv6=off;" in conf and "10.0.0.10" not in conf
+    assert "kube-dns" not in printed
     result, printed = _deploy(monkeypatch, tmp_path / "nginx", "--all", "--dns", "10.96.0.10")
     assert result.exit_code == 0 and "--dns is the resolver of the contour router" in printed
     assert not (tmp_path / "nginx" / "llm-router.yaml").exists()
+
+
+def test_without_dns_the_default_resolver_is_named_with_the_way_to_check_it(defs, tmp_path, monkeypatch):
+    # A wrong resolver fails no apply - every request through the router answers 502 - so the default is said.
+    result, printed = _deploy(monkeypatch, tmp_path / "yaml", "--all", "--ingress", "contour")
+    assert result.exit_code == 0, printed
+    assert ("The router resolves the model Services with 10.0.0.10, the kube-dns address of AKS. On another cluster "
+            "pass --dns with its cluster DNS address: kubectl get service kube-dns -n kube-system -o "
+            "jsonpath='{.spec.clusterIP}'") in printed
+    result, printed = _deploy(monkeypatch, tmp_path / "nginx", "--all")
+    assert result.exit_code == 0 and "kube-dns" not in printed
 
 
 # -- placement -------------------------------------------------------------------------
