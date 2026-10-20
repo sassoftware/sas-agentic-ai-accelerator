@@ -976,7 +976,7 @@ def test_a_manifest_that_cannot_be_used_stops_the_command_before_it_signs_in(com
     assert "The content manifest cannot be used" in text
     assert "  'RAG/generated/job.sas': 'generated' holds what the Prompt Builder generates for a site's own setups " \
            "and never ships\n" in text
-    assert "  'Flows/Ingest': unknown kind 'dataFlow' (one of folder, file, step, jobDefinition, report)\n" in text
+    assert "  'Flows/Ingest': unknown kind 'dataFlow' (one of folder, file, step, jobDefinition, report, decision)\n" in text
 
 
 # ---- the manifest of this repository -----------------------------------------
@@ -1055,12 +1055,15 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch)
     assert [outcome.entry.path for outcome in dry.outcomes] == \
         [entry.path for entry in entries if entry.path != "release.json"] + ["release.json"]
     assert viya.wrote() == [] and dry.root_created
+    # the reports and the decision that carries the Call LLM node come with the package alone
+    with_the_package = [entry for entry in entries if entry.kind in content.TRANSFER_KINDS]
+    assert len(with_the_package) == 3
     assert {path: status for path, status in _statuses(dry).items() if status != CREATED} == \
-        {entry.path: NOT_DEPLOYED for entry in reports}
+        {entry.path: NOT_DEPLOYED for entry in with_the_package}
 
     first = deploy(viya, shipped)
     assert first.failed == [] and first.unlisted == []
-    assert first.count(CREATED) == len(entries) - 2 and first.count(NOT_DEPLOYED) == 2
+    assert first.count(CREATED) == len(entries) - 3 and first.count(NOT_DEPLOYED) == 3
     # the two pages a site opens first are job definitions, not files
     (start,) = viya.at(f"{shipped.content_root}/Start Here")
     (release,) = viya.at(f"{shipped.content_root}/release.json")
@@ -1068,7 +1071,7 @@ def test_the_manifest_of_the_repository_deploys_and_passes_the_gate(monkeypatch)
 
     written = len(viya.wrote())
     second = deploy(viya, shipped)
-    assert second.count(EQUAL) == len(entries) - 2 and second.failed == []
+    assert second.count(EQUAL) == len(entries) - 3 and second.failed == []
     assert len(viya.wrote()) == written
 
     pictures = [(entry.path, listed["name"]) for entry in reports for listed in entry.files if listed["sha256"]]

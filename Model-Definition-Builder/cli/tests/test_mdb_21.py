@@ -624,7 +624,12 @@ def test_the_hint_for_a_reference_in_the_place_of_a_folder_runs_as_printed_for_e
     reading = {f.path for f in folders for e in shipped.manifest.objects()
                if e.path.startswith(f.path + "/") and content.reads_content_root(e)}
     assert reading == {"Data"} and len(folders) > 8
-    for number, folder in enumerate(folders):
+    # a folder that holds only what comes with the package (Decisions: the decision of the Call LLM node) gets
+    # nothing from a deploy, so there is nothing to find in the folder its hint names
+    written = [f for f in folders if any(e.path.startswith(f.path + "/") and e.kind not in content.TRANSFER_KINDS
+                                         for e in shipped.manifest.objects())]
+    assert [f.path for f in folders if f not in written] == ["Decisions"]
+    for number, folder in enumerate(written):
         member, put_back = _taken_out(viya, f"{ROOT}/{folder.path}", "folder")
         other = f"/Team/Own {number}/Another name"
         fitting = f"/Team/Own {number}/A root/{folder.path}"
@@ -1354,4 +1359,4 @@ def test_no_path_of_the_manifest_holds_a_character_double_quotes_do_not_keep():
     PowerShell and bash read as it stands unless the path holds a character double quotes do not keep. `--only`
     takes a path of this manifest and nothing else, so the hints are right while no path of it holds one."""
     paths = [entry.path for entry in content.load_manifest(REPOSITORY).all_entries()]
-    assert len(paths) == 72 and not [path for path in paths if cli._NOT_KEPT_IN_DOUBLE_QUOTES.intersection(path)]
+    assert len(paths) == 74 and not [path for path in paths if cli._NOT_KEPT_IN_DOUBLE_QUOTES.intersection(path)]

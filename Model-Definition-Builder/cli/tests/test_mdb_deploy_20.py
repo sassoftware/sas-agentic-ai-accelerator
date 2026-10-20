@@ -376,10 +376,10 @@ def test_the_command_to_repeat_knows_every_option_of_the_command():
     know."""
     line = cli._import_command(
         [Path("p.json")], None, "Lib", "TABLE", "cas", True, 30, "Logs", "/Team/Root", "Team context", True, True,
-        True, "rules", True)
+        True, "rules", True, True)
     assert line == ("mdb builders-import p.json --caslib Lib --report-caslib Logs --table TABLE --server cas "
                     '--content-root /Team/Root --compute-context "Team context" --no-releases --no-reports '
-                    "--no-options-capture --create --out rules --no-files --timeout 30")
+                    "--no-decisions --no-options-capture --create --out rules --no-files --timeout 30")
     words = set(shlex.split(line)) | set(shlex.split(cli._import_command(None, Path("o.json"), None, None, None,
                                                                          False, cli.IMPORT_TIMEOUT)))
     # a dry run prints no such line; --help is typer's own

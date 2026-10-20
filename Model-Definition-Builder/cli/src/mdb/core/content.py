@@ -37,6 +37,15 @@ THE KINDS.
                     names what `mdb package-check` asks of it, `files:` the
                     files that are children of the report (its images), each
                     with a name and, for a static file, its SHA-256.
+    decision        no repository source: a SAS Intelligent Decisioning
+                    decision, authored on a site, whose package is its only
+                    source. `nodeTypes:` names the custom node types it uses,
+                    each with its name and the id it must have - the export
+                    carries a node type as a dependency of the decision, with
+                    its id, and an import creates it under that id (or
+                    overwrites the one of that id in place). The decision of
+                    the accelerator holds the Call LLM node only: it is how the
+                    package brings that node to a site under one fixed id.
 
 A SITE SETTING. A parameter marked `siteSetting: true` holds a value of the
 site, not of the release: the compute context a job runs in (`_contextName`),
@@ -78,7 +87,7 @@ from .. import __version__
 #: Where the manifest lives in a checkout.
 MANIFEST_PATH = ("SAS-Viya-Integrations", "package-manifest.yaml")
 
-KINDS = ("folder", "file", "step", "jobDefinition", "report")
+KINDS = ("folder", "file", "step", "jobDefinition", "report", "decision")
 
 #: The fields an entry of each kind may carry besides `path` and `kind`.
 FIELDS = {
@@ -87,7 +96,19 @@ FIELDS = {
     "step": ("source",),
     "jobDefinition": ("code", "form", "parameters", "description"),
     "report": ("checks", "files"),
+    "decision": ("nodeTypes",),
 }
+
+#: The kinds that have no source in the repository: the package is their only
+#: copy, and they reach a site through the transfer service (`mdb
+#: builders-import`), never through `mdb content-deploy`.
+TRANSFER_KINDS = ("report", "decision")
+
+#: What an entry of `nodeTypes:` of a decision carries.
+NODE_TYPE_FIELDS = ("name", "id")
+
+#: A node type id as SAS Intelligent Decisioning writes one.
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 #: What a job definition parameter may carry, and the types SAS Job Execution knows.
 PARAMETER_FIELDS = ("name", "type", "default", "label", "required", "siteSetting")
@@ -189,6 +210,8 @@ class Entry:
     checks: dict = field(default_factory=dict, hash=False, compare=False)
     #: The files that are children of a report: ({"name", "sha256" or None}, ...).
     files: tuple = field(default=(), hash=False, compare=False)
+    #: The custom node types a decision uses: ({"name", "id"}, ...).
+    node_types: tuple = field(default=(), hash=False, compare=False)
     #: True for a folder no entry names: the folder of a listed object.
     implied: bool = False
 
@@ -349,6 +372,34 @@ def _report_files(raw, where: str, problems: list) -> tuple:
     return tuple(result)
 
 
+def _node_types(raw, where: str, problems: list) -> tuple:
+    """The `nodeTypes:` of a decision entry: the name and the id of each
+    custom node type the decision uses. A decision of the content folder
+    exists to carry its node types, so it lists at least one."""
+    if not isinstance(raw, list) or not raw:
+        problems.append(f"{where}: a decision lists the custom node types it uses under nodeTypes, each with its "
+                        "name and id")
+        return ()
+    result, ids, names = [], set(), set()
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+            problems.append(f"{where}: a node type of a decision needs a name")
+            continue
+        unknown = sorted(set(map(str, item)) - set(NODE_TYPE_FIELDS))
+        if unknown:
+            problems.append(f"{where}: node type '{item['name']}' has unknown field(s) {', '.join(unknown)}")
+        node_id = str(item.get("id") or "")
+        if not _UUID.fullmatch(node_id):
+            problems.append(f"{where}: node type '{item['name']}': id is a UUID in lower case, as SAS Intelligent "
+                            "Decisioning writes one")
+        if node_id in ids or item["name"] in names:
+            problems.append(f"{where}: node type '{item['name']}' is listed twice")
+        ids.add(node_id)
+        names.add(item["name"])
+        result.append({"name": item["name"], "id": node_id})
+    return tuple(result)
+
+
 def _checks(raw, where: str, problems: list) -> dict:
     if raw is None:
         return {}
@@ -479,6 +530,8 @@ def parse_manifest(document, repo_root, where="package-manifest.yaml", check_sou
         elif kind == "report":
             values["checks"] = _checks(raw.get("checks"), where_entry, problems)
             values["files"] = _report_files(raw.get("files"), where_entry, problems)
+        elif kind == "decision":
+            values["node_types"] = _node_types(raw.get("nodeTypes"), where_entry, problems)
         if "description" in raw and kind in ("folder", "jobDefinition"):
             if not isinstance(raw["description"], str):
                 problems.append(f"{where_entry}: description must be text")
@@ -790,9 +843,9 @@ def entry_hash(manifest: ContentManifest, entry: Entry) -> Optional[str]:
     * file: SHA-256 of the bytes the file has in SAS Content (`file_bytes`);
     * step: SHA-256 of its compared parts (`step_view`) as canonical JSON;
     * job definition: SHA-256 of its compared parts (`job_view`), the same way;
-    * folder, report, and release.json itself: none - a folder has no content,
-      a report has no source in the repository, and a file cannot hold its own
-      hash.
+    * folder, report, decision, and release.json itself: none - a folder has
+      no content, a report and a decision have no source in the repository,
+      and a file cannot hold its own hash.
     """
     if entry.kind == "file":
         if entry.generated == RELEASE_INFO:

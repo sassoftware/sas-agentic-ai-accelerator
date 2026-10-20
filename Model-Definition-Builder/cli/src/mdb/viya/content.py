@@ -59,7 +59,9 @@ that name to an object of another kind fails nothing - the kind says which
 is meant - and is listed with what else sits in the folder.
 
 A report is not deployed: it is authored in SAS Visual Analytics and reaches
-a site through the transfer service.
+a site through the transfer service. Nor is a decision (with the custom node
+types it carries): the package is its only source, and its line says whether
+it is on the site, as the line of a report does.
 
 Every request goes through a session with `get` / `post` / `put` that take a
 path, as sasctl's does, so the tests run this against a fake.
@@ -82,9 +84,16 @@ _MEMBER_URI = {"file": "/files/files/", "step": "/dataFlows/steps/",
                "jobDefinition": "/jobDefinitions/definitions/", "report": "/reports/reports/",
                "folder": "/folders/folders/"}
 
+#: The kinds that come with the package alone, by the service their objects
+#: belong to. A decision is a member of its folder like a report; the table
+#: above is the one the Start Here page holds too, and names the kinds it
+#: knows.
+_TRANSFER_URI = {"decision": "/decisions/flows/"}
+_KIND_URI = {**_MEMBER_URI, **_TRANSFER_URI}
+
 #: What a line calls an object of each kind.
 _WORD = {"file": "file", "step": "registered step", "jobDefinition": "job definition", "report": "report",
-         "folder": "folder"}
+         "folder": "folder", "decision": "decision"}
 
 EQUAL, UPDATED, CREATED, NOT_DEPLOYED, FAILED, NOT_ATTEMPTED = (
     "equal", "updated", "created", "not deployed", "FAILED", "not attempted")
@@ -188,7 +197,7 @@ def is_reference(member: dict) -> bool:
 
 
 def _named(members: list, name: str, kind: str) -> list:
-    prefix = _MEMBER_URI[kind]
+    prefix = _KIND_URI[kind]
     return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]
 
 
@@ -595,10 +604,10 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
             done(entry, FAILED, str(exc))
 
     for entry in objects:
-        if entry.kind == "report" and not reports:
+        if entry.kind in _content.TRANSFER_KINDS and not reports:
             continue
-        if entry.kind == "report" and result.stopped_at is not None:
-            # a report is never deployed, whether the run stopped or not
+        if entry.kind in _content.TRANSFER_KINDS and result.stopped_at is not None:
+            # a report or a decision is never deployed, whether the run stopped or not
             done(entry, NOT_DEPLOYED, "not looked up after the stop")
             continue
         if result.stopped_at is not None:
@@ -616,7 +625,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
         try:
             if entry.folder in broken or (folder_id is None and not dry_run):
                 # in a dry run as in a run: nothing goes into a folder that FAILED
-                if entry.kind == "report":
+                if entry.kind in _content.TRANSFER_KINDS:
                     done(entry, NOT_DEPLOYED, "not looked up: its folder FAILED")
                 else:
                     done(entry, FAILED, "its folder FAILED (the line of the folder says why): nothing was written "
@@ -624,7 +633,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
                 continue
             listed = members_of(entry.folder) if folder_id else []
             existing = _members_named(listed, entry.name, entry.kind)
-            if entry.kind == "report":
+            if entry.kind in _content.TRANSFER_KINDS:
                 done(entry, NOT_DEPLOYED, "on the site" if existing else "not on the site - it comes with the package")
                 continue
             references = _references_named(listed, entry.name, entry.kind)
@@ -648,7 +657,7 @@ def deploy(session, manifest, content_root: Optional[str] = None, dry_run: bool 
     for folder_path, items in sorted(members.items()):
         for member in items:
             uri = str(member.get("uri") or "")
-            kind = next((k for k, prefix in _MEMBER_URI.items() if uri.startswith(prefix)), None)
+            kind = next((k for k, prefix in _KIND_URI.items() if uri.startswith(prefix)), None)
             key = (folder_path, member.get("name"), kind)
             if is_reference(member) and key in referenced:
                 continue                                       # named on the line of its entry, which FAILED for it

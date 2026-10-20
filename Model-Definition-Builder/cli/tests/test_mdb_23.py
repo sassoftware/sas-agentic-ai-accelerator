@@ -333,6 +333,7 @@ def _arguments(command: str, tmp: Path, monkeypatch, repo_root: Path) -> list:
         "list": [], "publish": ["smollm_135m", "-d", "maslocal"], "ship": ["smollm_135m", "-d", "maslocal"],
         "credentials-apply": ["--identity", "G1", "--env-file", str(keys), "--dry-run"],
         "credentials-report": ["--identity", "G1"],
+        "decision-node-migrate": [],
     }[command]
 
 
@@ -340,7 +341,7 @@ def test_the_commands_that_reach_sas_viya_are_known():
     assert set(_reaching_sas_viya()) == {
         "load-facts", "load-releases", "setup", "options-save", "options-restore", "content-deploy", "package-export",
         "builders-import", "register", "unregister", "pull", "list", "publish", "ship", "retire",
-        "credentials-apply", "credentials-report"}
+        "credentials-apply", "credentials-report", "decision-node-migrate"}
 
 
 def _run(command, tmp_path, monkeypatch, repo_root, way, kind):

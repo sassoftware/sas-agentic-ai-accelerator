@@ -98,7 +98,7 @@ def test_a_missing_or_unreadable_manifest_says_so(tmp_path):
 # ---- what the loader refuses ------------------------------------------------
 def test_an_unknown_kind_is_refused(repo):
     assert _problems(repo, _with({"path": "Flows/Ingest", "kind": "dataFlow"})) == [
-        "'Flows/Ingest': unknown kind 'dataFlow' (one of folder, file, step, jobDefinition, report)"]
+        "'Flows/Ingest': unknown kind 'dataFlow' (one of folder, file, step, jobDefinition, report, decision)"]
 
 
 def test_a_source_that_does_not_exist_is_refused(repo):

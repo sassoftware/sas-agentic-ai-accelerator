@@ -235,6 +235,55 @@ class Package:
                 obj["connectors"].append({"id": self._id(), "type": "image", "uri": image_uri,
                                           "relatedUris": [report_uri], "forceMapping": False})
 
+    def node_type(self, node_id: str, name: str, code: str = 'package "${PACKAGE_NAME}" /inline; endpackage;',
+                  content_id=None, user=None) -> str:
+        """A custom node type as an export carries it: in no folder, under its
+        own id, with its content (code and terms) in the same body - and, with
+        `user`, the user who made it in createdBy."""
+        who = {"createdBy": user} if user else {}
+        uri = f"/decisions/decisionNodeTypes/{node_id}"
+        body = {"decisionNodeTypeRep": {"id": node_id, "name": name, "type": "static", "themeId": "DNT_THEME1",
+                                        **who, "links": [{"rel": "self", "uri": uri}]},
+                "decisionNodeTypeContentRep": {"id": content_id or self._id(), "nodeTypeId": node_id,
+                                               "contentType": "DS2", "staticContent": code, **who,
+                                               "nodeTypeSignatureTerms": [
+                                                   {"name": "llmBody", "dataType": "string", "length": 10485760,
+                                                    "direction": "input", "generateDataGridColumns": False}]}}
+        self.details.append({"connectors": [], "transferObject": {
+            "id": self._id(), "version": 2, "state": "enabled", "substitutions": {},
+            "summary": {"id": node_id, "type": "decisionNodeType", "name": name, **who,
+                        "links": [{"method": "GET", "rel": "self", "href": uri, "uri": uri}]},
+            "content": b64(body), "connectors": []}})
+        return uri
+
+    def decision(self, path: str, nodes=(), versions: int = 2, unnamed: bool = False, user=None) -> str:
+        """A decision whose every version has one step per node type of
+        `nodes` ((id, name), ...): a custom node step that names its node type
+        by its address - or, with `unnamed`, the oldest version's step has lost
+        it (its node type was deleted). The decision names each node type by a
+        `dntStatic` connector, and beside it by one with a name only, as an
+        export writes them."""
+        parent, name = self._in(path)
+        who = {"createdBy": user} if user else {}
+
+        def version(major: int, lost: bool = False) -> dict:
+            steps = [{"type": "application/vnd.sas.decision.step.custom.object", "id": self._id(),
+                      "customObject": {"isRestDNT": False, "name": node_name, "type": "dntStatic",
+                                       **({} if lost else {"uri": f"/decisions/decisionNodeTypes/{node_id}"})},
+                      "mappings": [{"direction": "input", "stepTermName": "llmBody", "targetDecisionTermName": "llmBody"}]}
+                     for node_id, node_name in nodes]
+            return {"id": self._id(), "name": name, "majorRevision": major, "minorRevision": 0,
+                    **who, "flow": {"steps": steps}}
+        body = {"decisionVersionRep": version(versions),
+                "revisions": [version(major, unnamed and major == 1) for major in range(1, versions)],
+                "globalVariables": {}, "specificVersionExport": False}
+        inner = []
+        for node_id, node_name in nodes:
+            inner.append({"id": self._id(), "name": node_name, "relatedUris": [], "forceMapping": False, "hints": {}})
+            inner.append({"id": self._id(), "name": node_name, "type": "dntStatic", "relatedUris": [],
+                          "forceMapping": False, "hints": {}, "uri": f"/decisions/decisionNodeTypes/{node_id}"})
+        return self._add("decision", name, "/decisions/flows/", b64(body), parent, inner)
+
     def grant(self, kind: str, name: str, target: str) -> str:
         """An authorization rule or share on `target`."""
         return self._add(f"application/vnd.sas.authorization.{kind}+json", name, f"/authorization/{kind}s/",
@@ -273,6 +322,12 @@ def package_of(manifest, change=None, **kwargs) -> Package:
             package.step(entry.path, as_registered(content.step_body(manifest, entry)) if other is None else other)
         elif entry.kind == "jobDefinition":
             package.job(entry.path, content.job_definition_body(manifest, entry) if other is None else other)
+        elif entry.kind == "decision":
+            # the node types the entry lists, as dependencies of the decision
+            nodes = [(listed["id"], listed["name"]) for listed in entry.node_types] if other is None else other
+            for node_id, node_name in nodes:
+                package.node_type(node_id, node_name)
+            package.decision(entry.path, nodes)
         else:
             report = package.report(entry.path, ALL_NEUTRAL if other is None else other,
                                     tables=entry.checks.get("tables", ()))
@@ -339,6 +394,9 @@ class Viya:
         self.calls: list = []
         self.refuse: dict = {}
         self.drop: dict = {}
+        #: The custom node types of SAS Intelligent Decisioning, by id - None
+        #: for a site without it, where the collection answers 404.
+        self.node_types = None
 
     # -- what a test reads -------------------------------------------------
     def _new(self) -> str:
@@ -486,6 +544,13 @@ class Viya:
                 return Response(200, content=self.reports[name].encode("utf-8"), headers={"ETag": '"r1"'})
         if path.startswith("/casManagement/servers"):
             return Response(200, {"items": [{"name": "cas-shared-default"}]})
+        if path == "/decisions/decisionNodeTypes" and self.node_types is not None:
+            items = list(self.node_types.values())
+            start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
+            return Response(200, {"items": items[start:start + limit], "count": len(items)})
+        if path.startswith("/decisions/decisionNodeTypes/") and self.node_types is not None \
+                and path.rsplit("/", 1)[-1] in self.node_types:
+            return Response(200, self.node_types[path.rsplit("/", 1)[-1]], headers={"ETag": '"n1"'})
         return Response(404, {"message": "not found"})
 
     def post(self, path, params=None, data=None, headers=None, **kw):

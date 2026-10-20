@@ -52,6 +52,19 @@ The tag follows the score code the model holds, with one case the page cannot de
 
 To read the setting in the score code itself, open the model in SAS Model Manager and look for one line. The score code of a prompt template with the included LLM call and of a decision template holds `sslVerifyDefault = True` or `sslVerifyDefault = False`. The `retrieve_context.py` of a retrieval model holds `SSL_VERIFY = True` or `SSL_VERIFY = False` in its MANIFEST block. A prompt manifested for the *Call LLM* node holds neither line. Nothing else in the score code of a prompt or decision template carries the name `sslVerifyDefault`: the Prompt Builder refuses a variable, an output variable or a question of that name.
 
+## The Call LLM node: one id on every site {#the-call-llm-node}
+
+A step of a decision names its custom node type only by its id: a decision that calls the *Call LLM* node runs on another site only where that site has the node under the same id. From release 2.3.0 the transfer package of the accelerator brings the node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`, as the dependency of the decision `Decisions/Call LLM Node` - a decision that holds only that node and is not meant to be published. `mdb builders-import` imports both: it creates the node type under that id, or overwrites the node type of that id in place, which replaces local edits of its code and its terms.
+
+A site that created the node with `Create-Custom-SAS-Intelligent-Decisioning-Node.sas` has it under an id of its own. A node type cannot be given another id, and its name is unique, so the import cannot bring the node there: `mdb builders-import` leaves the decision and the node out and ends with exit code 1. Run this once, before the import:
+
+```bash
+mdb decision-node-migrate           # dry run: the node type and every decision version that uses it
+mdb decision-node-migrate --apply
+```
+
+The command renames your node type to `Call LLM (before f9efcbb7)`, creates `Call LLM` under the id of the package with the same code and terms, and moves every decision that uses the old node type - every version, the locked ones included, keeping the version ids - by a transfer re-import of the decision over itself. Published MAS and SCR modules hold compiled code and need nothing. The old node type is kept; `--delete-old` deletes it, and only when no version of any decision calls it any more. Do not delete it by hand while a version calls it: SAS Intelligent Decisioning then clears the node of every such version, locked ones included, and creating the id again does not bring it back. [Moving the Call LLM node to its id](./Model-Definition-Builder.md#decision-node-migrate) has the details.
+
 ## Kubernetes vs Azure Container Apps/Instances
 
 Please note that it is not supported to change the type of deployment between environments so if you have the LLM containers deployed in Kubernetes in one environment, they will have to be deployed in the same fashion in all other environments as well.

@@ -1993,7 +1993,9 @@ def content_deploy(
     FAILED with the reason. Nothing is deleted, and nothing that is not in
     the manifest is touched; what else sits in the folders of the manifest is
     listed at the end. A report is not deployed: it reaches a site through
-    `mdb builders-import`, and its line says whether it is on the site.
+    `mdb builders-import`, and its line says whether it is on the site. The
+    same holds for a decision - the one that carries the Call LLM node type
+    - whose only source is the package.
 
     THE RUN STOPS at the first write that fails - a refusal, or no answer,
     also for a folder that cannot be created - and says what was written
@@ -2083,8 +2085,9 @@ def content_deploy(
             console.print("[red]--to names the place itself; --content-root does not go with it.[/red]")
             raise typer.Exit(2)
         listed = [entry for entry in manifest.objects() if entry.path == only[0]]
-        if listed and listed[0].kind == "report":
-            console.print("[red]A report is not deployed: it reaches a site through `mdb builders-import`.[/red]")
+        if listed and listed[0].kind in ("report", "decision"):
+            console.print(f"A {listed[0].kind} is not deployed: it reaches a site through `mdb builders-import`.",
+                          style="red", markup=False, highlight=False)
             raise typer.Exit(2)
         if listed:
             target_entry = listed[0]
@@ -2211,6 +2214,10 @@ def package_export(
     Of the files a report brings along, those stay that are children of the
     report and that its manifest entry lists; a picture the report shows from
     a folder of its own is left out, and the report is then a difference.
+    The decision `Decisions/Call LLM Node` brings the Call LLM node type
+    along as its dependency: it stays where its id is the one the entry of
+    the decision lists under nodeTypes (f9efcbb7-f57b-4a62-b56d-1a89595e2039),
+    and the authorization rule on it is dropped like every other.
 
     What the export leaves on the server - the package and the record of the
     export job - is deleted unless --keep. A delete that is refused or gets
@@ -2476,7 +2483,8 @@ def _given_file(option: str, value, default: str) -> str:
 
 def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
                     report_caslib=None, content_root=None, compute_context=None, no_reports: bool = False,
-                    no_capture: bool = False, create: bool = False, out: str = ".", no_files: bool = False) -> str:
+                    no_capture: bool = False, create: bool = False, out: str = ".", no_files: bool = False,
+                    no_decisions: bool = False) -> str:
     """`mdb builders-import` with the arguments a run was given, for the line
     that tells an admin to run it again - every option of the command but
     --dry-run, after which no such line is printed. An argument that was not
@@ -2496,6 +2504,8 @@ def _import_command(packages, options, caslib, table, server, no_releases: bool,
         words.append("--no-releases")
     if no_reports:
         words.append("--no-reports")
+    if no_decisions:
+        words.append("--no-decisions")
     if no_capture and options is None:
         words.append("--no-options-capture")
     if create:
@@ -2648,6 +2658,118 @@ def _known_context(saved: Optional[dict]) -> str:
     return str((folded.get(MERGED_REPORT) or {}).get("ragComputeContext") or "").strip()
 
 
+def _import_decisions(session, path: Path, package: dict, source, root: str, no_decisions: bool, dry_run: bool,
+                      timeout: int) -> bool:
+    """The decisions of one package and the custom node types they carry,
+    through the transfer service in an import job of their own - after the
+    site was asked whether it takes the node types. True where that counts as
+    a failure of the run.
+
+    A node type travels with its id. Where the site has that id, the import
+    overwrites the node type in place - its code and its terms included.
+    Where the site has a node type of that NAME under another id, the import
+    fails for the node type (a name is unique) and SKIPS the decisions of the
+    package while the job ends completed (measured on 2026-10-20): then
+    nothing of this part is imported, the command names `mdb
+    decision-node-migrate`, and the run fails unless --no-decisions leaves
+    the decisions out. A site without SAS Intelligent Decisioning gets a line
+    and no failure."""
+    from .core.packages import decisions_package
+    from .viya import decision_nodes as nodes
+    from .viya.decision_nodes import NodeError
+    from .viya.transfer import (delete_package, get_mapping, job_messages, job_tasks, job_uri, leftover_line,
+                                start_import, task_problems, upload_package_bytes, wait_for_job)
+
+    def say(text: str, style: Optional[str] = None) -> None:
+        console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
+
+    names = ", ".join(item.path for item in source.decisions)
+    if no_decisions:
+        say(f"  Decisions ({names}): left out (--no-decisions), and the node types they carry with them.")
+        return False
+    refusal = _transfer_refusal(source.root_path, root)
+    if refusal is not None:
+        say(f"  Decisions ({names}): NOT imported - {refusal}.", "red")
+        say("    Import the package into the folder it was exported from, or pass --no-decisions to bring everything "
+            "but the decisions.")
+        return True
+    reduced, held, carried = decisions_package(package, source.root_uri)
+    say(f"  Decisions, through the transfer service ({len(held)} object(s)): {names}")
+    try:
+        verdicts = nodes.site_check(session, carried)
+    except NodeError as exc:
+        say(f"    {one_line(str(exc))}", "red")
+        return True
+    clashes = []
+    for name, node_id, verdict, found in verdicts:
+        shown = f"    node type '{name}' ({node_id}):"
+        if verdict == nodes.NO_DECISIONING:
+            say(f"{shown} SAS Intelligent Decisioning does not answer on this site (GET /decisions/decisionNodeTypes: "
+                "404) - the decisions are not imported.", "yellow")
+        elif verdict == nodes.CLASH:
+            clashes.append((name, node_id))
+            say(f"{shown} this site has a node type '{name}' under the id {found.get('id')}.", "red")
+        elif verdict == nodes.OVERWRITE:
+            called = "" if found.get("name") == name else f" (named '{found.get('name')}' there)"
+            say(f"{shown} on this site{called} - the import overwrites it in place with the package's: local edits "
+                "of its code and its terms are replaced.")
+        else:
+            say(f"{shown} not on this site - the import creates it under this id.")
+    if any(verdict == nodes.NO_DECISIONING for _name, _id, verdict, _found in verdicts):
+        return False
+    if clashes:
+        name, node_id = clashes[0]
+        say("    The decisions and their node types are NOT imported: the transfer service would refuse the node type - "
+            "a name is unique - and skip the decisions of the package without a failed task. Give this site's node "
+            f"type the id of the package first: `{_migrate_command(name, node_id)}` says what it would do, "
+            f"`{_migrate_command(name, node_id, apply=True)}` does it - it moves every decision that uses the node "
+            "type, locked versions included. Then run this import again; or pass --no-decisions to import without "
+            "the decisions.", "red")
+        return True
+    if dry_run:
+        return False
+    uploaded = None
+    failed = False
+    # the part of the package that is uploaded carries a name of its own
+    reduced["name"] = f"{package.get('name') or path.stem} - decisions"
+    try:
+        uploaded = upload_package_bytes(session, f"decisions-{path.name}",
+                                        (json.dumps(reduced, ensure_ascii=False) + "\n").encode("utf-8"))
+        mapping = get_mapping(session, uploaded["id"])
+        job = start_import(session, reduced["name"], f"/transfer/packages/{uploaded['id']}", mapping)
+        job = wait_for_job(session, job_uri(job), timeout=timeout)
+        if str(job.get("state", "")).lower() != "completed" or job.get("errorCount"):
+            say(f"    import ended {job.get('state')} with {job.get('errorCount', 0)} error(s):", "red")
+            for line in job_messages(session, job):
+                say(f"      {line}")
+            failed = True
+        else:
+            tasks = job_tasks(session, job)
+            unfinished = task_problems(tasks)
+            skipped = nodes.missing_tasks(tasks, [("decision", item.name) for item in source.decisions]
+                                          + [("decisionNodeType", name) for name, _id in carried])
+            for line in unfinished:
+                say(f"      {line}", "red")
+            for kind, name in skipped:
+                say(f"      {kind} '{name}': no completed task - the job did not import it", "red")
+            if unfinished or skipped:
+                say(f"    the import job ended completed, and {len(unfinished) + len(skipped)} of its objects did "
+                    "not arrive (above).", "red")
+                failed = True
+            else:
+                say(f"    imported {len(held)} object(s) through the transfer service.", "green")
+    except RuntimeError as exc:
+        say(f"    {one_line(str(exc))}", "red")
+        failed = True
+    if uploaded and uploaded.get("id"):
+        package_uri = f"/transfer/packages/{uploaded['id']}"
+        try:
+            delete_package(session, package_uri)
+        except RuntimeError as exc:
+            say(f"    {leftover_line(package_uri)} ({one_line(str(exc))}).", "yellow")
+    return failed
+
+
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
@@ -2681,7 +2803,12 @@ def builders_import(
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
     no_reports: bool = typer.Option(
         False, "--no-reports",
-        help="Leave the reports of the package out: the transfer service is not called at all."),
+        help="Leave the reports of the package out: the transfer service is not called for them."),
+    no_decisions: bool = typer.Option(
+        False, "--no-decisions",
+        help="Leave the decisions of the package out, and with them the Call LLM node type they carry. Without "
+             "it a site whose Call LLM node has another id ends the command with exit code 1 and the command "
+             "that moves it (mdb decision-node-migrate)."),
     no_options_capture: bool = typer.Option(
         False, "--no-options-capture",
         help="Do not read the options of the Prompt Builder report on the site before the import. The report "
@@ -2693,8 +2820,9 @@ def builders_import(
     timeout: int = typer.Option(IMPORT_TIMEOUT, "--timeout", help="Seconds to wait for each import job."),
 ):
     """Bring the accelerator's content folder into this deployment from the
-    one transfer package: load the release table, import the reports, bring
-    the files, custom steps and job definitions in place, write the Prompt
+    one transfer package: load the release table, import the reports and the
+    decisions, bring the files, custom steps and job definitions in place,
+    write the Prompt
     Builder options back, and write the authorization commands for the folder.
 
     THE RELEASE TABLE is the package's Data/ACCELERATOR_RELEASES.csv where
@@ -2723,6 +2851,22 @@ def builders_import(
     to the transfer service because it was measured to leave a file alone
     that exists in the folder under the same name with another id, to write
     the package's file into no folder, and to report its job as completed.
+
+    THE DECISIONS - the decision `Decisions/Call LLM Node`, which carries the
+    Call LLM node type under the id f9efcbb7-f57b-4a62-b56d-1a89595e2039 -
+    go through the transfer service as well, in an import job of their own,
+    with the node types they use. The site is asked first. A node type whose
+    id the site has is overwritten in place - local edits of its code and its
+    terms are replaced, and the line says so; one the site does not have is
+    created under that id. Where the site has a node type of that NAME under
+    another id (a Call LLM node created with the SAS program), the transfer
+    service would refuse the node type and skip the decision without a
+    failed task: nothing of this part is imported, the command names `mdb
+    decision-node-migrate`, which moves the site's decisions to the id of
+    the package, and the run ends with exit code 1 unless --no-decisions
+    leaves the decisions out. A site without SAS Intelligent Decisioning
+    gets a line and no failure. The tasks of the job are read, and an object
+    without a completed task counts.
 
     WHERE. --content-root names the folder for everything but the reports. A
     report is imported only into the folder the package was exported from,
@@ -2780,7 +2924,8 @@ def builders_import(
     /folders/folders/@item and /folders/folders/{id}/members (also to find
     a report as a member of its folder); /reports/reports/{id}/content;
     /files/files/{id}/content; /dataFlows/steps/{id};
-    /jobDefinitions/definitions/{id}. The transfer
+    /jobDefinitions/definitions/{id}; /decisions/decisionNodeTypes and
+    /decisions/decisionNodeTypes/{id}. The transfer
     service is not called, so the mapping lines of a dry run are what the
     package itself says about its tables and substitutions. Without options
     it discovers nothing, because discovery creates a missing repository or
@@ -2853,7 +2998,7 @@ def builders_import(
         def line(paths, without_reports: bool, without_releases: bool) -> str:
             return _import_command(paths, options_file, caslib_given, table, server, without_releases, timeout,
                                    report_caslib, content_root, compute_context, without_reports,
-                                   no_options_capture, create, out, no_files)
+                                   no_options_capture, create, out, no_files, no_decisions)
         if not repeat_in_two:
             return line(packages, repeat_without_reports, no_releases)
         holder = next((path for path, _package, source, _refusal in plans if source.release_table() is not None),
@@ -2995,9 +3140,9 @@ def builders_import(
             for line in source.notes:
                 console.print(f"  note: {line}", style="yellow", markup=False, highlight=False, soft_wrap=True)
             package_failed = False
-            if not source.reports and not source.has_content:
-                console.print("  Nothing of this package can be imported: no report, file, custom step or job "
-                              "definition of it sits below a root folder.", style="red", markup=False,
+            if not source.reports and not source.decisions and not source.has_content:
+                console.print("  Nothing of this package can be imported: no report, decision, file, custom step or "
+                              "job definition of it sits below a root folder.", style="red", markup=False,
                               highlight=False)
                 package_failed = True
 
@@ -3074,6 +3219,11 @@ def builders_import(
                                           markup=False, highlight=False, soft_wrap=True)
                     if package_failed:
                         failed_reports.update(carried)
+
+            # ---- the decisions and their node types: through the transfer service, in a job of their own ----
+            if source.decisions and _import_decisions(session, path, package, source, root, no_decisions,
+                                                      dry_run, timeout):
+                package_failed = True
 
             # ---- everything else: in place, with the package as the source ----
             if source.has_content:
@@ -3217,6 +3367,88 @@ def builders_import(
                      "from a tuned deployment."))
 
 
+def _migrate_command(name: str, node_id: str, apply: bool = False) -> str:
+    """`mdb decision-node-migrate` for a node type of a package: an option
+    only where the node type is not the Call LLM node of the accelerator."""
+    from .viya.decision_nodes import CALL_LLM_NODE_ID, CALL_LLM_NODE_NAME
+    return ("mdb decision-node-migrate" + _given("--node-name", name, CALL_LLM_NODE_NAME)
+            + _given("--target-id", node_id, CALL_LLM_NODE_ID) + (" --apply" if apply else ""))
+
+
+@app.command("decision-node-migrate")
+def decision_node_migrate(
+    node_name: str = typer.Option(
+        "Call LLM", "--node-name", help="Name of the custom node type to move (default: Call LLM)."),
+    target_id: str = typer.Option(
+        "f9efcbb7-f57b-4a62-b56d-1a89595e2039", "--target-id",
+        help="The id the node type is to have: the id the package of the accelerator gives the Call LLM node "
+             "(default). Another one only for a test on a node type of your own."),
+    apply: bool = typer.Option(False, "--apply", help="Do it. Without it the command only says what it would do."),
+    delete_old: bool = typer.Option(
+        False, "--delete-old",
+        help="With --apply: delete the old node type at the end - only when no version of any decision calls it "
+             "any more."),
+    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each transfer job."),
+):
+    """Give the site's Call LLM node type the id the package of the
+    accelerator gives it, and move every decision that uses it - before the
+    first `mdb builders-import` that brings the decision `Decisions/Call LLM
+    Node` to a site that created its Call LLM node with the SAS program.
+
+    WHY. The package carries the Call LLM node under one id. A site whose node
+    has another id cannot take it: a node type name is unique, so the import
+    fails for the node type and skips the decision of the package while the
+    job ends completed. A node type cannot be given another id, and a step of
+    a decision names its node type by its address only.
+
+    WHAT IT DOES. It finds the node type by its name (--node-name), stops
+    where it has the id (--target-id) already, refuses where another node type
+    has that id, and lists every decision with a version that calls the node
+    type - every version of every decision is read, the locked ones too. That
+    is a dry run, and the default. With --apply it then renames the node type
+    to "<name> (before <first 8 characters of the id>)", creates the node
+    type under the id with its name, its settings, its code and its terms,
+    and moves each decision: it is exported, and imported over itself with a
+    mapping from the old node type to the new one - which rewrites every
+    version, locked ones included, keeps the version ids and touches no
+    published module. The tasks of each import job are read, and every
+    version is read back. The old node type is kept; --delete-old deletes it
+    at the end, and only when no version of any decision calls it - a node
+    type that is deleted empties the node of every version that calls it,
+    for good.
+
+    One line per step; exit code 1 when something was refused or failed.
+    Run it again after a failure: what was done is found done (the renamed
+    node type says how far a run got).
+    """
+    from .viya.decision_nodes import UUID, NodeError, migrate
+    node_name = node_name.strip()
+    target_id = target_id.strip()
+    if not node_name:
+        console.print("--node-name is empty. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if not UUID.fullmatch(target_id):
+        console.print(f"--target-id {target_id!r} is no node type id: a UUID in lower case, as SAS Intelligent "
+                      "Decisioning writes one. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if delete_old and not apply:
+        console.print("--delete-old goes with --apply: a dry run deletes nothing - it says below whether a run "
+                      "would delete the old node type.", style="yellow", markup=False, highlight=False)
+
+    def say(text: str, style: Optional[str] = None) -> None:
+        console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
+
+    with _viya_session() as session:
+        try:
+            code = migrate(session, node_name, target_id, apply, delete_old, say, timeout)
+        except (NodeError, RuntimeError) as exc:
+            say(one_line(str(exc)), "red")
+            say("Stopped. Run the command again once the site answers: what was done is found done.", "red")
+            raise typer.Exit(1)
+    if code:
+        raise typer.Exit(code)
+
+
 #: The file `mdb builders-import` writes the content folder's rules to.
 CONTENT_RULES_FILE = "sas-viya-cli-content-commands.txt"
 
@@ -3276,7 +3508,11 @@ def package_check(
     brings along: a host other than the documented placeholder or a known
     public address, also inside the compressed report content where no search
     finds it, and per-user report states, each a full copy of the report with
-    a user id.
+    a user id. A decision has no source in the repository either: it has to
+    use exactly the custom node types its entry lists, each in the package
+    under the id listed there (the Call LLM node:
+    f9efcbb7-f57b-4a62-b56d-1a89595e2039), with its name and its code, and
+    every step of every version has to name its node type.
 
     STRICT FOR A RELEASE, LENIENT BETWEEN RELEASES. The package is exported
     from a system and so is always the content of some earlier commit: a

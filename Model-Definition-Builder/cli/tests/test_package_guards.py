@@ -871,7 +871,7 @@ def test_an_object_of_a_kind_mdb_does_not_import_is_named_for_that(manifest):
     built._add("dataFlow", "a flow.flw", "/dataFlows/dataFlows/", "", built.folder("RAG"))
     source = PackageSource(built.build(), manifest)
     assert ("dataFlow 'RAG/a flow.flw' (mdb does not import a dataFlow: it brings files, custom steps and job "
-            "definitions in place, and reports through the transfer service)") in source.left_out
+            "definitions in place, and reports and decisions through the transfer service)") in source.left_out
 
 
 def test_an_empty_folder_of_a_package_is_brought_in_place(manifest):

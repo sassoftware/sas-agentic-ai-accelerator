@@ -1,0 +1,729 @@
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""The Call LLM node under one id: `mdb decision-node-migrate`, and the
+decision of the content folder that carries the node type - in the manifest,
+in `mdb package-export` / `mdb package-check`, in `mdb content-deploy` and in
+`mdb builders-import`.
+
+SAS Intelligent Decisioning and the transfer service are faked with the
+shapes read on viya4-s2 on 2026-10-20 (research r31): a node type is listed
+and read under /decisions/decisionNodeTypes, renamed by a PUT under an ETag
+and created under a chosen id by a POST with `id`; a decision lists its
+versions under /revisions and each version names its node type in the
+`customObject.uri` of a step; a re-import of a decision over itself with a
+`dntStatic` mapping rewrites every version, locked ones included, and keeps
+their ids; an import job can end `completed` with a task that failed, or with
+no task at all for an object it skipped.
+"""
+import base64
+import io
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from rich.console import Console
+from typer.testing import CliRunner
+
+from content_fakes import Package, Viya, make_repo, package_of
+from mdb import cli
+from mdb.core import content
+from mdb.core.content import ManifestError, load_manifest, parse_manifest
+from mdb.core.packages import (decisions_package, filter_package, named_users, neutralise_users, package_findings,
+                               PackageSource)
+from mdb.viya import content as viya_content
+from mdb.viya import decision_nodes, transfer
+from mdb.viya.decision_nodes import CALL_LLM_NODE_ID, CALL_LLM_NODE_NAME
+
+# the fixtures of `mdb builders-import`, with a fake transfer service and a SAS Viya in memory
+from test_builder_commands import (NO_CONTEXT, Site, _built, discovery, importing, no_discovery, out, site)  # noqa: F401
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+OLD = "0a0a0a0a-0000-4000-8000-000000000001"
+NODE = "/decisions/decisionNodeTypes/"
+
+
+# ---------------------------------------------------------------------------
+# SAS Intelligent Decisioning and the transfer service, in memory
+# ---------------------------------------------------------------------------
+class Response:
+    def __init__(self, status=200, body=None, headers=None):
+        self.status_code = status
+        self.ok = status < 400
+        self._body = body
+        self.text = json.dumps(body) if body is not None else ""
+        self.headers = headers or {}
+
+    def json(self):
+        return self._body
+
+
+class SID:
+    """Node types (with their content and an ETag) and decisions (with their
+    versions, each a list of the node type addresses its steps call), and
+    every request that changed something."""
+
+    def __init__(self):
+        self.nodes: dict = {}         # id -> node type
+        self.contents: dict = {}      # id -> content
+        self.etags: dict = {}
+        self.decisions: dict = {}     # id -> {"name", "versions": [{"id", "major", "uris"}]}
+        self.writes: list = []
+
+    def node(self, node_id, name, code="package x; endpackage;"):
+        self.nodes[node_id] = {"id": node_id, "name": name, "type": "static", "themeId": "DNT_THEME1",
+                               "hasInputs": True, "description": "the node", "links": [{"rel": "self"}]}
+        self.contents[node_id] = {"id": f"c-{node_id}", "nodeTypeId": node_id, "contentType": "DS2",
+                                  "staticContent": code, "nodeTypeSignatureTerms": [
+                                      {"name": "llmBody", "dataType": "string", "length": 10485760,
+                                       "direction": "input", "generateDataGridColumns": False, "id": "t1",
+                                       "createdBy": "someone"}]}
+        self.etags[node_id] = 1
+        return node_id
+
+    def decision(self, decision_id, name, *versions):
+        """`versions`: the node type ids the steps of each version call, oldest first."""
+        self.decisions[decision_id] = {"name": name, "versions": [
+            {"id": f"{decision_id}-v{major}", "major": major, "uris": [NODE + node for node in nodes]}
+            for major, nodes in enumerate(versions, start=1)]}
+
+    def uses(self, decision_id) -> list:
+        return [version["uris"] for version in self.decisions[decision_id]["versions"]]
+
+    # -- the session ----------------------------------------------------------
+    def get(self, path, params=None, headers=None, **kw):
+        params = params or {}
+        start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
+
+        def page(items):
+            return Response(200, {"items": items[start:start + limit], "count": len(items)})
+        if path == "/decisions/decisionNodeTypes":
+            # a listing gives the summary of a node type, not its settings (measured: a POST of such a
+            # summary is refused with 400 'The required property "hasInputs" is missing')
+            return page([{"id": n["id"], "name": n["name"], "type": n.get("type")} for n in self.nodes.values()])
+        if path.startswith(NODE):
+            parts = path[len(NODE):].split("/")
+            if parts[0] not in self.nodes:
+                return Response(404, {"message": "not found"})
+            if parts[1:] == ["content"]:
+                return Response(200, self.contents[parts[0]]) if parts[0] in self.contents else \
+                    Response(404, {"message": "no content"})
+            return Response(200, self.nodes[parts[0]], {"ETag": f'"{self.etags[parts[0]]}"'})
+        if path == "/decisions/flows":
+            return page([{"id": d, "name": v["name"]} for d, v in self.decisions.items()])
+        if path.startswith("/decisions/flows/"):
+            parts = path[len("/decisions/flows/"):].split("/")
+            decision = self.decisions.get(parts[0])
+            if decision is None:
+                return Response(404, {"message": "not found"})
+            if parts[1:] == ["revisions"]:
+                return page([{"id": v["id"], "majorRevision": v["major"], "minorRevision": 0}
+                             for v in decision["versions"]])
+            if len(parts) == 3 and parts[1] == "revisions":
+                version = next((v for v in decision["versions"] if v["id"] == parts[2]), None)
+                if version is None:
+                    return Response(404, {"message": "not found"})
+                return Response(200, {"id": version["id"], "flow": {"steps": [
+                    {"customObject": {"name": "node", "type": "dntStatic", "uri": uri}} for uri in version["uris"]]}})
+        return Response(404, {"message": "not found"})
+
+    def post(self, path, params=None, data=None, headers=None, **kw):
+        self.writes.append(("POST", path))
+        body = json.loads(data)
+        if path == "/decisions/decisionNodeTypes":
+            if "hasInputs" not in body:
+                return Response(400, {"message": 'The required property "hasInputs" is missing'})
+            if body["id"] in self.nodes:
+                # what was measured: answered 400, and the node type renamed all the same
+                self.nodes[body["id"]]["name"] = body["name"]
+                return Response(400, {"message": "rule exists"})
+            if any(n["name"] == body["name"] for n in self.nodes.values()):
+                return Response(409, {"message": "Decision node type names must be unique."})
+            self.nodes[body["id"]] = {**body, "links": []}
+            self.etags[body["id"]] = 1
+            return Response(201, self.nodes[body["id"]])
+        if path.startswith(NODE) and path.endswith("/content"):
+            node_id = path[len(NODE):].split("/")[0]
+            self.contents[node_id] = {**body, "nodeTypeId": node_id}
+            return Response(201, self.contents[node_id])
+        return Response(400, {"message": "bad request"})
+
+    def put(self, path, data=None, headers=None, **kw):
+        self.writes.append(("PUT", path))
+        node_id = path[len(NODE):]
+        if headers.get("If-Match") != f'"{self.etags[node_id]}"':
+            return Response(412, {"message": "precondition failed"})
+        body = json.loads(data)
+        if any(n["name"] == body["name"] and i != node_id for i, n in self.nodes.items()):
+            return Response(409, {"message": "Decision node type names must be unique."})
+        assert "id" not in body or body["id"] == node_id
+        self.nodes[node_id] = {**self.nodes[node_id], "name": body["name"]}
+        self.etags[node_id] += 1
+        return Response(200, self.nodes[node_id])
+
+    def delete(self, path, **kw):
+        self.writes.append(("DELETE", path))
+        node_id = path[len(NODE):]
+        self.nodes.pop(node_id, None)
+        self.contents.pop(node_id, None)
+        # what was measured: every version that called it loses the address
+        for decision in self.decisions.values():
+            for version in decision["versions"]:
+                version["uris"] = [uri for uri in version["uris"] if uri != path]
+        return Response(204)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+@pytest.fixture
+def sid(monkeypatch):
+    """A site and its transfer service. `sid.fail_import` names decisions whose
+    import task fails, `sid.skip_import` decisions the job leaves out without a
+    task, `sid.after_import` is called after each import (a decision someone
+    makes meanwhile). `sid.mappings` holds the mapping of each import."""
+    site = SID()
+    site.fail_import, site.skip_import, site.mappings, site.deleted = set(), set(), [], []
+    site.after_import = None
+    jobs: dict = {}
+    uploads: dict = {}
+
+    def start_export(session, name, items, description=""):
+        uri = f"/transfer/exportJobs/e{len(jobs)}"
+        (decision_uri,) = items
+        jobs[uri] = {"state": "completed", "packageUri": f"/transfer/packages/x{len(jobs)}",
+                     "links": [{"rel": "self", "href": uri}], "decision": decision_uri.rsplit("/", 1)[-1]}
+        return jobs[uri]
+
+    def download_package(session, package_uri):
+        job = next(j for j in jobs.values() if j.get("packageUri") == package_uri)
+        decision_id = job["decision"]
+        built = Package(root="Team", above=())
+        used = sorted({node.rsplit("/", 1)[-1] for uris in site.uses(decision_id) for node in uris})
+        for node_id in used:
+            built.node_type(node_id, site.nodes.get(node_id, {}).get("name", "gone"))
+        uri = built.decision("Decisions/" + site.decisions[decision_id]["name"],
+                             [(node_id, site.nodes.get(node_id, {}).get("name", "gone")) for node_id in used])
+        package = built.build()
+        # the decision as the export names it: its own address
+        for detail in package["transferDetails"]:
+            summary = detail["transferObject"]["summary"]
+            if summary["type"] == "decision":
+                summary["id"] = decision_id
+                summary["links"][0]["uri"] = summary["links"][0]["href"] = f"/decisions/flows/{decision_id}"
+        assert uri
+        return json.dumps(package)
+
+    def upload_package_bytes(session, name, data):
+        uploads[f"u{len(uploads)}"] = json.loads(data)
+        return {"id": f"u{len(uploads) - 1}"}
+
+    def start_import(session, name, package_uri, mapping=None, description=""):
+        package = uploads[package_uri.rsplit("/", 1)[-1]]
+        site.mappings.append(mapping)
+        kinds = [d["transferObject"]["summary"]["type"] for d in package["transferDetails"]]
+        assert kinds == ["decision"], "only the decision object is handed to the import"
+        decision_id = package["transferDetails"][0]["transferObject"]["summary"]["id"]
+        name_of = site.decisions[decision_id]["name"]
+        tasks = []
+        if decision_id in site.fail_import:
+            tasks.append({"resourceType": "decision", "name": name_of, "state": "failed", "message": "locked"})
+        elif decision_id not in site.skip_import:
+            moves = {c["source"]: c["target"] for c in mapping["connectors"]["dntStatic"]}
+            for version in site.decisions[decision_id]["versions"]:
+                version["uris"] = [moves.get(uri, uri) for uri in version["uris"]]
+            tasks.append({"resourceType": "decision", "name": name_of, "state": "completed"})
+        uri = f"/transfer/importJobs/i{len(jobs)}"
+        jobs[uri] = {"state": "completed", "links": [{"rel": "self", "href": uri}], "tasks": tasks}
+        if site.after_import:
+            site.after_import()
+        return jobs[uri]
+
+    monkeypatch.setattr(transfer, "start_export", start_export)
+    monkeypatch.setattr(transfer, "wait_for_job", lambda session, uri, timeout=600: jobs[uri])
+    monkeypatch.setattr(transfer, "download_package", download_package)
+    monkeypatch.setattr(transfer, "upload_package_bytes", upload_package_bytes)
+    monkeypatch.setattr(transfer, "get_mapping", lambda session, package_id: {"version": 1})
+    monkeypatch.setattr(transfer, "start_import", start_import)
+    monkeypatch.setattr(transfer, "job_tasks", lambda session, job: job["tasks"])
+    monkeypatch.setattr(transfer, "job_messages", lambda session, job: [])
+    monkeypatch.setattr(transfer, "delete_package", lambda session, uri: site.deleted.append(uri))
+    monkeypatch.setattr(transfer, "delete_job", lambda session, uri: site.deleted.append(uri))
+    monkeypatch.setattr(cli, "_viya_session", lambda: site)
+    return site
+
+
+TARGET = "1b1b1b1b-0000-4000-8000-000000000002"
+
+
+def migrate(*args):
+    """`mdb decision-node-migrate` on a throwaway node - (exit code, what it printed)."""
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=1000, force_terminal=False)
+    original, cli.console = cli.console, console
+    try:
+        result = CliRunner().invoke(cli.app, ["decision-node-migrate", "--node-name", "ZZ Call",
+                                              "--target-id", TARGET, *args])
+    finally:
+        cli.console = original
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    return result.exit_code, buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# mdb decision-node-migrate
+# ---------------------------------------------------------------------------
+def test_the_defaults_are_the_call_llm_node_of_the_package():
+    assert (CALL_LLM_NODE_NAME, CALL_LLM_NODE_ID) == ("Call LLM", "f9efcbb7-f57b-4a62-b56d-1a89595e2039")
+    entry = load_manifest(REPO_ROOT, check_sources=False).find("Decisions/Call LLM Node", "decision")
+    assert entry.node_types == ({"name": CALL_LLM_NODE_NAME, "id": CALL_LLM_NODE_ID},)
+    assert cli._migrate_command(CALL_LLM_NODE_NAME, CALL_LLM_NODE_ID, apply=True) == \
+        "mdb decision-node-migrate --apply"
+    assert cli._migrate_command("ZZ Call", TARGET) == \
+        f'mdb decision-node-migrate --node-name "ZZ Call" --target-id {TARGET}'
+
+
+def test_a_node_that_has_the_id_already_is_left_alone(sid):
+    sid.node(TARGET, "ZZ Call")
+    sid.decision("d1", "Uses it", [TARGET])
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 0, text
+    assert "Node type 'ZZ Call': it has the id 1b1b1b1b-0000-4000-8000-000000000002 already." in text
+    assert "Nothing to do." in text and sid.writes == []
+
+
+def test_a_target_id_that_is_taken_is_refused_and_nothing_is_sent(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.node(TARGET, "Someone else")
+    code, text = migrate("--apply")
+    assert code == 1
+    assert "The id 1b1b1b1b-0000-4000-8000-000000000002 is taken: the node type 'Someone else' has it." in text
+    assert sid.writes == [] and sid.nodes[TARGET]["name"] == "Someone else"
+
+
+def test_a_target_id_that_is_no_uuid_is_refused_before_signing_in(monkeypatch):
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    result = CliRunner().invoke(cli.app, ["decision-node-migrate", "--target-id", "F9EFCBB7"])
+    assert result.exit_code == 2
+
+
+def test_a_dry_run_lists_every_version_and_changes_nothing(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Locked and current", [OLD], [OLD])
+    sid.decision("d2", "Other node", ["2c2c2c2c-0000-4000-8000-000000000003"])
+    code, text = migrate()
+    assert code == 0, text
+    assert "1 decision(s) call the old node type:" in text
+    assert "  'Locked and current' (d1): version(s) 1.0 (locked), 2.0 (current)" in text
+    assert "Other node" not in text
+    assert "  1. rename the node type 0a0a0a0a-0000-4000-8000-000000000001 from 'ZZ Call' to " \
+           "'ZZ Call (before 1b1b1b1b)'" in text
+    assert "Dry run - nothing was changed." in text
+    assert sid.writes == [] and sid.mappings == []
+
+
+def test_without_decisions_the_node_is_renamed_and_created_under_the_id(sid):
+    sid.node(OLD, "ZZ Call", code="the code")
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert "No decision calls the old node type." in text
+    assert sid.nodes[OLD]["name"] == "ZZ Call (before 1b1b1b1b)"
+    assert sid.nodes[TARGET]["name"] == "ZZ Call" and sid.nodes[TARGET]["themeId"] == "DNT_THEME1"
+    assert sid.contents[TARGET]["staticContent"] == "the code"
+    # the terms are copied without what belongs to the old node type
+    assert sid.contents[TARGET]["nodeTypeSignatureTerms"] == [
+        {"name": "llmBody", "dataType": "string", "length": 10485760, "direction": "input",
+         "generateDataGridColumns": False}]
+    assert sid.mappings == [] and OLD in sid.nodes                      # kept without --delete-old
+    assert "The old node type 'ZZ Call (before 1b1b1b1b)' (0a0a0a0a-0000-4000-8000-000000000001) is kept" in text
+
+
+def test_locked_versions_are_moved_by_a_re_import_and_read_back(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Locked and current", [OLD], [OLD])
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]]
+    assert [v["id"] for v in sid.decisions["d1"]["versions"]] == ["d1-v1", "d1-v2"]
+    (mapping,) = sid.mappings
+    (moved,) = mapping["connectors"]["dntStatic"]
+    assert (moved["source"], moved["target"], moved["resourceName"]) == (NODE + OLD, NODE + TARGET, "ZZ Call (before 1b1b1b1b)")
+    assert moved["connectorId"]
+    assert "moved       decision 'Locked and current' (d1): version(s) 1.0 (locked), 2.0 (current) call " \
+           f"{NODE}{TARGET} - read back" in text
+    # the export, its job record and the upload are deleted; the record of the import is kept
+    assert sorted(sid.deleted) == ["/transfer/exportJobs/e0", "/transfer/packages/u0", "/transfer/packages/x0"]
+
+
+def test_a_failed_import_task_fails_the_run_and_the_old_node_is_not_deleted(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Fails", [OLD], [OLD])
+    sid.decision("d2", "Moves", [OLD])
+    sid.fail_import.add("d1")
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 1
+    assert "FAILED      decision 'Fails' (d1):" in text
+    assert "import task decision 'Fails': failed - locked" in text
+    assert sid.uses("d2") == [[NODE + TARGET]] and sid.uses("d1") == [[NODE + OLD], [NODE + OLD]]
+    assert "not deleted 0a0a0a0a-0000-4000-8000-000000000001: 1 decision(s) were not moved and still call it." in text
+    assert OLD in sid.nodes and ("DELETE", NODE + OLD) not in sid.writes
+
+
+def test_a_decision_the_import_job_left_out_without_a_task_is_a_failure(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Skipped", [OLD])
+    sid.skip_import.add("d1")
+    code, text = migrate("--apply")
+    assert code == 1
+    assert ("the import job ended completed and has no completed task for the decision 'Skipped' - it was not "
+            "imported") in text
+
+
+def test_delete_old_is_refused_while_a_version_still_calls_the_old_node(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD])
+    # somebody makes a decision with the old node type while the run moves the others
+    sid.after_import = lambda: sid.decision("d9", "Made meanwhile", [OLD])
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 1
+    assert "not deleted 0a0a0a0a-0000-4000-8000-000000000001: 1 decision(s) still call it - 'Made meanwhile' " \
+           "1.0 (current)." in text
+    assert OLD in sid.nodes
+
+
+def test_delete_old_deletes_once_nothing_calls_it(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD], [OLD])
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 0, text
+    assert OLD not in sid.nodes and sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]]
+    assert "deleted     0a0a0a0a-0000-4000-8000-000000000001 ('ZZ Call (before 1b1b1b1b)')" in text
+
+
+def test_a_second_run_finds_everything_done(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD], [OLD])
+    assert migrate("--apply")[0] == 0
+    writes = list(sid.writes)
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert sid.writes == writes                                     # nothing sent again
+    assert "The old node type 'ZZ Call (before 1b1b1b1b)'" in text and "No decision calls the old node type." in text
+
+
+def test_a_run_that_stopped_after_the_rename_is_finished_by_the_next(sid):
+    sid.node(OLD, "ZZ Call (before 1b1b1b1b)")                      # an earlier run renamed it, and stopped
+    sid.decision("d1", "Moves", [OLD])
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert ("PUT", NODE + OLD) not in sid.writes
+    assert sid.nodes[TARGET]["name"] == "ZZ Call" and sid.uses("d1") == [[NODE + TARGET]]
+
+
+def test_a_run_that_stopped_before_the_content_gives_the_node_its_content(sid):
+    sid.node(OLD, "ZZ Call (before 1b1b1b1b)", code="old code")
+    sid.node(TARGET, "ZZ Call")
+    del sid.contents[TARGET]
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert sid.contents[TARGET]["staticContent"] == "old code"
+
+
+def test_no_node_of_the_name_is_nothing_to_move(sid):
+    code, text = migrate("--apply")
+    assert code == 0
+    assert "No node type named 'ZZ Call' is on this site: there is nothing to move." in text and sid.writes == []
+
+
+def test_a_refused_rename_stops_before_anything_else(sid, monkeypatch):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD])
+    monkeypatch.setattr(sid, "put", lambda path, data=None, headers=None, **kw: Response(403, {"message": "no"}))
+    code, text = migrate("--apply")
+    assert code == 1
+    assert "FAILED      Renaming the node type 0a0a0a0a-0000-4000-8000-000000000001 to 'ZZ Call (before 1b1b1b1b)' " \
+           "failed: HTTP 403 no" in text
+    assert TARGET not in sid.nodes and sid.mappings == []
+
+
+# ---------------------------------------------------------------------------
+# the manifest
+# ---------------------------------------------------------------------------
+MANIFEST = """version: 1
+contentRoot: /SAS Agentic AI Accelerator
+package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+entries:
+  - {path: release.json, kind: file, generated: release-info}
+  - path: Decisions/Call LLM Node
+    kind: decision
+    nodeTypes:
+      - {name: Call LLM, id: f9efcbb7-f57b-4a62-b56d-1a89595e2039}
+"""
+
+
+@pytest.fixture
+def manifest(tmp_path):
+    return load_manifest(make_repo(tmp_path, MANIFEST))
+
+
+def test_a_decision_entry_names_its_node_types_by_name_and_id(manifest):
+    entry = manifest.find("Decisions/Call LLM Node", "decision")
+    assert entry.node_types == ({"name": "Call LLM", "id": CALL_LLM_NODE_ID},)
+    assert content.entry_hash(manifest, entry) is None
+    info = content.release_info(manifest)
+    assert {"path": "Decisions/Call LLM Node", "kind": "decision", "hash": None} in info["entries"]
+
+
+@pytest.mark.parametrize("node_types, problem", [
+    (None, "a decision lists the custom node types it uses under nodeTypes"),
+    ([{"name": "Call LLM", "id": "F9EFCBB7"}], "id is a UUID in lower case"),
+    ([{"name": "Call LLM", "id": CALL_LLM_NODE_ID, "code": "x"}], "has unknown field(s) code"),
+    ([{"name": "Call LLM", "id": CALL_LLM_NODE_ID}] * 2, "is listed twice"),
+])
+def test_a_decision_entry_without_usable_node_types_is_refused(tmp_path, node_types, problem):
+    entry = {"path": "Decisions/D", "kind": "decision"}
+    if node_types is not None:
+        entry["nodeTypes"] = node_types
+    document = {"version": 1, "contentRoot": "/R", "package": "p.json", "entries": [entry]}
+    with pytest.raises(ManifestError) as caught:
+        parse_manifest(document, tmp_path)
+    assert any(problem in line for line in caught.value.problems), caught.value.problems
+
+
+# ---------------------------------------------------------------------------
+# package-export and package-check
+# ---------------------------------------------------------------------------
+def _export(manifest, node_id=CALL_LLM_NODE_ID):
+    """What an export of the content folder holds: the decision, its node type
+    as a dependency with the rule on it, and a decision somebody parked there
+    with a node type of its own."""
+    built = package_of(manifest, change={"Decisions/Call LLM Node": [(node_id, "Call LLM")]})
+    built.grant("rule", "rule on the node", NODE + node_id)
+    built.node_type("3d3d3d3d-0000-4000-8000-000000000004", "Their node")
+    built.decision("Decisions/Parked", [("3d3d3d3d-0000-4000-8000-000000000004", "Their node")])
+    return built.build()
+
+
+def test_the_export_keeps_the_decision_and_its_node_type_and_drops_the_rest(manifest):
+    package = _export(manifest)
+    result = filter_package(package, manifest)
+    assert "decision 'Decisions/Call LLM Node'" in result.kept
+    assert f"node type 'Call LLM' ({CALL_LLM_NODE_ID}, used by decision 'Decisions/Call LLM Node')" in result.kept
+    assert "decision 'Decisions/Parked'" in result.dropped
+    assert "node type 'Their node' (3d3d3d3d-0000-4000-8000-000000000004) - no decision the manifest lists uses " \
+           "it under this id" in result.dropped
+    assert "rule 'rule on the node'" in result.dropped
+    kinds = sorted(d["transferObject"]["summary"]["type"] for d in package["transferDetails"])
+    assert kinds == ["application/vnd.sas.file+json", "decision", "decisionNodeType", "folder", "folder"]
+    neutralise_users(package)                                   # as the export does next
+    assert [text for text in (f.text for f in package_findings(package, manifest)) if "release.json" not in text] == []
+
+
+def test_the_export_names_no_user_in_the_node_type(manifest):
+    built = package_of(manifest, change={"Decisions/Call LLM Node": None})
+    built.node_type(CALL_LLM_NODE_ID, "Call LLM", user="the exporter")
+    built.decision("Decisions/Call LLM Node", [(CALL_LLM_NODE_ID, "Call LLM")], user="the exporter")
+    package = built.build()
+    filter_package(package, manifest)
+    assert named_users(package).get("the exporter")
+    neutralise_users(package)
+    assert set(named_users(package)) == {"sas-agentic-ai-accelerator"}
+
+
+def test_a_node_type_under_another_id_does_not_ship(manifest):
+    package = _export(manifest, node_id=OLD)
+    filter_package(package, manifest)
+    texts = [f.text for f in package_findings(package, manifest)]
+    assert f"decision 'Decisions/Call LLM Node' uses the node type {NODE}{OLD}, which its manifest entry does not " \
+           "list" in texts
+    assert f"decision 'Decisions/Call LLM Node': the node type 'Call LLM' ({CALL_LLM_NODE_ID}) is not in the " \
+           "package - an import would leave the decision without it" in texts
+
+
+def test_the_gate_holds_the_node_type_to_its_id_name_and_code(manifest):
+    built = package_of(manifest, change={"Decisions/Call LLM Node": None})
+    built.node_type(CALL_LLM_NODE_ID, "Call LLM", code="", content_id="c1")
+    built.decision("Decisions/Call LLM Node", [(CALL_LLM_NODE_ID, "Call LLM")], unnamed=True)
+    package = built.build()
+    for detail in package["transferDetails"]:
+        obj = detail["transferObject"]
+        if obj["summary"]["type"] == "decisionNodeType":
+            body = json.loads(base64.b64decode(obj["content"]))
+            body["decisionNodeTypeRep"]["name"] = "Call LLM (copy)"
+            obj["content"] = base64.b64encode(json.dumps(body).encode()).decode()
+    texts = [f.text for f in package_findings(package, manifest)]
+    shown = f"node type 'Call LLM' ({CALL_LLM_NODE_ID}) of decision 'Decisions/Call LLM Node'"
+    assert f"{shown} is named 'Call LLM (copy)', its manifest entry lists 'Call LLM'" in texts
+    assert f"{shown} carries no code (decisionNodeTypeContentRep with staticContent)" in texts
+    assert ("decision 'Decisions/Call LLM Node': a step of version 1.0 calls the node 'Call LLM' and names no node "
+            "type - its node type was deleted where the decision was exported, and the version cannot run") in texts
+
+
+def test_a_node_type_of_a_decision_that_is_not_listed_fails_the_gate(manifest):
+    built = package_of(manifest)
+    built.node_type("3d3d3d3d-0000-4000-8000-000000000004", "Their node")
+    built.decision("Decisions/Parked", [("3d3d3d3d-0000-4000-8000-000000000004", "Their node")])
+    texts = [f.text for f in package_findings(built.build(), manifest)]
+    assert "decision 'Decisions/Parked' is in the package but not in the manifest" in texts
+    assert ("node type 'Their node' (3d3d3d3d-0000-4000-8000-000000000004) is used by decision 'Decisions/Parked', "
+            "which is not in the manifest") in texts
+
+
+def test_a_package_without_the_decision_misses_it(manifest):
+    package = package_of(manifest, change={"Decisions/Call LLM Node": None}).build()
+    texts = [f.text for f in package_findings(package, manifest)]
+    assert "decision 'Decisions/Call LLM Node' is in the manifest but not in the package" in texts
+
+
+def test_the_decisions_part_of_a_package_holds_the_decisions_their_node_types_and_folders(manifest):
+    package = _export(manifest)
+    reduced, held, carried = decisions_package(package)
+    assert carried == [("Call LLM", CALL_LLM_NODE_ID), ("Their node", "3d3d3d3d-0000-4000-8000-000000000004")]
+    assert sorted(held) == ["decision Decisions/Call LLM Node", "decision Decisions/Parked",
+                            f"decisionNodeType Call LLM ({CALL_LLM_NODE_ID})",
+                            "decisionNodeType Their node (3d3d3d3d-0000-4000-8000-000000000004)",
+                            "folder Decisions", "folder SAS Agentic AI Accelerator"]
+    assert len(reduced["transferDetails"]) == 6 and len(package["transferDetails"]) > 6
+
+
+def test_the_import_source_takes_the_decisions_apart_from_what_is_brought_in_place(manifest):
+    package = _export(manifest)
+    source = PackageSource(package, manifest)
+    assert sorted(item.path for item in source.decisions) == ["Decisions/Call LLM Node", "Decisions/Parked"]
+    assert sorted(item.name for item in source.node_types) == ["Call LLM", "Their node"]
+    assert ("decision", "Decisions/Call LLM Node") not in source._at
+    assert {entry.kind for entry in source.manifest("/R").entries} >= {"decision"}
+
+
+# ---------------------------------------------------------------------------
+# content-deploy
+# ---------------------------------------------------------------------------
+def test_content_deploy_says_whether_the_decision_is_on_the_site_and_writes_none(manifest):
+    viya = Viya()
+    result = viya_content.deploy(viya, manifest, dry_run=False)
+    decision = next(o for o in result.outcomes if o.entry.kind == "decision")
+    assert (decision.status, decision.note) == ("not deployed", "not on the site - it comes with the package")
+    viya.put_member("/SAS Agentic AI Accelerator/Decisions/Call LLM Node", "/decisions/flows/", None)
+    result = viya_content.deploy(viya, manifest, dry_run=True)
+    decision = next(o for o in result.outcomes if o.entry.kind == "decision")
+    assert (decision.status, decision.note) == ("not deployed", "on the site")
+    assert not [call for call in viya.wrote() if "/decisions/" in call[1]]
+    assert result.unlisted == []
+
+
+def test_content_deploy_does_not_take_a_decision_to_another_place(tmp_path, monkeypatch):
+    make_repo(tmp_path, MANIFEST)
+    monkeypatch.setattr(cli, "Context", lambda: SimpleNamespace(repo=tmp_path, core=None))
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--only", "Decisions/Call LLM Node", "--to", "/X/Y"])
+    assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# builders-import
+# ---------------------------------------------------------------------------
+def _with_decision(node_id=CALL_LLM_NODE_ID) -> dict:
+    built = _built()
+    built.node_type(node_id, "Call LLM")
+    built.decision("Decisions/Call LLM Node", [(node_id, "Call LLM")])
+    built.grant("rule", "rule on the node", NODE + node_id)
+    return built.build()
+
+
+DONE_TASKS = [{"resourceType": "decision", "name": "Call LLM Node", "state": "completed"},
+              {"resourceType": "decisionNodeType", "name": "Call LLM", "state": "completed"}]
+
+
+def test_the_import_brings_the_decision_and_its_node_type_in_a_job_of_their_own(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 0, text
+    assert f"    node type 'Call LLM' ({CALL_LLM_NODE_ID}): not on this site - the import creates it under this id." \
+        in text
+    assert "    imported 4 object(s) through the transfer service." in text
+    handed = importing.uploaded["SAS Agentic AI Accelerator - decisions"]
+    kinds = sorted(d["transferObject"]["summary"]["type"] for d in handed["transferDetails"])
+    assert kinds == ["decision", "decisionNodeType", "folder", "folder"]
+    reports = importing.uploaded["SAS Agentic AI Accelerator"]
+    assert "decision" not in [d["transferObject"]["summary"]["type"] for d in reports["transferDetails"]]
+    assert "not imported: rule 'rule on the node' (mdb imports no authorization rule and no share)" in text
+
+
+def test_a_node_type_of_the_id_is_overwritten_and_the_line_says_so(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {CALL_LLM_NODE_ID: {"id": CALL_LLM_NODE_ID, "name": "Call LLM"}}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 0, text
+    assert (f"    node type 'Call LLM' ({CALL_LLM_NODE_ID}): on this site - the import overwrites it in place with the "
+            "package's: local edits of its code and its terms are replaced.") in text
+
+
+def test_a_call_llm_node_under_another_id_stops_the_decisions_and_names_the_migration(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {OLD: {"id": OLD, "name": "Call LLM"}}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 1
+    assert f"    node type 'Call LLM' ({CALL_LLM_NODE_ID}): this site has a node type 'Call LLM' under the id {OLD}." in text
+    assert "`mdb decision-node-migrate` says what it would do, `mdb decision-node-migrate --apply` does it" in text
+    assert "SAS Agentic AI Accelerator - decisions" not in importing.uploaded
+    # the rest of the package arrived
+    assert "SAS Agentic AI Accelerator" in importing.uploaded
+
+
+def test_no_decisions_leaves_them_out_and_the_run_passes(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {OLD: {"id": OLD, "name": "Call LLM"}}
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), "--no-decisions", package=_with_decision())
+    assert result.exit_code == 0, text
+    assert ("  Decisions (Decisions/Call LLM Node): left out (--no-decisions), and the node types they carry with "
+            "them.") in text
+    assert "SAS Agentic AI Accelerator - decisions" not in importing.uploaded
+
+
+def test_a_decision_the_job_skipped_without_a_task_fails_the_run(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = [{"resourceType": "decisionNodeType", "name": "Call LLM", "state": "completed"}]
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 1
+    assert "      decision 'Call LLM Node': no completed task - the job did not import it" in text
+
+
+def test_a_failed_node_type_task_fails_the_run(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = [{"resourceType": "decisionNodeType", "name": "Call LLM", "state": "failed",
+                        "message": "names must be unique"}]
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 1
+    assert "      decisionNodeType 'Call LLM': failed - names must be unique" in text
+
+
+def test_a_site_without_decisioning_gets_a_line_and_no_failure(importing, no_discovery):
+    no_discovery()
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 0, text
+    assert "SAS Intelligent Decisioning does not answer on this site" in text
+    assert "SAS Agentic AI Accelerator - decisions" not in importing.uploaded
+
+
+def test_a_dry_run_asks_the_site_and_uploads_nothing(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), "--dry-run", package=_with_decision())
+    assert result.exit_code == 0, text
+    assert "not on this site - the import creates it under this id." in text
+    assert importing.uploaded == {}
+    assert [method for method, _path in importing.viya.wrote()] == []
+
+
+def test_the_decision_nodes_module_holds_no_host():
+    text = Path(decision_nodes.__file__).read_text(encoding="utf-8")
+    assert "sas.com" not in text and "openstack" not in text

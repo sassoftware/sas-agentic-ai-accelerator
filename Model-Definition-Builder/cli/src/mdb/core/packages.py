@@ -600,14 +600,22 @@ def reset_report_defaults(text: str, defaults=None, report: str = MERGED_REPORT)
 
 #: The word a package has for each kind of the manifest.
 PACKAGE_KIND = {"folder": "folder", "file": "file", "step": "flowStep",
-                "jobDefinition": "jobDefinition", "report": "report"}
+                "jobDefinition": "jobDefinition", "report": "report", "decision": "decision"}
 MANIFEST_KIND = {word: kind for kind, word in PACKAGE_KIND.items()}
+
+#: The word a package has for a custom node type of SAS Intelligent
+#: Decisioning. It sits in no folder: an export of a folder carries it as a
+#: dependency of the decision that uses it, with its id, and the decision
+#: names it by a `dntStatic` connector (read from an export of 2026-10-20).
+NODE_TYPE_KIND = "decisionNodeType"
+NODE_TYPE_URI = "/decisions/decisionNodeTypes/"
 
 #: Objects that grant something to somebody: never part of a shipped package.
 GRANT_KINDS = ("rule", "share")
 
 _URI_PREFIX = {"folder": "/folders/folders/", "file": "/files/files/", "flowStep": "/dataFlows/steps/",
-               "jobDefinition": "/jobDefinitions/definitions/", "report": "/reports/reports/"}
+               "jobDefinition": "/jobDefinitions/definitions/", "report": "/reports/reports/",
+               "decision": "/decisions/flows/", NODE_TYPE_KIND: NODE_TYPE_URI}
 
 
 def object_uri(summary: dict) -> str:
@@ -645,6 +653,7 @@ class Located:
     #: object that is not below it.
     path: Optional[str] = None
     #: For a file that belongs to a report (an image): the path of that report.
+    #: For a custom node type: the path of the first decision that uses it.
     owner: Optional[str] = None
 
     @property
@@ -746,7 +755,69 @@ def locate(package: dict, root_uri: Optional[str] = None) -> tuple:
             owner = by_uri.get(_file_parent(item) or "")
             if owner is not None and owner.kind == "report" and owner.path is not None:
                 item.owner = owner.path
+    # A custom node type sits in no folder either: it belongs to the decisions
+    # below the root that use it - a decision names it by a `dntStatic`
+    # connector, and a step of the decision by its address.
+    users = node_type_users(items)
+    for item in items:
+        if item.kind == NODE_TYPE_KIND and item.path is None and users.get(item.uri):
+            item.owner = users[item.uri][0].path
     return root_uri, items
+
+
+def custom_objects(value) -> list:
+    """Every `customObject` of the steps of a decision version (or of any
+    part of one): the node a step calls, `{"name", "type", "uri"}` - nested
+    in a branch or not. A step whose node type was deleted keeps the name and
+    loses the uri (measured on 2026-10-20)."""
+    found: list = []
+
+    def walk(part) -> None:
+        if isinstance(part, dict):
+            custom = part.get("customObject")
+            if isinstance(custom, dict):
+                found.append(custom)
+            for key, item in part.items():
+                if key != "customObject":
+                    walk(item)
+        elif isinstance(part, list):
+            for item in part:
+                walk(item)
+    walk(value)
+    return found
+
+
+def node_type_uris(value) -> list:
+    """The addresses of the custom node types the steps in `value` call, each once."""
+    uris: list = []
+    for custom in custom_objects(value):
+        uri = str(custom.get("uri") or "")
+        if uri.startswith(NODE_TYPE_URI) and uri not in uris:
+            uris.append(uri)
+    return uris
+
+
+def _decision_connected(item: "Located") -> list:
+    """The node types a packaged decision names by its `dntStatic` connectors."""
+    return [str(c.get("uri")) for c in _connectors(item.detail) if c.get("type") == "dntStatic" and c.get("uri")]
+
+
+def node_type_users(items: list) -> dict:
+    """{node type uri: [the located decisions below the root that use it]}:
+    by a connector, or by a step of any of their versions."""
+    users: dict = {}
+    for item in items:
+        if item.kind != "decision" or item.path is None:
+            continue
+        uris = _decision_connected(item) + node_type_uris(_body(item.obj) or {})
+        for uri in dict.fromkeys(uris):
+            users.setdefault(uri, []).append(item)
+    return users
+
+
+def node_type_id(item: "Located") -> str:
+    """The id a packaged node type has: the last part of its address."""
+    return item.uri.rstrip("/").rsplit("/", 1)[-1] if item.uri else ""
 
 
 def _file_parent(item: "Located") -> Optional[str]:
@@ -808,9 +879,10 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
     happened to each object.
 
     Kept: the content root folder, every object whose path and kind the
-    manifest lists (the folders of the listed objects included), and the files
+    manifest lists (the folders of the listed objects included), the files
     that are children of a listed report and that its entry lists under
-    `files:`. Dropped: everything else - an object that is not listed, an
+    `files:`, and the custom node types a listed decision uses and its entry
+    lists under `nodeTypes:` by their id. Dropped: everything else - an object that is not listed, an
     object that is not below the content root (a dependency the export pulled
     in, a folder above the root, a picture a report shows from a folder of
     somebody's), a child of a report that the report's entry does not list,
@@ -828,6 +900,10 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
     listed_reports = {item.path: _listed(manifest, item) for item in items
                       if item.kind == "report" and _listed(manifest, item) is not None
                       and not _content.never_ship(item.path)}
+    listed_decisions = {item.path: _listed(manifest, item) for item in items
+                        if item.kind == "decision" and _listed(manifest, item) is not None
+                        and not _content.never_ship(item.path)}
+    users = node_type_users(items)
     kept: list = []
     for item in items:
         if item.kind in GRANT_KINDS:
@@ -835,6 +911,17 @@ def filter_package(package: dict, manifest, root_uri: Optional[str] = None) -> F
             continue
         if item.path == "":
             kept.append(item)
+            continue
+        if item.kind == NODE_TYPE_KIND and item.owner is not None:
+            # kept for a listed decision that uses it and lists it - by its id
+            wanted = [user.path for user in users.get(item.uri, []) if user.path in listed_decisions
+                      and node_type_id(item) in {n["id"] for n in listed_decisions[user.path].node_types}]
+            if wanted:
+                kept.append(item)
+                result.kept.append(f"node type '{item.name}' ({node_type_id(item)}, used by decision '{wanted[0]}')")
+            else:
+                result.dropped.append(f"node type '{item.name}' ({node_type_id(item)}) - no decision the manifest "
+                                      "lists uses it under this id")
             continue
         if item.owner is not None:
             if item.owner not in listed_reports:
@@ -953,7 +1040,9 @@ class PackageSource:
     path (empty, '.', '..', a slash in it, a blank at either end: the rule
     the manifest has for a path). Reports and the files that are children of
     a report are `reports` / `children`: they go through the transfer
-    service or not at all. `notes` says what a report shows from a folder:
+    service or not at all. So do the decisions and the custom node types
+    they use (`decisions` / `node_types`), in an import job of their own; a
+    node type no imported decision uses is left out. `notes` says what a report shows from a folder:
     such a file is brought in place under the id the site gives it, while
     the report keeps naming the id of the package.
 
@@ -972,6 +1061,8 @@ class PackageSource:
         self.left_out: list = []
         self.reports: list = []
         self.children: list = []
+        self.decisions: list = []
+        self.node_types: list = []
         self.notes: list = []
         unknown = sorted(set(map(str, package)) - set(PACKAGE_FIELDS))
         if unknown:
@@ -983,14 +1074,20 @@ class PackageSource:
             kind = MANIFEST_KIND.get(item.kind)
             if item.kind in GRANT_KINDS:
                 self.left_out.append(f"{item.kind} '{item.name}' (mdb imports no authorization rule and no share)")
+            elif item.kind == NODE_TYPE_KIND:
+                if item.owner is None:
+                    self.left_out.append(f"node type '{item.name}' (no decision below the root folder of the package "
+                                         "uses it)")
+                else:
+                    self.node_types.append(item)
             elif item.owner is not None:
                 self.children.append(item)
             elif item.path is None:
                 self.left_out.append(f"{item.kind} '{item.name}' (not below the root folder of the package)")
             elif kind is None:
                 self.left_out.append(f"{item.kind} '{item.path}' (mdb does not import a {item.kind}: it brings files, "
-                                     "custom steps and job definitions in place, and reports through the transfer "
-                                     "service)")
+                                     "custom steps and job definitions in place, and reports and decisions through "
+                                     "the transfer service)")
             elif item.path == "":
                 continue
             elif bad_path(item):
@@ -1003,15 +1100,25 @@ class PackageSource:
                 folders.append(item)
             elif kind == "report":
                 self.reports.append(item)
+            elif kind == "decision":
+                self.decisions.append(item)
             else:
                 self._at.setdefault((kind, item.path), []).append(item)
         report_paths = {item.path for item in self.reports}
         self.left_out += [f"file '{item.name}' (belongs to report '{item.owner}', which is not imported)"
                           for item in self.children if item.owner not in report_paths]
         self.children = [item for item in self.children if item.owner in report_paths]
+        # a node type goes with a decision that is imported, and not without one
+        decision_paths = {item.path for item in self.decisions}
+        users = node_type_users(self.items)
+        self.left_out += [f"node type '{item.name}' (used by decision '{item.owner}', which is not imported)"
+                          for item in self.node_types
+                          if not any(user.path in decision_paths for user in users.get(item.uri, []))]
+        self.node_types = [item for item in self.node_types
+                           if any(user.path in decision_paths for user in users.get(item.uri, []))]
         # an empty folder of the package: nothing below it at all, not even a report
         below = [path for _kind, path in self._at] + [item.path for item in self.reports] \
-            + [item.path for item in folders]
+            + [item.path for item in self.decisions] + [item.path for item in folders]
         self.empty_folders = [item.path for item in folders
                               if not any(path.startswith(item.path + "/") for path in below)]
         # a file a report shows from a folder (not a child of the report) is brought in place
@@ -1037,6 +1144,7 @@ class PackageSource:
         entries = [_content.Entry(path=path, kind="folder") for path in self.empty_folders]
         entries += [_content.Entry(path=path, kind=kind) for kind, path in self._at]
         entries += [_content.Entry(path=item.path, kind="report") for item in self.reports]
+        entries += [_content.Entry(path=item.path, kind="decision") for item in self.decisions]
         repo_root = self.checkout.repo_root if self.checkout is not None else Path(".")
         return _content.ContentManifest(repo_root=repo_root, content_root=content_root.rstrip("/"),
                                         package="", entries=entries)
@@ -1133,6 +1241,42 @@ def reports_package(package: dict, root_uri: Optional[str] = None) -> tuple:
     _reduce(reduced, items, kept)
     return reduced, [f"{item.kind} {item.path if item.path else (item.owner + '/' + item.name if item.owner else item.name)}"
                      for item in kept]
+
+
+def decisions_package(package: dict, root_uri: Optional[str] = None) -> tuple:
+    """(a copy of a package reduced to its decisions, [what it holds as 'kind
+    path'], [(name, id) of each node type it holds]).
+
+    That is the decisions below the root folder, the custom node types they
+    use, and the folders the decisions sit in, up to the root - what
+    `mdb builders-import` hands to the transfer service in an import job of
+    its own, after the reports. A node type travels with its id: the import
+    creates it under that id where the site has none, and overwrites the one
+    of that id in place. The package itself is not changed; the lists are
+    empty when it holds no decision."""
+    reduced = json.loads(json.dumps(package))
+    for key in [key for key in reduced if key not in PACKAGE_FIELDS]:
+        del reduced[key]
+    _root, items = locate(reduced, root_uri)
+    bad_path = _path_check(items)
+    decisions = [item for item in items if item.kind == "decision" and item.path
+                 and not _content.never_ship(item.path) and not bad_path(item)]
+    if not decisions:
+        return reduced, [], []
+    users = node_type_users(items)
+    taken = {id(item) for item in decisions}
+    nodes = [item for item in items if item.kind == NODE_TYPE_KIND
+             and any(id(user) in taken for user in users.get(item.uri, []))]
+    folders = {""}
+    for item in decisions:
+        parts = item.path.split("/")[:-1]
+        folders.update("/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+    taken |= {id(item) for item in nodes}
+    kept = [item for item in items if (item.kind == "folder" and item.path in folders) or id(item) in taken]
+    _reduce(reduced, items, kept)
+    held = [f"{item.kind} {item.path if item.path else item.name}" if item.kind != NODE_TYPE_KIND
+            else f"{item.kind} {item.name} ({node_type_id(item)})" for item in kept]
+    return reduced, held, [(item.name, node_type_id(item)) for item in nodes]
 
 
 def mapping_preview(package: dict) -> dict:
@@ -1467,6 +1611,110 @@ def _report_file_differences(report: Located, entry, children: list) -> list:
     return problems
 
 
+def _version_label(version: dict) -> str:
+    return f"{version.get('majorRevision', '?')}.{version.get('minorRevision', '?')}"
+
+
+def _node_type_problems(node: Located, listed: dict, where: str, allowed=ALLOWED_HOSTS) -> list:
+    """What a packaged custom node type does not pass: it is the node type the
+    entry of its decision lists - that name, that id in its summary, in its
+    own representation and in its content - with code to run, and it carries
+    nothing an export does not give one (no connector, no substitution)."""
+    shown = f"node type '{node.name}' ({node_type_id(node)}) of {where}"
+    body = _body(node.obj)
+    rep = (body or {}).get("decisionNodeTypeRep")
+    content = (body or {}).get("decisionNodeTypeContentRep")
+    if not isinstance(rep, dict):
+        return [f"{shown}: the packaged content is unreadable"]
+    problems = []
+    if node_type_id(node) != listed["id"] or rep.get("id") != listed["id"]:
+        problems.append(f"{shown} has the id {rep.get('id')} in its body, its manifest entry lists {listed['id']}")
+    if node.name != listed["name"] or rep.get("name") != listed["name"]:
+        problems.append(f"{shown} is named '{rep.get('name')}', its manifest entry lists '{listed['name']}'")
+    if not isinstance(content, dict) or not str(content.get("staticContent") or "").strip():
+        problems.append(f"{shown} carries no code (decisionNodeTypeContentRep with staticContent)")
+    elif content.get("nodeTypeId") != listed["id"]:
+        problems.append(f"{shown}: its content belongs to the node type {content.get('nodeTypeId')}")
+    for connector in list(node.detail.get("connectors") or []) + list(node.obj.get("connectors") or []):
+        problems.append(f"{shown} carries a connector of type '{(connector or {}).get('type')}' - an export gives a "
+                        "node type none")
+    if node.obj.get("substitutions"):
+        problems.append(f"{shown} carries substitutions - an export gives a node type none")
+    for host, n in sorted(hosts_in(json.dumps([node.obj.get("summary") or {}, body])).items()):
+        if host not in allowed:
+            problems.append(f"{shown} names the host {host} ({n} time(s))")
+    return problems
+
+
+def _decision_differences(item: Located, entry, items: list, allowed=ALLOWED_HOSTS) -> list:
+    """What a packaged decision does not pass: sentences.
+
+    * its body is a decision of that name, with every version;
+    * every step of every version that calls a custom node names the node
+      type by its address (a node type that was deleted leaves a step with a
+      name and no address), and the node types its steps and its `dntStatic`
+      connectors name are exactly the ones its entry lists under `nodeTypes:`;
+    * each of them is in the package, as `_node_type_problems` asks;
+    * beside its `parentFolder` and the connectors to its node types (and
+      the one with a name and nothing else the export writes beside each) it
+      has no connector - one would be an object it depends on that does not
+      ship - no substitution, and it names no host but a public one."""
+    where = f"decision '{item.path}'"
+    body = _body(item.obj)
+    current = (body or {}).get("decisionVersionRep")
+    if not isinstance(current, dict):
+        return [f"{where}: the packaged content is unreadable"]
+    problems = []
+    if current.get("name") not in (None, item.name):
+        problems.append(f"{where} is named '{current.get('name')}' in its body")
+    for connector in item.detail.get("connectors") or []:
+        if isinstance(connector, dict) and connector.get("type") != "parentFolder":
+            problems.append(f"{where} carries a connector of type '{connector.get('type')}' - an export gives a "
+                            "decision its parentFolder there")
+    for connector in item.obj.get("connectors") or []:
+        if not isinstance(connector, dict):
+            continue
+        if connector.get("type") == "dntStatic" or (not connector.get("type") and not connector.get("uri")):
+            continue
+        problems.append(f"{where} depends on {connector.get('uri') or connector.get('name')} (a connector of type "
+                        f"'{connector.get('type')}'), which does not ship with it")
+    if item.obj.get("substitutions"):
+        problems.append(f"{where} carries substitutions ({', '.join(map(str, item.obj['substitutions']))})")
+    versions = [current] + [v for v in body.get("revisions") or [] if isinstance(v, dict)]
+    used: list = []
+    for version in versions:
+        for custom in custom_objects(version):
+            uri = str(custom.get("uri") or "")
+            if not uri:
+                problems.append(f"{where}: a step of version {_version_label(version)} calls the node "
+                                f"'{custom.get('name')}' and names no node type - its node type was deleted where "
+                                "the decision was exported, and the version cannot run")
+            elif uri not in used:
+                used.append(uri)
+    used += [uri for uri in _decision_connected(item) if uri not in used]
+    wanted = {f"{NODE_TYPE_URI}{listed['id']}": listed for listed in entry.node_types}
+    for uri in used:
+        if uri not in wanted:
+            problems.append(f"{where} uses the node type {uri}, which its manifest entry does not list")
+    nodes = {other.uri: other for other in items if other.kind == NODE_TYPE_KIND}
+    steps = set(node_type_uris(versions))
+    for uri, listed in wanted.items():
+        if uri not in steps:
+            problems.append(f"{where}: no step calls the node type '{listed['name']}' ({listed['id']}) its manifest "
+                            "entry lists")
+        if uri not in nodes:
+            problems.append(f"{where}: the node type '{listed['name']}' ({listed['id']}) is not in the package - an "
+                            "import would leave the decision without it")
+            continue
+        problems += _node_type_problems(nodes[uri], listed, where, allowed)
+    told = json.dumps([item.obj.get("summary") or {}, body,
+                       {key: value for key, value in item.obj.items() if key not in ("content", "summary")}])
+    for host, n in sorted(hosts_in(told).items()):
+        if host not in allowed:
+            problems.append(f"{where} names the host {host} ({n} time(s))")
+    return problems
+
+
 #: The fields a transfer package has at its top, as the exports read so far
 #: carry them. Another one is something an export does not write.
 PACKAGE_FIELDS = ("createdBy", "creationTimeStamp", "description", "id", "links", "modifiedBy", "modifiedTimeStamp",
@@ -1489,6 +1737,9 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
       at most and no other property;
     * a report passes its checks, and the files that are its children are
       the ones its entry lists, with the hash given there;
+    * a decision uses exactly the custom node types its entry lists, each is
+      in the package under the id listed there (`_decision_differences`),
+      and no node type is in it that no listed decision uses;
     * no object is in the package that the manifest does not list, none sits
       on a path that never ships, there is no authorization rule or share,
       the package has no field at its top that an export does not write, and
@@ -1521,11 +1772,18 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
             f"the package names the user id(s) {', '.join(sorted(users))} in {USER_FIELDS_TEXT} "
             f"({sum(users.values())} place(s)) - an export of the release writes '{NEUTRAL_USER}' there, and "
             "`mdb package-check --fix` rewrites them"))
+    users = node_type_users(items)
     for item in items:
         if item.kind in GRANT_KINDS:
             problems.append(Difference(f"the package carries the authorization {item.kind} '{item.name}'"))
             continue
         if item.path == "":
+            continue
+        if item.kind == NODE_TYPE_KIND and item.owner is not None:
+            # checked with the decision that lists it; one no listed decision uses is not shipped
+            if not any(_listed(manifest, user) is not None for user in users.get(item.uri, [])):
+                problems.append(Difference(f"node type '{item.name}' ({node_type_id(item)}) is used by decision "
+                                           f"'{item.owner}', which is not in the manifest"))
             continue
         if item.owner is not None:
             if item.owner not in listed_reports:
@@ -1553,6 +1811,9 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
             problems.extend(Difference(text) for text in
                             _report_differences(item, entry, in_package, package_name)
                             + _report_file_differences(item, entry, children))
+            continue
+        if entry.kind == "decision":
+            problems.extend(Difference(text) for text in _decision_differences(item, entry, items))
             continue
         problems.extend(Difference(text) for text in _metadata_problems(item))
         if entry.kind != "folder":

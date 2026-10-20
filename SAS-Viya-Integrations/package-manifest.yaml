@@ -27,6 +27,15 @@
 #                  files: [{name, sha256}] - the files that are children of
 #                  the report (its pictures); the hash is what the check
 #                  compares, because their bytes are not in the repository
+#   decision       no source either (the package is its only one);
+#                  nodeTypes: [{name, id}] - the custom node types of SAS
+#                  Intelligent Decisioning it uses, each with the id it must
+#                  have: the export carries a node type as a dependency of the
+#                  decision, under its id, and `mdb package-export` keeps it
+#                  for the decision that lists it. `mdb content-deploy` does
+#                  not deploy a decision - its line says whether it is on the
+#                  site - and `mdb builders-import` brings it, with its node
+#                  types, through the transfer service
 #
 # A parameter with `siteSetting: true` holds a value of the site: the compute
 # context a job runs in (_contextName), the CAS library and server, the
@@ -282,6 +291,18 @@ entries:
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library, siteSetting: true}
       - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table, siteSetting: true}
+
+  # ---- Decisions: the Call LLM node, under one id on every site ----------------
+  # A decision that holds the Call LLM node only. It is not meant to be
+  # published: it is how the package brings the node type to a site - an
+  # import creates it under this id, or overwrites the node type of this id in
+  # place. A site that created its Call LLM node with the SAS program has it
+  # under another id: `mdb decision-node-migrate --apply` moves it and the
+  # decisions that use it to this id before the import.
+  - path: Decisions/Call LLM Node
+    kind: decision
+    nodeTypes:
+      - {name: Call LLM, id: f9efcbb7-f57b-4a62-b56d-1a89595e2039}
 
   # ---- Custom Steps -----------------------------------------------------------
   # Not listed, and so not shipped: `LLM - Get Prompt Experiments.step`, the
