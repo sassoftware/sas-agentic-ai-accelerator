@@ -4,11 +4,11 @@ This changelog documents all the different updates that occur for this framework
 
 ## [2.3.0] - unreleased
 
-The RAG Builder becomes part of the Prompt Builder: one report and one Options pane for prompt templates, decision templates and RAG setups, each behind a switch. The content folder ships as one transfer package with a *Start Here* check, and an upgrade is one command. The logging chain reads every kind of model call and links each row to its model. New: GPT-6, Claude 5.5, Mercury Decide, provider keys held by the container, a Contour ingress.
+The RAG Builder becomes part of the Prompt Builder, behind a switch like decision templates and prompt optimization. The content folder ships as one transfer package with a *Start Here* check; the logging chain reads every kind of model call. New: GPT-6, Claude 5.5, Mercury Decide, provider keys held by the container, a Contour ingress.
 
 ### Upgrading from 2.2.x
 
-One transfer package, `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`, carries everything under `/SAS Agentic AI Accelerator`, the RAG part of the Prompt Builder included; the report `RAG Builder` is retired. Steps 1 to 4 are for every site, the others where they say so. **The package file is not in the repository yet**: until it is exported, `mdb builders-import` ends with exit code 2.
+One transfer package carries the whole content folder, the RAG part of the Prompt Builder included; the report `RAG Builder` is retired. **The package file, `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`, is not in the repository yet**: until then `mdb builders-import` ends with exit code 2. Steps 1 to 4 are for every site, the others where they say so.
 
 **Everyone.** The import brings the content folder of this release and keeps the options set on the Prompt Builder report.
 
@@ -17,32 +17,41 @@ One transfer package, `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`, c
 3. Review and run the two commands of `sas-viya-cli-content-commands.txt`, which step 2 wrote: the package carries no authorization rule, and they give the *LLM Consumers* group Read on the content folder ([Access to the content folder](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#access-to-the-content-folder)).
 4. Open [Start Here](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#start-here) (`/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here`) and fix every line that says `missing`. Where it says that its session does not run as you, add `&_contextName=<a compute context that runs as you>`; where every request was refused, ask for the rights or about the sign-in.
 5. Only if you publish Python models to SAS Micro Analytic Service: mount the CA bundle into its Python runner, or such a model returns `CERTIFICATE_VERIFY_FAILED` ([the certificate bundle](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#mas-certificate-bundle)).
-6. Only for models that serve their own weights (Qwen, SmolLM, Von, the sentence-transformer embeddings): `mdb generate <model_id>`, `mdb register <model_id> --update`, `mdb publish <model_id> --wait`, then restart its Deployment ([Serving Open-Weight Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Serving-Open-Weight-Models#stage-the-weights)).
-7. Only for SAS code that *LLM - Create LLM Call*, *LLM - Get Options* or `Create-LLM-Call.sas` wrote before: generate it again with the versions of step 2 (1.7, 1.6); the old code sends the entry name as the key. Rename a credential-domain entry whose name holds anything but letters, digits, `.`, `_` and `-` (`Azure OpenAI` to `AzureOpenAI`) and use the new name ([Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials)).
+6. Only for models that serve their own weights (Qwen, SmolLM, Von, the sentence-transformer embeddings): `mdb generate <model_id>`, `mdb register <model_id> --update`, `mdb publish <model_id> --wait`, then restart its Deployment, or scale it to 0 and back to 1 where a node lacks the CPU for a second pod ([Serving Open-Weight Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Serving-Open-Weight-Models#stage-the-weights)).
+7. Only where a credential-domain entry's name holds anything but letters, digits, `.`, `_` and `-` (`Azure OpenAI`): rename the entry (`AzureOpenAI`), set the new name as `auth.key_name` in the `definition.yaml` of every model that uses it, then run `mdb generate`, `mdb register --update` and `mdb publish` for those models ([Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials)).
+8. Only for SAS code that *LLM - Create LLM Call*, *LLM - Get Options* or `Create-LLM-Call.sas` wrote before: generate it again with the versions of step 2 (1.7, 1.6), after step 7; the old code sends the entry name as the key.
 
 **Prompt building.** The import of step 2 brings the Prompt Builder and the optimization job.
 
-8. Only with prompt optimization enabled: let **Optimization: compute context** name a context that runs as the requesting user, such as *SAS Studio compute context*; in one that runs under a service account the job now stops ([Enabling Prompt Optimization](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Enabling-Prompt-Optimization)).
+9. Only with prompt optimization enabled: let **Optimization: compute context** name a context that runs as the requesting user, such as *SAS Studio compute context*; in one that runs under a service account the job now stops ([Enabling Prompt Optimization](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Enabling-Prompt-Optimization)).
 
 **Decision models.** Only for decision templates manifested with 2.2.0.
 
-9. Manifest each of those decision templates again (open it in the Prompt Builder, *Finalize*, manifest): the score code of 2.2.0 is not valid Python. Rename first a question whose name the designer now refuses ([Decision templates](https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder#decision-templates)).
+10. Manifest each of those decision templates again (open it in the Prompt Builder, *Finalize*, manifest): the score code of 2.2.0 is not valid Python. Rename first a question whose name the designer now refuses ([Decision templates](https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder#decision-templates)).
 
 **RAG.** Only for sites that build RAG setups in the Prompt Builder; step 2 brings the RAG runtime into the folder `RAG`.
 
-10. Only where **RAG: content root** names another folder: `mdb content-deploy --only RAG --to "<your RAG content root>"`, with `--create` for a folder that does not exist yet ([What gets deployed](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#what-gets-deployed)).
-11. Open every RAG setup, click **Manifest setup**, run its ingestion once, and publish again the decisions that use its retrieval model; for a setup registered from a flow, run *RAG - Register Setup* again ([After an upgrade](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#after-an-upgrade)).
-12. Once the Prompt Builder shows your setups, delete the report `RAG Builder` and the job definition `RAG-Builder-UI` ([The retired RAG Builder report](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-retired-rag-builder-report)).
-13. Only where the vector-store user of the ingestion does not own `rag_runs`: its owner runs one ingestion, or a DBA runs `ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0` ([Run history](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#run-history)).
-14. Only for own builds and hand-written URLs: `npm run build:rag` is gone; a URL of the RAG Builder names the Prompt Builder job with `enableRag=true` and `ragComputeContext` ([Serving the RAG Builder](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#serving-the-rag-builder)).
+11. Only where **RAG: content root** names another folder: `mdb content-deploy --only RAG --to "<your RAG content root>"`, with `--create` for a folder that does not exist yet ([What gets deployed](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#what-gets-deployed)).
+12. Open every RAG setup, click **Manifest setup**, run its ingestion once, and publish again the decisions that use its retrieval model; for a setup registered from a flow, run *RAG - Register Setup* again ([After an upgrade](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#after-an-upgrade)).
+13. Once the Prompt Builder shows your setups, delete the report `RAG Builder` and the job definition `RAG-Builder-UI` ([The retired RAG Builder report](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-retired-rag-builder-report)).
+14. Only where the vector-store user of the ingestion does not own `rag_runs`: its owner runs one ingestion, or a DBA runs `ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0` ([Run history](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#run-history)).
+15. Only for own builds and hand-written URLs: `npm run build:rag` is gone; a URL of the RAG Builder names the Prompt Builder job with `enableRag=true` and `ragComputeContext` ([Serving the RAG Builder](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#serving-the-rag-builder)).
 
-**Logging.** Only for sites that collect the container logs; step 2 brings the programs, the steps and the usage report; the programs now also pull and link the Prompt Builder's records. A refused run of a program now ends as a failed job ([Reading the Job Log](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#reading-the-job-log)). `Log-Parser-Code.sas` needs `_log_append_table` (the step sets it from its checkbox): `1` appends to `LLM_LOGS`, `0` replaces it as 2.2 did, other values are refused; without it a run at a table with rows fails. Copy the table first ([Appending](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#appending)): `proc cas; table.copyTable / table={caslib='Public', name='LLM_LOGS'} casOut={caslib='casuser', name='LLM_LOGS_BEFORE_2_3'}; table.save / table={caslib='casuser', name='LLM_LOGS_BEFORE_2_3'} caslib='casuser' name='LLM_LOGS_BEFORE_2_3' replace=true; quit;`
+**Logging.** Only for sites that collect the container logs; step 2 brings the programs, the steps and the usage report. The programs now also pull and link the Prompt Builder's records, and a refused run ends as a failed job ([Reading the Job Log](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#reading-the-job-log)).
 
-15. Replace your log collection script with the one in [Simplified Logging via a Script](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#simplified-logging-via-a-script) (needs GNU `sed`); if yours appends to one file, start a new file.
-16. Once step 18 is done, delete the log files collected so far, with copies and backups, and rotate the provider keys in use while they were collected: they can hold keys and cookies in clear text. Do not parse them again: with `_log_append_table = 1` their requests are appended a second time.
-17. Only where a flow uses *LLM - Log Parser* or *LLM - Get All Prompts* from another folder than `Logging and Monitoring`: `mdb content-deploy --only "Logging and Monitoring/LLM - Log Parser.step" --to "<path or id of your step>"`, with `--force` where its name differs ([One part, somewhere else](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#one-part-somewhere-else)).
-18. Only where you run the programs, not the steps: keep your settings - `_log_append_table` among them, once the table is copied - in a program of your own that sets them and then includes the shipped file; a setting set before a program runs now wins ([Settings that stay yours](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#settings-that-stay-yours)).
-19. Only to link log rows to models: run collect, parse, pull and link in that order ([Linking the Log to the Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#linking-the-log-to-the-models)); after step 11, the pull again and the link with `_lnk_redo_all = 1`.
+16. Replace your log collection script with the one in [Simplified Logging via a Script](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#simplified-logging-via-a-script) (needs GNU `sed`); if yours appends to one file, start a new file.
+17. Before the first parse with this release, copy `LLM_LOGS` ([Appending](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#appending)):
+    ```
+    proc cas;
+      table.copyTable / table={caslib='Public', name='LLM_LOGS'} casOut={caslib='casuser', name='LLM_LOGS_BEFORE_2_3'};
+      table.save / table={caslib='casuser', name='LLM_LOGS_BEFORE_2_3'} caslib='casuser' name='LLM_LOGS_BEFORE_2_3' replace=true;
+    quit;
+    ```
+18. Only where a flow uses *LLM - Log Parser* or *LLM - Get All Prompts* from another folder than `Logging and Monitoring`: `mdb content-deploy --only "Logging and Monitoring/LLM - Log Parser.step" --to "<path or id of your step>"`, with `--force` where its name differs ([One part, somewhere else](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#one-part-somewhere-else)).
+19. Set `_log_append_table`, which `Log-Parser-Code.sas` now needs: `1` appends to `LLM_LOGS`, `0` replaces it as 2.2 did, other values are refused; without it a run at a table with rows fails. *LLM - Log Parser* sets it from its checkbox.
+20. Only where you run the programs, not the steps: keep your settings, `_log_append_table` among them, in a program of your own that sets them and then includes the shipped file; a setting set before a program runs now wins ([Settings that stay yours](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#settings-that-stay-yours)).
+21. Delete the log files collected so far, with copies and backups, and rotate the provider keys in use while they were collected: they can hold keys and cookies in clear text. Do not parse them again: with `_log_append_table = 1` their requests are appended a second time.
+22. Only to link log rows to models: run collect, parse, pull and link in that order ([Linking the Log to the Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#linking-the-log-to-the-models)); after step 12, the pull again and the link with `_lnk_redo_all = 1`.
 
 A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. The Prompt Builder opens with RAG off until **Enable RAG setups** is ticked.
 
@@ -50,16 +59,14 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 
 - **RAG setups in the Prompt Builder.** The Setup card offers a prompt template, a decision template or a RAG setup, which opens the four RAG steps. Each side keeps its state and running jobs while the other is shown.
 - **Three switches decide what the Prompt Builder offers.** **Enable decision templates** (`enableDecision`, on by default), **Enable prompt optimization (DSPy)** (`enableOptimization`, off) and **Enable RAG setups** (`enableRag`, off). A feature that is off shows nothing and asks SAS Viya for nothing. With RAG on and a repository set, a site needs no LLM project.
-- **Manifested models can skip TLS verification.** **Verify TLS certificates in manifested models** (`sslVerify`, ticked by default) applies to every model the Prompt Builder manifests that makes HTTPS calls. Unticked, the model is tagged `TLS-Verification-Off` after a warning; existing models keep their setting until manifested again. Meant for test systems; for SAS Micro Analytic Service see step 5 of the upgrade.
+- **Manifested models can skip TLS verification.** **Verify TLS certificates in manifested models** (`sslVerify`, ticked by default) covers every model the Prompt Builder manifests; unticked, the model is tagged `TLS-Verification-Off`. Existing models keep their setting until manifested again. For test systems; for SAS Micro Analytic Service see step 5 of the upgrade.
 - **`RAG - Register Setup` has the same switch** in its *Runtime* section, ticked by default, also for a flow that passes no value; unticked, it registers the model with `SSL_VERIFY = False` and the tag `TLS-Verification-Off`.
 - **The content folder ships as one transfer package, built from a list.** `SAS-Viya-Integrations/package-manifest.yaml` names every object that ships; nothing else is deployed or exported. `SAS-Agentic-AI-Accelerator.json` replaces the four packages of earlier releases.
 - **`mdb content-deploy` brings a content folder to the state of the checkout.** It updates objects in place, keeping their ids, stops at the first failed write, deletes nothing, and writes `release.json` and `Data/ACCELERATOR_RELEASES.csv` (`--content-root`, `--dry-run`, `--compute-context`). `--only <path> --to <path, id or URI>` updates one object a site keeps elsewhere (`--force`, `--create`).
-- **`mdb package-check` compares the package with the checkout.** It refuses rules, shares, hosts and user ids. With `--release` every difference is an error; otherwise a content difference is a `drift:` line. `--fix` repairs hosts, states, defaults and user ids.
-- **`mdb builders-import` keeps the report options by itself.** Without `--options` it saves those of the Prompt Builder (and `RAG Builder`) report to `builder-options-captured-<time>.json` and restores them after the import.
-  - Only the reports go through the transfer service; everything else is written in place, keeping its id.
-  - New: `--content-root`, `--no-reports`, `--compute-context`, `--no-options-capture`, `--report-caslib`, `--out`, `--no-files`.
-  - It writes the authorization commands to `sas-viya-cli-content-commands.txt` and does not run them.
-  - An incomplete run ends with exit code 1 and the command to repeat.
+- **`mdb builders-import` keeps the report options by itself.** Without `--options` it saves them to `builder-options-captured-<time>.json` and restores them after the import.
+  - Only the reports go through the transfer service; the rest keeps its ids. An incomplete run ends with exit code 1.
+  - New: `--content-root`, `--create`, `--no-reports`, `--compute-context`, `--no-options-capture`, `--report-caslib`, `--out`, `--no-files`.
+- **`mdb builders-import --report-caslib <library>` binds the reports' other tables to that CAS library.** `LLM_LOGS`, the fact sheets and `PROMPT_EXPERIMENTS` follow it; without it they stay bound to `Public`. It replaces the search and replace in the package file that 2.2 needed.
 - **`mdb options-save` and `options-restore` fold the retired RAG Builder report into the Prompt Builder section**, also from a file saved with 2.2.x, and take `--content-root`.
 - **Start Here checks an installation.** A page at the root of the content folder links the reports and guides and marks each part - content, tables, projects, report options, Python packages, publishing destinations, compute contexts - `ok`, `missing` or `not checked`, with what to do. It only reads and shows no token.
 - **Load-Accelerator-Tables loads the report tables without the command line.** The job loads `ACCELERATOR_RELEASES` and the three fact sheets into its `caslib` (default `Public`), promoted and saved, and answers with a page of what it loaded. It replaces no table that is not a release table.
@@ -80,6 +87,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **The RAG Builder is part of the Prompt Builder.** One bundle, one job definition (`SAS-LLM-Prompt-Builder-UI`), one report and one Options pane serve all three kinds; names, paths, URLs and saved `builder-options.json` files keep working.
 - **The ingestion has its own compute context option**, `ragComputeContext` (**RAG: ingestion compute context**); `computeContext` stays the optimization job's. A blank URL value is the default, and the parameter `id` is no longer read.
 - **`mdb package-export` keeps only what the manifest lists** and ships neutral report defaults with no host and no user id. `--folder` is now `--content-root`, `--exclude` is gone, and `--allow-differences` and `--keep-user-ids` need `--out`.
+- **`mdb package-check` also compares the package with the checkout.** Beyond hosts it refuses rules, shares and user ids, and reports a content difference as a `drift:` line, an error with `--release`. `--fix` also repairs states, defaults and user ids; `--allow-missing` passes while the checkout holds no package file of this release.
 - **`mdb` keeps the settings a site gave its job definitions**, such as `_contextName` and `contentRoot`, through deploys and imports. `mdb builders-import` gives `ragComputeContext` of the options to a job definition it creates or that has no `_contextName`; `--compute-context` sets it everywhere.
 - **`mdb setup` writes one seed file**, `llm-prompt-builder.json`, now with `embeddingProjectID`.
 - **`deploy-rag-content.ps1` / `.sh` call `mdb content-deploy --only RAG --to <RAG content root>`** and need the Model Definition Builder installed.
@@ -87,12 +95,12 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **`mdb` checks credential-domain entry names.** `auth.key_name` and the `API_KEY` default in `options.json` may only hold letters, digits, `.`, `_` and `-`, as the SAS code does not find a name like `Azure OpenAI` (step 7 of the upgrade).
 - **The release table files RAG Builder changes and 14 earlier entries under other components.**
 - **The TLS variables of a manifested prompt, decision template or retrieval model switch verification on as well as off:** `true`, `yes` or `1` in `LLMCONTAINERSSLVERIFY`, `RAGEMBED_SSLVERIFY` or `RAGSTORE_SSLVERIFY` switch it on.
-- **The retrieval model prefers the endpoint it was manifested with** to `SAS_SERVICES_URL` (step 11 of the upgrade).
+- **The retrieval model prefers the endpoint it was manifested with** to `SAS_SERVICES_URL` (step 12 of the upgrade).
 - **The log collection script redacts keys, cookies and tokens** (`Cookie`, `Authorization`, `X-CSRF-TOKEN`), reads the model pods only and marks each container's lines; the parser redacts keys in `options` too.
 - **The log parser appends each request once** and writes nothing when nothing is new; `_log_append_table` has no default.
 - **`Get-All-Prompts.sas` reads SAS Model Manager in PROC PYTHON** (`requests`), as the log parser already runs Python. The WORK tables `_gap_all_projects`, `_gap_all_models` and `_gap_all_experiments` are gone.
-- **Settings of the logging programs survive a new file:** a value set before a program runs wins (step 18 of the upgrade).
-- **The RAG ingestion job ends as failed when a run fails, and publishes its run history** (`<prefix>_RUNS`, `<prefix>_DOC_EVENTS`) to CAS. A setup's job has this once the setup is manifested again (step 11 of the upgrade).
+- **Settings of the logging programs survive a new file:** a value set before a program runs wins (step 20 of the upgrade).
+- **The RAG ingestion job ends as failed when a run fails, and publishes its run history** (`<prefix>_RUNS`, `<prefix>_DOC_EVENTS`) to CAS. A setup's job has this once the setup is manifested again (step 12 of the upgrade).
 - **The retrieval model gets the same variable lengths** from the Prompt Builder and from `RAG - Register Setup`.
 - **`Load-Fact-Sheets.sas` replaces a table only with a sheet that was read.**
 - **Decision runs in the Prompt Builder: the box that Manifest takes is called *Best Decision Model*,** one per run.
@@ -101,23 +109,26 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 
 ### Fixed
 
-- **A decision template manifested in the Prompt Builder can be scored.** The score code of 2.2.0 was not valid Python; the designer now also refuses question names the code cannot use (step 9 of the upgrade).
+- **A decision template manifested in the Prompt Builder can be scored.** The score code of 2.2.0 was not valid Python; the designer now also refuses question names the code cannot use (step 10 of the upgrade).
 - **A self-hosted model loads its weights once per worker, not on every call.** The `dec_von`, `hf_transformers`, `emb_sentence_transformers` and `hf_onnx` templates keep the model loaded per worker under a lock. The 14 self-hosted definitions are regenerated: publish them again (step 6 of the upgrade).
-- **A call without the `API_KEY` option fails with a message that names the option**, not a bare traceback marker. The 37 definitions that send a key are regenerated; republish and scale a container to 0 and back to 1 to get it.
+- **A call without the `API_KEY` option fails with a message that names the option**, not a bare traceback marker. The 37 definitions that send a key are regenerated: republish them and restart their Deployment, or scale it to 0 and back to 1 where a node lacks the CPU for a second pod.
 - **`stage-weights-job-template.yaml` names its Job validly**, and the five decision definitions, `von_1_2` among them, name the accelerator as modeler.
-- **Prompt Builder: an LLM run sends the options as `options.json` says, or the model is not offered.** Refused, also by `mdb`: a name with a comma, a colon, or a blank or quote at its ends; a text with a comma or one the score code reads otherwise; a number sent as 1e-7 or 1e+21. Such a typed value is marked and not sent.
+- **Prompt Builder: an LLM run sends the options as `options.json` says, or the model is not offered.** Refused, also by `mdb`: names with a comma, a colon or an outer blank or quote; texts with a comma or that the score code reads otherwise; numbers sent as 1e-7 or 1e+21. A typed value is marked, not sent.
 - **Prompt Builder: Save Experiments and Load keep the options as the run sent them**; an option named `model` or `options` no longer hits another control.
 - **Prompt Builder: writes to SAS Model Manager are reported as they ended.** A refused or unanswered write is failed or read back, not done. A failed read no longer counts as empty, so stored runs and setups are not overwritten. Trackers are replaced in one upload; listings read every page; writes do not overlap.
 - **Prompt Builder: saved prompts and model names are drawn as text, not markup.** A stored prompt could run script in the page of whoever opened it. The page also sends no `Referer` to other sites.
+- **Prompt Builder: a decision template made in 2.2.0 stays in the decision view after a reload.** The kind is read from the model's `algorithm` (`Decision-Template`), which SAS Model Manager keeps, not only from a tag it drops.
+- **Prompt Builder: prompt-tests record their modeler**, the signed-in user. Existing ones are not changed.
 - **Prompt Builder: a new prompt-test, decision template or RAG setup starts empty** (issue #47). Create dialogs refuse an empty name, and the optimization switch shows what is stored.
 - **Prompt Builder: a run keeps the answers of the models that answered.** A judge asks for at least 4000 output tokens; **Evaluate** works on the first click over a CAS table and counts a failed call as not answered. Variable names the score code cannot use are refused, and a Call LLM node prompt sends valid JSON.
 - **Prompt Builder: RAG setups** embed documents and questions at one endpoint (**SCR endpoint**, else `<SAS Viya host>/llm`), keep a vector database no longer offered, and show each ingestion run with its result. Set the option where the page's address is not reachable from the compute session.
-- **The prompt optimization job stops before its first model call where its session is not the user's** (step 8 of the upgrade); its errors name the HTTP status.
+- **The prompt optimization job stops before its first model call where its session is not the user's** (step 9 of the upgrade); its errors name the HTTP status.
 - **RAG runtime: run history, ledger and run lock.**
-  - The run history is recorded again (step 13 of the upgrade).
+  - The run history is recorded again (step 14 of the upgrade).
   - A saved ledger survives a restart of the CAS server.
   - A failed run no longer locks the ledger for 30 minutes.
   - *RAG - Register Setup* creates a missing project; its flow jobs fail when a step fails.
+- **The retrieval model strips the blanks a decision pads its inputs with.** A blank `k`, `retrieval_mode` or `filter_json` means the default and no longer fails the call. Publish the decisions that use the model again (step 12 of the upgrade).
 - **The guides give the order in which the retrieval model looks for vector-store credentials:** the call's `options`, the environment, then the credentials service.
 - **The RAG steps log readably:** *RAG - Embed Chunks* 1.5, *RAG - Enrich Chunks* 1.2, the others 1.4. `rag_core` knows the key entries and prices of GPT-6 and Claude 5.5.
 - **The log parser (*LLM - Log Parser* 2.13)** reads a log without requests, failed requests, embedding tokens and decision calls, and keeps the saved table on append.
@@ -132,7 +143,8 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
   - No traceback shows the values of a credential.
   - Ids and domains hold printable ASCII only, and values YAML reads otherwise (`id: 0123`) are refused.
   - The guide and `credentials.example.yaml` equip `LLMConsumers`.
-- **SAS code that calls an LLM reads the provider key and no longer leaves it in a file.** Code from *LLM - Create LLM Call* 1.7, *LLM - Get Options* 1.6 and `Create-LLM-Call.sas` reads the key from the credential domain without logging it, and deletes the request file after every call (step 7 of the upgrade). Code you keep needs `filename llmIn clear;` after its PROC HTTP step.
+- **SAS code that calls an LLM reads the provider key and no longer leaves it in a file.** Code from *LLM - Create LLM Call* 1.7, *LLM - Get Options* 1.6 and `Create-LLM-Call.sas` logs no key and deletes the request file after each call (step 8 of the upgrade). Code you keep needs `filename llmIn clear;` after PROC HTTP.
+- **The generated SAS call code reads the credential domain `agentic-ai-keys`.** A site with another domain edits the line `%let API_KEY_DOMAIN=agentic-ai-keys;`.
 - **MM steps read a model with the properties it has:** *MM - Get Model Information* 1.2; *LLM - List Available LLMs* and the other *MM* steps are 1.1.
 - **The Prompt Builder build takes source-map-js 1.2.2 and drops vite-plugin-singlefile**; `npm audit` reports 0 vulnerabilities.
 - **Documentation:** the guides say how the collected log file reaches the SAS compute server and how to recognise an execution that SAS Micro Analytic Service ended after 30 seconds.
@@ -140,7 +152,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 ### Removed
 
 - **The standalone build of the RAG Builder** (`npm run build:rag`, `npm run dev:rag`, `rag.html`, `dist-rag/rag.html`).
-- **The report `RAG Builder` and the job definition `RAG-Builder-UI`**; `mdb` does not delete them (step 12 of the upgrade).
+- **The report `RAG Builder` and the job definition `RAG-Builder-UI`**; `mdb` does not delete them (step 13 of the upgrade).
 - **The four package files of earlier releases**: `SAS-Agentic-AI-Accelerator-Prompt-Builder.json`, `SAS-Agentic-AI-Accelerator-RAG-Builder.json`, `SAS Agentic AI Accelerator.json` and `Logging-Monitoring/LLM Usage Report.json`, which carried a share and a rule naming users. `mdb` no longer knows them; the commit that adds the one package removes them.
 - **The `rag-builder.json` seed and the RAG Builder section of `builder-options.json`**; an old file is still folded.
 - **The `component` value `RAG Builder` of the release table.**

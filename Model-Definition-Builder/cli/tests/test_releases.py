@@ -128,6 +128,28 @@ def test_rows_carry_ranks_current_flag_and_plain_text():
     assert [r["item_rank"] for r in two] == [0, 1, 2, 3, 4, 5]
 
 
+def _one_entry(body: str) -> dict:
+    rows = rows_from(parse_changelog(f"# Changelog\n\n## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- {body}\n"))
+    return next(r for r in rows if r["change_type"] == "Fixed")
+
+
+def test_a_long_first_sentence_is_cut_at_a_word_and_says_so():
+    words = " ".join(f"word{i}" for i in range(40))
+    row = _one_entry(f"A first sentence without a bold lead, {words}. A second sentence.")
+    summary = row["summary"]
+    assert summary.endswith("...") and not summary.endswith("....") and len(summary) <= 140
+    head = summary[:-3]
+    plain = row["detail"]
+    # a cut at a word: what follows the kept part in the text is a blank
+    assert plain.startswith(head) and plain[len(head)] == " "
+    assert plain.endswith("A second sentence.")
+    # a sentence that fits keeps its words, without an ellipsis or a full stop
+    assert _one_entry("A short first sentence. And more.")["summary"] == "A short first sentence"
+    # one word longer than the column is cut where the column ends
+    long_word = _one_entry("x" * 200 + ".")["summary"]
+    assert long_word == "x" * 137 + "..."
+
+
 def test_components_put_builder_changes_where_a_filter_finds_them():
     rows = rows_from(parse_changelog(SAMPLE))
     by_summary = {r["summary"]: r["component"] for r in rows}
@@ -704,6 +726,29 @@ def test_no_upgrade_row_of_the_release_table_is_a_fragment_of_markdown(tmp_path)
     assert "mdb builders-import" in by_summary["Everyone"]
     assert "Manifest setup" in by_summary["RAG"] and "log collection script" in by_summary["Logging"]
     assert "Manifest each of those decision templates again" in by_summary["Decision models"]
+
+
+def test_a_folded_step_keeps_its_number():
+    """The steps fold into the row of their block, and the text says "step 2"
+    or "after step 12": the number stays in front of its step, so that such a
+    reference can be followed on the report's Changelog page."""
+    upgrade = parse_changelog(SAMPLE)[0].items[0]["text"]
+    assert "1. `mdb options-save`" in upgrade and "2. `mdb builders-import --options" in upgrade
+    breaking = parse_changelog(SAMPLE)[1].items[0]["text"]
+    assert "1. Sign in with the CLI. 2. Run the script." in breaking
+    # a step number is no end of a sentence: the headline is not cut at it
+    row = next(r for r in rows_from(parse_changelog(SAMPLE)) if r["change_type"] == "Upgrade")
+    assert row["summary"].startswith("Save the options, then import: 1. mdb options-save 2. mdb builders-import")
+
+
+def test_every_step_the_upgrade_rows_name_is_in_them(tmp_path):
+    rows, _ = build_release_table(REPO / "CHANGELOG.md", tmp_path / "releases.csv")
+    details = "\n".join(dict.fromkeys(r["detail"] for r in rows if r["version"] == "2.3.0"
+                                      and r["change_type"] == "Upgrade" and r["summary"] in UPGRADE_BLOCKS))
+    numbers = [int(n) for n in re.findall(r"(?:^|\s)(\d+)\. \S", details)]
+    assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) > 10, numbers
+    named = {int(n) for n in re.findall(r"\bsteps? (\d+)\b", details)}
+    assert named and named <= set(numbers), (sorted(named), len(numbers))
 
 
 def test_a_step_of_the_upgrade_that_an_entry_names_exists():

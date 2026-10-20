@@ -20,7 +20,9 @@ Parsing follows the changelog's own conventions (keep-a-changelog style):
                                  verbatim in `section`, normalised in `change_type`
                                  ("Breaking" / "Upgrade" for sections named so)
     - **Lead.** detail           one row; the bold lead is the summary
-      - nested / 1. numbered     folded into the parent's detail
+      - nested / 1. numbered     folded into the parent's detail; a numbered
+                                 step keeps its number ("2. ..."), which other
+                                 entries name ("step 2 of the upgrade")
     paragraph under a heading    one row as well (the 2.0.0 breaking-change note)
 
 Each change gets ONE component. When the section heading names a component
@@ -194,7 +196,13 @@ _RELEASE = re.compile(r"^## \[(?P<version>[^\]]+)\]\s*-\s*(?P<date>.+?)\s*$")
 _SECTION = re.compile(r"^### (?P<title>.+?)\s*$")
 _BULLET = re.compile(r"^- (?P<text>.*)$")
 _NESTED = re.compile(r"^\s{2,}- (?P<text>.*)$")
-_NUMBERED = re.compile(r"^\s*\d+\.\s+(?P<text>.*)$")
+_NUMBERED = re.compile(r"^\s*(?P<number>\d+)\.\s+(?P<text>.*)$")
+#: The end of a sentence - but not the number of a step folded into the text
+#: ("... import: 1. mdb options-save 2. ..."), which is preceded by a blank.
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\s\d\.)(?<!\s\d\d\.)\s+")
+#: The longest summary taken from a first sentence; a longer one is cut at a
+#: word and ends with "...".
+SUMMARY_MAX = 140
 _LEAD = re.compile(r"^\*\*(?P<lead>.+?)\*\*\s*(?P<rest>.*)$", re.S)
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _EMOJI = re.compile(r"[☀-➿\U0001F300-\U0001FAFF️]")
@@ -226,11 +234,16 @@ def _split(text: str, capped: bool = True) -> tuple[str, str]:
     if m:
         return _plain(m.group("lead")).rstrip(".:"), _plain(m.group("rest"))
     plain = _plain(text)
-    sentence = re.split(r"(?<=[.!?])\s+", plain, maxsplit=1)
+    sentence = _SENTENCE_END.split(plain, maxsplit=1)
     summary = sentence[0]
-    if capped and len(summary) > 140:
-        summary = summary[:137].rstrip() + "..."
-    detail = plain if len(sentence) > 1 or summary != plain else ""
+    detail = plain if len(sentence) > 1 else ""
+    if capped and len(summary) > SUMMARY_MAX:
+        # cut at the last word that fits, and say so: the ellipsis is part of
+        # the summary, not a full stop to strip
+        head = summary[:SUMMARY_MAX - 2]
+        space = head.rfind(" ")
+        head = head[:space] if space > SUMMARY_MAX // 2 else summary[:SUMMARY_MAX - 3]
+        return head.rstrip(" ,;:.-(") + "...", plain
     return summary.rstrip("."), detail
 
 
@@ -364,9 +377,14 @@ def parse_changelog(text: str) -> list[Release]:
             continue
         if not line.strip():
             continue
-        m = _NESTED.match(line) or _NUMBERED.match(line)
+        m = _NESTED.match(line)
         if m and section and current.items:
             current.items[-1]["text"] += " " + m.group("text").strip()
+            continue
+        m = _NUMBERED.match(line)
+        if m and section and current.items:
+            # the step keeps its number: other text says "step 2" or "after step 11"
+            current.items[-1]["text"] += f" {m.group('number')}. {m.group('text').strip()}"
             continue
         m = _BULLET.match(line)
         if m:

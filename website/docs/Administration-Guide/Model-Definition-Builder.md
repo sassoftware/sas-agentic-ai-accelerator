@@ -402,7 +402,7 @@ entry of the Prompt Builder, one per part of the Builder it concerns, with:
 | `release_rank`, `item_rank` | 1 = newest release; the entry's position within it, so a report can order without dates |
 | `section`, `change_type` | the heading as written and its normalised kind: Added, Changed, Fixed, Removed, Breaking, Upgrade, Release |
 | `component` | Prompt Builder, RAG runtime, Credentials, Model Definition Builder, Definitions, Documentation or General - from the section heading when it names one, else from the entry's wording. Entries about the RAG Builder are filed under Prompt Builder, which it is part of, and no entry of a release before 2.0.0 is filed under RAG runtime. An entry whose headline is about the release table itself is filed under Model Definition Builder, and an entry that adds definitions under Definitions when its headline names them and nothing of `mdb` |
-| `summary`, `detail` | the entry's bold lead (or its first sentence, of which only the beginning is kept when it is longer than 140 characters) and the rest, as plain text |
+| `summary`, `detail` | the entry's bold lead (or its first sentence, cut at a word and ended with `...` when it is longer than 140 characters) and the rest, as plain text; numbered steps keep their numbers, so that "step 2" can be found |
 | `builder_part` | the part of the Prompt Builder an entry concerns: `Prompt`, `Decision` or `RAG`; empty for the release intro and for every component other than Prompt Builder and RAG runtime. The last column |
 
 It exists because a SAS Visual Analytics Data-Driven Content object needs a
