@@ -186,6 +186,31 @@ def stamp_usage(rows: list, usage) -> list:
     return rows
 
 
+#: How usage_text names each measurement of a usage tally, in its order.
+_USAGE_WORDS = (("calls", "calls"), ("tokens", "tokens"), ("input_tokens", "input tokens"),
+                ("output_tokens", "output tokens"), ("failed", "failed"))
+
+
+def usage_text(usage) -> str:
+    """A usage tally the way the log line of a step says it.
+
+    "2 calls, 116 tokens, 0.03 seconds". The tally is a dict, and the log
+    line held it as Python prints one: {'calls': 2, ...}. The steps hand
+    every message to SAS through a sanitiser that takes quotes out, so the
+    line read "usage { calls : 2, ...}". A measurement this function does
+    not know is said with its name.
+    """
+    usage = dict(usage or {})
+    parts = []
+    for key, words in _USAGE_WORDS:
+        if key in usage:
+            parts.append(f"{usage.pop(key)} {words}")
+    if "run_time" in usage:
+        parts.append(f"{float(usage.pop('run_time') or 0):.2f} seconds")
+    parts.extend(f"{key} {value}" for key, value in sorted(usage.items()))
+    return ", ".join(parts) if parts else "none"
+
+
 #: The enrichment measurements that ADD UP across several prompts.
 _ENRICH_TALLIES = ("calls", "input_tokens", "output_tokens", "run_time", "failed")
 
@@ -440,7 +465,12 @@ def run_list(source, ledger_rows: list, run_id: str,
     counts: dict = {}
     for row in inventory:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
-    log(f"rag list: {len(inventory)} documents ({counts})")
+    # the counts as words, not as a dict: its quotes did not survive the way
+    # into the SAS log. In parentheses, so that the line is not read as the
+    # summary of a run ("documents failed=1, ingested=2"), which the Prompt
+    # Builder finds by the counts behind the word documents
+    said = ", ".join(f"{status}={number}" for status, number in counts.items())
+    log(f"rag list: {len(inventory)} documents ({said})")
     log_skipped(inventory, log)
     return inventory
 
@@ -634,10 +664,14 @@ def run_chunk(elements: list, inventory: list, chunker: str, input_token_limit: 
     # Say where the budget came from. "budget 435" on its own reads like a
     # limit the pipeline imposed; it is the chunk window the SETUP asked for,
     # minus the estimator's safety margin, and it is unrelated to how many
-    # tokens the embedding model could accept.
+    # tokens the embedding model could accept. The sentence holds no quote
+    # and no percent sign: the steps hand it to SAS through a sanitiser that
+    # replaces both, and "the setup's ... x 85%" reached the log as
+    # "the setup s ... x 85  safety margin".
     log(f"rag chunk: {len(all_chunks)} chunks from {len(by_doc)} documents "
-        f"(budget {budget} tokens = the setup's {input_token_limit}-token "
-        f"chunk window x {margin:.0%} safety margin)")
+        f"(budget {budget} tokens: {margin * 100:.0f} percent of the chunk "
+        f"window of {input_token_limit} tokens the setup asks for, the rest "
+        f"is a safety margin)")
     return all_chunks
 
 
@@ -686,7 +720,7 @@ def run_embed(chunks: list, client, already_embedded: set = frozenset(),
     if checkpoint and pending_checkpoint:
         checkpoint(list(pending_checkpoint))
     log(f"rag embed: {len(embedded)} embedded, {len(failed)} failed, "
-        f"usage {client.usage}")
+        f"usage: {usage_text(client.usage)}")
     return embedded, failed
 
 

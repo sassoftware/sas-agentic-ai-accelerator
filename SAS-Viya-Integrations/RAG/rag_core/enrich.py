@@ -859,8 +859,11 @@ def run_enrich(chunks: list, prompt: PromptModel, mapping: dict,
             f"{MAX_HEADER_CHARS} characters were cut to fit - the prompt is "
             "asking for more text than a header can carry")
     enriched = len(todo) - len(failures)
+    # the tally as words: a dict printed as Python writes it lost its quotes
+    # on the way into the SAS log (see steps.usage_text)
+    from .steps import usage_text
     log(f"{tag} {enriched} chunks enriched, {len(failures)} failed, "
-        f"usage {prompt.usage}")
+        f"usage: {usage_text(prompt.usage)}")
     if failures:
         # Named, not just counted: a collection where a tenth of the chunks
         # have no header retrieves differently from one where all of them do,

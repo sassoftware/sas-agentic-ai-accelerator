@@ -267,7 +267,8 @@ def test_the_scan_meets_an_error_line_that_resolves_a_macro_variable():
 
 
 def _newest_changelog(name):
-    """The newest entry of the changelog on a step's About tab."""
+    """The entry of 11OCT2026 of the changelog on a step's About tab - the
+    newest one until the version of 20OCT2026 came above it."""
     def find(node):
         if isinstance(node, dict):
             if node.get("id") == "textChangelog":
@@ -280,7 +281,9 @@ def _newest_changelog(name):
                     return found
         return None
     step = json.loads((STEPS / (name + ".step")).read_text(encoding="utf-8"))
-    return find(json.loads(step["ui"])).split("\n* Version: ")[0]
+    changelog = find(json.loads(step["ui"]))
+    return next(("* Version: " + entry).rstrip("\n") for entry in changelog.split("* Version: ")[1:]
+                if entry.split("\n", 1)[0].endswith("(11OCT2026)"))
 
 
 @pytest.mark.parametrize("name", sorted(RAG_STEPS))

@@ -68,9 +68,14 @@ def main():
     import traceback
 
     def sas_safe(text):
+        # Each such character becomes one that reads the same, as in the
+        # logging programs: the setup`s window, 85pct, R+D. A blank in its
+        # place lost what the message said. The two comment marks are put
+        # together from their halves, so that this block holds neither.
         cleaned = str(text)
-        for ch in ("'", '"', "%", "&", ";"):
-            cleaned = cleaned.replace(ch, " ")
+        for bad, good in (("'", "`"), ('"', "`"), ("%", "pct "), ("&", "+"),
+                          (";", ","), ("/" + "*", "/ *"), ("*" + "/", "* /")):
+            cleaned = cleaned.replace(bad, good)
         return cleaned
 
     def M(msg):

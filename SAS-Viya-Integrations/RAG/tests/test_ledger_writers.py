@@ -391,6 +391,15 @@ def _changelog(name):
     return find(json.loads(_step(name)["ui"]))
 
 
+def _entry_of_the_day(changelog, day):
+    """The entry of a changelog whose version line names the day, as the
+    newest entry was read before a later one stood above it."""
+    for entry in changelog.split("* Version: ")[1:]:
+        if entry.split("\n", 1)[0].endswith("(%s)" % day):
+            return ("* Version: " + entry).rstrip("\n")
+    return ""
+
+
 @pytest.mark.parametrize("name,version", [
     ("RAG - Chunk Documents", "1.3"), ("RAG - Embed Chunks", "1.4"),
     ("RAG - Enrich Chunks", "1.1"), ("RAG - Extract Text", "1.3"),
@@ -403,7 +412,8 @@ def test_the_about_page_of_a_step_says_what_changed(name, version):
     registered - the one place to see, on a site, whether the step with the
     lock that follows the ledger has arrived."""
     changelog = _changelog(name)
-    newest = changelog.split("\n* Version: ")[0]
+    # the entry of that version; the version of 20OCT2026 stands above it
+    newest = _entry_of_the_day(changelog, "11OCT2026")
     assert newest.startswith("* Version: %s (11OCT2026)\n      - " % version)
     assert "NOTE about a quoted string of more than 262 bytes" in newest
     assert ("The run lock is declared the way the ledger holds its text "
