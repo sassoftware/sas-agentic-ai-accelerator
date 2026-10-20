@@ -102,7 +102,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Settings of the logging programs survive a new file:** a value set before a program runs wins (step 20 of the upgrade).
 - **The RAG ingestion job ends as failed when a run fails, and publishes its run history** (`<prefix>_RUNS`, `<prefix>_DOC_EVENTS`) to CAS. A setup's job has this once the setup is manifested again (step 12 of the upgrade).
 - **The retrieval model gets the same variable lengths** from the Prompt Builder and from `RAG - Register Setup`.
-- **`Load-Fact-Sheets.sas` replaces a table only with a sheet that was read.**
+- **`Load-Fact-Sheets.sas` replaces a table only with a sheet that was read; Load-Accelerator-Tables replaces the release table the same way.** If a promote is refused, the table in memory is kept, or loaded again from its saved file. The WARNING says whether this run dropped the table, found none, or could not drop it.
 - **Decision runs in the Prompt Builder: the box that Manifest takes is called *Best Decision Model*,** one per run.
 - **German: the prompt part of the Prompt Builder says "manifestieren" too.**
 - **Claude 5.5 definitions send no sampling options:** `mdb add` writes `reasoning_effort` (`medium`) and `max_tokens` 4000. The live Anthropic catalog reads each model's limits; catalog prices are rounded to 12 significant digits.
@@ -122,7 +122,8 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Prompt Builder: a new prompt-test, decision template or RAG setup starts empty** (issue #47). Create dialogs refuse an empty name, and the optimization switch shows what is stored.
 - **Prompt Builder: a run keeps the answers of the models that answered.** A judge asks for at least 4000 output tokens; **Evaluate** works on the first click over a CAS table and counts a failed call as not answered. Variable names the score code cannot use are refused, and a Call LLM node prompt sends valid JSON.
 - **Prompt Builder: RAG setups** embed documents and questions at one endpoint (**SCR endpoint**, else `<SAS Viya host>/llm`), keep a vector database no longer offered, and show each ingestion run with its result. Set the option where the page's address is not reachable from the compute session.
-- **The prompt optimization job stops before its first model call where its session is not the user's** (step 9 of the upgrade); its errors name the HTTP status.
+- **The prompt optimization job stops before its first model call where its session is not the user's** (step 9 of the upgrade).
+- **A failed model call in prompt optimization says why.** The error gives the text the model container raised (such as `No API key: ...`), cut at 300 characters with anything like a key masked, and the transaction id, not only `HTTP 422`.
 - **RAG runtime: run history, ledger and run lock.**
   - The run history is recorded again (step 14 of the upgrade).
   - A saved ledger survives a restart of the CAS server.
@@ -135,6 +136,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **The logging programs** end a refused run as failed, write nothing where CAS gave no answer, and run in the CAS session that is connected.
 - **`mdb load-facts` loads an empty table for a kind without definitions.**
 - **Start Here and Load-Accelerator-Tables run as the person who opens them** (`_contextName`, default `SAS Studio compute context`).
+- **Two Load-Accelerator-Tables runs at the same time no longer end in *Job Error*.** A table the other run just loaded is left as it is, or loaded again from its saved file; the run ends with a WARNING, and its page shows what happened to that table.
 - **`mdb` content commands.** `builders-import` stops before writing when a report on the site cannot be read. `content-deploy` follows no reference and writes neither of two objects of one name. `package-check --release` passes only a full commit id in the history of the checkout; the workflow fails a release tag not on `main`.
 - **`mdb` messages.** An empty option, an unusable `SAS_VIYA_URL` or a failed sign-in ends with one line; values are printed without markup or control characters.
 - **`mdb import <id>` then `mdb import <id> --apply` converges a folder as printed**, and keeps the `azure_openai_env` template: that folder used to become `azure_openai_v1` without a key, whose scorer refused every call.
@@ -144,7 +146,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
   - Ids and domains hold printable ASCII only, and values YAML reads otherwise (`id: 0123`) are refused.
   - The guide and `credentials.example.yaml` equip `LLMConsumers`.
 - **SAS code that calls an LLM reads the provider key and no longer leaves it in a file.** Code from *LLM - Create LLM Call* 1.7, *LLM - Get Options* 1.6 and `Create-LLM-Call.sas` logs no key and deletes the request file after each call (step 8 of the upgrade). Code you keep needs `filename llmIn clear;` after PROC HTTP.
-- **The generated SAS call code reads the credential domain `agentic-ai-keys`.** A site with another domain edits the line `%let API_KEY_DOMAIN=agentic-ai-keys;`.
+- **The generated SAS call code always reads the credential domain `agentic-ai-keys`,** whatever the Prompt Builder's *Credential domain* option says. A site with another domain edits the line `%let API_KEY_DOMAIN=agentic-ai-keys;` of the generated code.
 - **MM steps read a model with the properties it has:** *MM - Get Model Information* 1.2; *LLM - List Available LLMs* and the other *MM* steps are 1.1.
 - **The Prompt Builder build takes source-map-js 1.2.2 and drops vite-plugin-singlefile**; `npm audit` reports 0 vulnerabilities.
 - **Documentation:** the guides say how the collected log file reaches the SAS compute server and how to recognise an execution that SAS Micro Analytic Service ended after 30 seconds.
