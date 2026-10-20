@@ -103,6 +103,38 @@ target:
 
 This transformer adds the variable to the first container of the pod, the main container *sas-microanalytic-score*. Every prompt template reads *LLMCONTAINERPATH* in its Python score code, with or without the included LLM call: a prompt manifested for the *Call LLM* node builds the URL it hands to the node in that code too. Where MAS runs Python in a separate runner container, the score code does not run in the first container — set the variable on the runner as well, as [the variable and the Python runner](#the-variable-and-the-python-runner) below shows.
 
+## The Call LLM node and its id {#call-llm-node-uuid}
+
+A decision references a custom node by its **id**, not by its name: the step of the node holds the address `/decisions/decisionNodeTypes/<id>`, and the code of the node is read from that address every time the decision is tested, its code is generated or it is published. A transfer package of a folder with a decision carries the node it uses, with its id, and an import matches the node by that id alone. Where every site creates the node under an id of its own, a decision built on one site does not find its node on another.
+
+The accelerator ships the *Call LLM* node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`. The content folder holds a decision that uses only this node, so the transfer package carries the node under that id, and a decision built with it on one site imports on another without a mapping.
+
+### A new site
+
+- **The import of the package creates the node** under the id, with the content of the release — see [Install or upgrade with the transfer package](./Setup-Additional-UIs.md#the-transfer-package). An import into a site that has the node under that id already replaces its content in place.
+- **Or run `Create-Custom-SAS-Intelligent-Decisioning-Node.sas`** (folder [`SAS-Intelligent-Decisioning-Integration`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration)). It creates the node under the id. It asks for the id first and creates nothing where the node is there already: the log then names `Update-Custom-SAS-Intelligent-Decisioning-Node.sas`, which brings the content of the node to the one of the release. It creates nothing either where a node named *Call LLM* is there under another id, and its ERROR lines name the migration below. It never sends the request that creates a node for an id that is taken: SAS Viya answers such a request with an error, and renames the node of that id to the name of the request before it does.
+
+`Update-Custom-SAS-Intelligent-Decisioning-Node.sas` looks for the node under the id first. Where no node is there, it updates the node named *Call LLM* and says in a NOTE that the node of the site is not under the shipped id yet.
+
+### A site that has the node under another id
+
+A site that created the node with the program of an earlier release has it under an id of its own. Node names are unique, so the node of the release cannot be created beside it. The migration `mdb decision-node-migrate` moves the site to the shipped id. Run it first as a dry run: it lists the node and every decision that uses it, and changes nothing. A run then:
+
+1. renames the node of the site, so that its name is free;
+2. creates the node under the shipped id, with the content of the node of the site;
+3. moves every decision that uses the old node to the new one, by a transfer re-import of the decision over itself with a mapping of the node from the old id to the new one. This rewrites **every version** of the decision, the locked ones included, and keeps the ids of the versions. An edit in SAS Intelligent Decisioning, or a change over REST, reaches the current version only: a locked version cannot be changed any other way;
+4. keeps the old node. It is deleted only when you ask for it and no version of any decision references it anymore.
+
+Published modules — in SAS Micro Analytic Service or in a SAS Container Runtime image — hold the compiled code of the decision and are not affected: they keep running as they are. A moved decision uses the new node from its next test, code generation or publish on.
+
+**Never delete a node that a decision uses.** SAS Viya does not refuse the delete. It removes the reference to the node from every version of every decision that uses it, the locked ones included: their tests fail with *customObjectURI is null*, and their code cannot be generated. Creating a node under the old id again does not bring the reference back — there is no undo. A transfer re-import of each decision with a mapping to an existing node is the only repair.
+
+### Importing the package on such a site
+
+Where a node named *Call LLM* is there under another id, the import of the package fails for the node with *Decision node type names must be unique* (409), and the decision of the same package is not imported at all — while the import job still ends `completed`. Read the tasks of the job, not only its state. Run the migration before the import.
+
+Measured on 2026-10-20 on the test system with nodes and decisions of a test, not with *Call LLM*: the creation under a chosen id, the rename that a create request for a taken id caused, the delete that cleared the reference in a locked version and the re-import that repaired it, the unaffected MAS module, and the failed import with its skipped decision. A decision moved by the re-import was then checked in SAS Intelligent Decisioning: its current and its locked version ran with the new node.
+
 ## Publishing to SAS Micro Analytic Service: the certificate bundle {#mas-certificate-bundle}
 
 A decision that works in the in-app test of SAS Intelligent Decisioning can fail with a certificate error once it is published to SAS Micro Analytic Service (MAS). The in-app test runs in CAS, where the CA bundle is mounted. MAS can run Python in a container where it is not.
