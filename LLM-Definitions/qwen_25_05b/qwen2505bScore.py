@@ -19,12 +19,38 @@ device = get_device()
 os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
 
 checkpoint = './qwen_25_05b'
-tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-model = AutoModelForCausalLM.from_pretrained(
-    checkpoint,
-    torch_dtype='auto',
-    device_map=device,
+
+# -- The weights: loaded once per worker process -----------------------------
+# The Python runtime of SAS Container Runtime runs this file again for every
+# request (importlib exec_module in app_scoring.new_score), so a model loaded
+# at module level would be read from disk again on each call - seconds to
+# minutes for a checkpoint of a few GB on a network volume. The loaded model
+# is kept in a module of sys.modules instead, which outlives the runs of this
+# file: the first call of a worker loads it, every later call reuses it.
+import types
+_model_cache = sys.modules.setdefault(
+    "_sas_accelerator_model_cache", types.ModuleType("_sas_accelerator_model_cache")
 )
+
+def _cached(key, load):
+    "The value load() returns, computed once per worker process and key."
+    value = getattr(_model_cache, key, None)
+    if value is None:
+        value = load()
+        setattr(_model_cache, key, value)
+    return value
+
+
+def _load_model():
+    loadedTokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    loadedModel = AutoModelForCausalLM.from_pretrained(
+        checkpoint,
+        torch_dtype='auto',
+        device_map=device,
+    )
+    return loadedTokenizer, loadedModel
+
+tokenizer, model = _cached(checkpoint, _load_model)
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(

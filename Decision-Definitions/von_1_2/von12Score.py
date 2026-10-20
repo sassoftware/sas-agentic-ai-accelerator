@@ -17,8 +17,43 @@ from von.backends.option_marker_backend import OptionMarkerBackend
 # The Von checkpoint directory: the ModernBERT encoder, the option-marker head
 # (option_marker.pt) and its calibration (marker_calibration.json).
 checkpoint = '/pybox/model/mount/von_1_2'
-# VON_DEVICE selects the device (cpu by default; cuda / openvino where offered).
-backend = OptionMarkerBackend(checkpoint_dir=checkpoint, device=os.environ.get("VON_DEVICE", "cpu"))
+
+# -- The weights: loaded once per worker process -----------------------------
+# The Python runtime of SAS Container Runtime runs this file again for every
+# request (importlib exec_module in app_scoring.new_score), so a model loaded
+# at module level would be read from disk again on each call - seconds to
+# minutes for a checkpoint of a few GB on a network volume. The loaded model
+# is kept in a module of sys.modules instead, which outlives the runs of this
+# file: the first call of a worker loads it, every later call reuses it.
+import types
+_model_cache = sys.modules.setdefault(
+    "_sas_accelerator_model_cache", types.ModuleType("_sas_accelerator_model_cache")
+)
+
+def _cached(key, load):
+    "The value load() returns, computed once per worker process and key."
+    value = getattr(_model_cache, key, None)
+    if value is None:
+        value = load()
+        setattr(_model_cache, key, value)
+    return value
+
+
+modelVersion = 'von-1.2.0' or "von-1.2.0"
+
+def _load_backend():
+    # VON_DEVICE selects the device (cpu by default; cuda / openvino where offered).
+    loaded = OptionMarkerBackend(checkpoint_dir=checkpoint, device=os.environ.get("VON_DEVICE", "cpu"))
+    # The backend reads its weights lazily: one evaluation loads them here,
+    # so the call that loads the backend answers like every later one.
+    loaded.evaluate(
+        state="warm-up",
+        questions={"ready": {"type": "noul", "instructions": "The model is loaded"}},
+        model=modelVersion,
+    )
+    return loaded
+
+backend = _cached(checkpoint, _load_backend)
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(
@@ -27,13 +62,6 @@ logging.basicConfig(
     format='%(levelname)s - %(message)s'
 )
 logger = logging.getLogger("scoreModel")
-
-# Load the weights at start-up rather than on the first call.
-backend.evaluate(
-    state="warm-up",
-    questions={"ready": {"type": "noul", "instructions": "The model is loaded"}},
-    model=modelVersion if (modelVersion := 'von-1.2.0') else "von-1.2.0",
-)
 
 def _scalar(value):
     """The one value behind an SCR input, whatever the caller's convention.

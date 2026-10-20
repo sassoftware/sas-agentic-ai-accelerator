@@ -16,8 +16,24 @@ from von.backends.option_marker_backend import OptionMarkerBackend
 # The Von checkpoint directory: the ModernBERT encoder, the option-marker head
 # (option_marker.pt) and its calibration (marker_calibration.json).
 checkpoint = '{{ model_path }}'
-# VON_DEVICE selects the device (cpu by default; cuda / openvino where offered).
-backend = OptionMarkerBackend(checkpoint_dir=checkpoint, device=os.environ.get("VON_DEVICE", "cpu"))
+
+{% include "partials/_model_cache.py.j2" %}
+
+modelVersion = '{{ model_version }}' or "von-1.2.0"
+
+def _load_backend():
+    # VON_DEVICE selects the device (cpu by default; cuda / openvino where offered).
+    loaded = OptionMarkerBackend(checkpoint_dir=checkpoint, device=os.environ.get("VON_DEVICE", "cpu"))
+    # The backend reads its weights lazily: one evaluation loads them here,
+    # so the call that loads the backend answers like every later one.
+    loaded.evaluate(
+        state="warm-up",
+        questions={"ready": {"type": "noul", "instructions": "The model is loaded"}},
+        model=modelVersion,
+    )
+    return loaded
+
+backend = _cached(checkpoint, _load_backend)
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(
@@ -26,13 +42,6 @@ logging.basicConfig(
     format='%(levelname)s - %(message)s'
 )
 logger = logging.getLogger("scoreModel")
-
-# Load the weights at start-up rather than on the first call.
-backend.evaluate(
-    state="warm-up",
-    questions={"ready": {"type": "noul", "instructions": "The model is loaded"}},
-    model=modelVersion if (modelVersion := '{{ model_version }}') else "von-1.2.0",
-)
 
 {% include "partials/_options_parser.py.j2" %}
 
