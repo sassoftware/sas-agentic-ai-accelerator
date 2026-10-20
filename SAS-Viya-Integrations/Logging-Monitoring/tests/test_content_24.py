@@ -176,6 +176,9 @@ def _changelog(step):
 def test_the_own_session_is_a_version_of_its_own(step, new, old, session):
     changelog = _changelog(step)
     entries = re.split(r"(?m)^\* Version: ", changelog)[1:]
+    # LLM - Log Parser 2.13 (2026-10-20: the option NOWARN of %symdel) stands in front of 2.12
+    if entries[0].startswith("2.13 (20OCT2026)\n"):
+        entries = entries[1:]
     assert entries[0].startswith(new + " (15OCT2026)\n") and entries[1].startswith(old + " (15OCT2026)\n")
     bullet = "Where the session the option SESSREF names is not connected but %s is" % session
     assert bullet in entries[0] and ("Version %s ran cas %s there" % (old, session)) in entries[0]
@@ -184,4 +187,4 @@ def test_the_own_session_is_a_version_of_its_own(step, new, old, session):
 
 
 def test_the_readme_names_the_versions_of_the_two_steps():
-    assert "The programs of this folder are versions 2.12 and 2.7 of the two steps" in text(LM)
+    assert "The programs of this folder are versions 2.13 and 2.7 of the two steps" in text(LM)
