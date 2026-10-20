@@ -430,7 +430,7 @@
     "promptBuilderJudgeChairmanModelLabel": "Vorsitzmodell",
     "promptBuilderCouncilChairmanNote": "Unentschieden aufgelöst durch Vorsitzmodell {model}.",
     "promptBuilderOptimizeSectionHeading": "Prompt optimieren",
-    "promptBuilderOptimizeSectionDescription": "Verbessere diesen Prompt automatisch mit DSPy. Eine Optimierung speichert den Prompt und startet dann einen SAS-Job-Execution-Job, der die Anweisungen umformuliert und Few-Shot-Beispiele auswählt, um die Metrik zu maximieren — als Trainingsdaten dienen die Läufe, die du als Beste Antwort markiert hast. Das Ergebnis kommt als neuer Prompt-Test zurück, den du prüfst, bewertest und übernimmst — nichts wird automatisch angewendet.",
+    "promptBuilderOptimizeSectionDescription": "Verbessere diesen Prompt automatisch mit DSPy. Eine Optimierung speichert den Prompt und startet dann einen SAS-Job-Execution-Job, der die Anweisungen umformuliert und Few-Shot-Beispiele auswählt, um die Metrik zu maximieren — als Trainingsdaten dienen die Läufe, die du als Beste Antwort markiert hast. Der Lauf erscheint unten im Optimierungsverlauf dieses Prompts; dort lädt „Als Experiment laden“ den optimierten Prompt in die Arbeitsfläche, wo du ihn ausführst, bewertest und manifestierst — nichts wird automatisch angewendet.",
     "promptBuilderOptimizeTargetLabel": "Ziel-LLM",
     "promptBuilderOptimizeTargetPlaceholder": "LLM auswählen, für das optimiert wird",
     "promptBuilderOptimizeDatasetLabel": "Datensatz",

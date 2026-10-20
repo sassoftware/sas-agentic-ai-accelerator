@@ -522,15 +522,29 @@ them.
 run its servers under a **shared service account** instead of the requesting
 user (the stock *SAS Job Execution compute context* often is). A job running
 there resolves the domain as **that service account** — not as the person who
-clicked *Optimize* — so a personal credential is never found, and the job's
-error names the identity it actually resolved as. Two remedies:
+clicked *Optimize* — so a personal credential is never found. Whether a
+context does this is its attribute **runServerAs**, which the answer of
+`GET /compute/contexts/<id>` holds as `attributes.runServerAs`. A context
+without the attribute runs as the requesting user. On SAS Viya 2026.09 the stock *SAS Job Execution compute
+context* has `runServerAs` set to a service account and *SAS Studio compute
+context* has none (read with the REST call on 2026-10-20).
 
-- Grant the credential to the **service account's identity or one of its
-  groups** with the admin script. Be deliberate: every job that runs under
-  that account can then use those keys.
-- Or prepare a **dedicated compute context that runs as the requesting
-  user** and point the app's compute-context Option at it — keys then follow
-  the per-user/group rules above. The Prompt Builder has two such options,
-  one per job: **Optimization: compute context** (`computeContext`) for the
-  prompt-optimization job and **RAG: ingestion compute context**
-  (`ragComputeContext`) for the RAG ingestion and the retrieval test.
+The remedy is a **compute context that runs as the requesting user**: point
+the app's compute-context Option at it, and keys follow the per-user/group
+rules above. The Prompt Builder has two such options, one per job:
+**Optimization: compute context** (`computeContext`) for the
+prompt-optimization job and **RAG: ingestion compute context**
+(`ragComputeContext`) for the RAG ingestion and the retrieval test.
+
+Granting the credential to the **service account's identity or one of its
+groups** with the admin script is no remedy for these two jobs. It makes the
+keys available to every job that runs under that account, and the jobs still
+fail: the optimization job writes its result to the prompt in SAS Model
+Manager, and the service account may not change the prompt of a user - on
+2026-10-20 the job, run under it, made all its model calls and was then
+refused the write with HTTP 403. From release 2.3.0 the optimization job
+compares the user its session runs as with the user who started it and ends
+before its first model call when the two differ; its message names the
+account the session runs as and the option to change. The RAG ingestion
+cannot reuse the CAS session it needs in such a context (see
+[Deploying the Builder UIs](./Setup-Additional-UIs.md#configuration-properties-panel)).

@@ -430,7 +430,7 @@
     "promptBuilderJudgeChairmanModelLabel": "Chairman model",
     "promptBuilderCouncilChairmanNote": "Tie broken by chairman {model}.",
     "promptBuilderOptimizeSectionHeading": "Optimize the prompt",
-    "promptBuilderOptimizeSectionDescription": "Improve this prompt automatically with DSPy. Running an optimization saves the prompt, then launches a SAS Job Execution job that rewrites the instructions and picks few-shot examples to maximise the metric, using the runs you marked as Best Response as training data. The result comes back as a new prompt-test for you to review, judge and accept — nothing is applied automatically.",
+    "promptBuilderOptimizeSectionDescription": "Improve this prompt automatically with DSPy. Running an optimization saves the prompt, then launches a SAS Job Execution job that rewrites the instructions and picks few-shot examples to maximise the metric, using the runs you marked as Best Response as training data. The run joins the Optimization history of this prompt below, where Load as experiment puts the optimised prompt into the workbench for you to run, judge and manifest — nothing is applied automatically.",
     "promptBuilderOptimizeTargetLabel": "Target LLM",
     "promptBuilderOptimizeTargetPlaceholder": "Select the LLM to optimise for",
     "promptBuilderOptimizeDatasetLabel": "Dataset",

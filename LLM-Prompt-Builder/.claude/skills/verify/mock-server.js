@@ -242,6 +242,11 @@ function multipartJson(rawBody) {
     return null;
   }
 }
+// What Optimize-Prompt-DSPy.sas wrote on SAS Viya on 2026-10-20 in the SAS
+// Job Execution compute context, which runs as a service account - with the
+// user of the mock for the user who started it.
+const SESSION_USER_ERROR =
+  'The optimization job runs as sas (to SAS Viya: sas.compute), not as demo, who started it: the compute context SAS Job Execution compute context does not run as the user who starts the job. Point the option Optimization: compute context of the Prompt Builder at one that does, such as SAS Studio compute context. Nothing was called - that account resolves the provider keys and writes the result to the prompt, which it may not.';
 const DSPY_MISSING_ERROR =
   'The Python environment of this compute context lacks the dspy package - install the packages in Prompt-Optimization/requirements.txt into that Python environment, or point the computeContext Option at a prepared context.';
 const optimizedPrompt = {
@@ -691,7 +696,12 @@ http
       if (p === '/__log') return json(res, 200, log);
       if (p === '/__direct') return json(res, 200, directRequests);
       if (p === '/__reset') { log.length = 0; return json(res, 200, {}); }
-      if (p === '/__failjob') { failNextJob = true; return json(res, 200, {}); }
+      if (p === '/__failjob') {
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        failNextJob = body.unwritten ? 'unwritten' : true;
+        return json(res, 200, {});
+      }
       if (p === '/__failmodel') {
         let body = {};
         try { body = JSON.parse(raw); } catch {}
@@ -1382,9 +1392,10 @@ http
       }
       if (p === '/jobExecution/jobs' && req.method === 'POST') {
         if (failNextJob) {
+          const id = failNextJob === 'unwritten' ? 'job-unwritten' : 'job-fail';
           failNextJob = false;
           failJobPolls = 0;
-          return json(res, 201, { id: 'job-fail', state: 'pending' });
+          return json(res, 201, { id, state: 'pending' });
         }
         jobLaunched = true;
         jobPolls = 0;
@@ -1534,6 +1545,27 @@ http
           state: 'failed',
           logLocation: '/files/files/joblog-fail',
           error: { message: 'The job request failed.' },
+        });
+      }
+      if (p === '/jobExecution/jobs/job-unwritten' && req.method === 'GET') {
+        // The job ended before its first model call in a session that does
+        // not run as the user, and could not record its run on the prompt:
+        // it completes, as the job always does, with no tracker entry, and
+        // its reason is in its log only.
+        failJobPolls += 1;
+        if (failJobPolls < 2) return json(res, 200, { id: 'job-unwritten', state: 'running' });
+        return json(res, 200, { id: 'job-unwritten', state: 'completed', logLocation: '/files/files/joblog-unwritten' });
+      }
+      if (p === '/files/files/joblog-unwritten/content') {
+        return json(res, 200, {
+          version: 2,
+          name: 'items',
+          accept: 'application/vnd.sas.compute.log.line',
+          items: [
+            { version: 1, type: 'source', line: '597  %put NOTE: Python-Subprocess - Optimization failed: ' + SESSION_USER_ERROR + ';' },
+            { version: 1, type: 'note', line: 'NOTE: Python-Subprocess - Optimization failed: ' + SESSION_USER_ERROR },
+            { version: 1, type: 'error', line: 'ERROR: Prompt optimization failed: ' + SESSION_USER_ERROR },
+          ],
         });
       }
       if (p === '/files/files/joblog-fail/content') {

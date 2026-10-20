@@ -228,7 +228,7 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
               'computeContext',
               'Optimization: compute context',
               pb.computeContext,
-              'SAS Compute context the optimization job runs in (passed to Job Execution as _contextName). Its Python environment must have dspy installed. Not used by RAG, which has its own ingestion compute context.'
+              'SAS Compute context the optimization job runs in (passed to Job Execution as _contextName). It MUST run as the requesting user: the stock "SAS Job Execution compute context" runs its servers as a service account, which resolves the provider keys as that account and may not write the result to the prompt, so the job ends before its first model call there. "SAS Studio compute context" works. Its Python environment must have dspy installed. Not used by RAG, which has its own ingestion compute context.'
             ),
             textField(
               'optimizeJobProgram',

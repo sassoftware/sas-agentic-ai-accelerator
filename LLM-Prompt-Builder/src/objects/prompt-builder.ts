@@ -6400,6 +6400,19 @@ ${scoreCodeReturn}`;
       if (optimizeUI && optimizeJobIsShown()) optimizeUI.resultBox.innerText = text;
     }
 
+    /**
+     * The reason a job gave in its log for a run that failed: the text of its
+     * last milestone "Optimization failed: <reason>", or '' when it gave none.
+     * The job writes the same reason into its tracker entry, but a job that
+     * may not write to the prompt - a session that does not run as the user
+     * who started it - cannot record one there.
+     */
+    function jobFailureMilestone(milestones: string[]): string {
+      const prefix = 'Optimization failed:';
+      const last = [...milestones].reverse().find((message) => message.startsWith(prefix));
+      return last ? last.slice(prefix.length).trim() : '';
+    }
+
     /** Stop polling the optimization job (finished, failed, or abandoned). */
     function stopOptimizePolling(): void {
       if (optimizePollHandle !== null) {
@@ -6464,18 +6477,23 @@ ${scoreCodeReturn}`;
       setOptimizeJobStatus('');
       updateOptimizeRunLog(progressMessages, true);
       if (job.state === 'completed' || job.state === 'completedWithWarnings') {
-        await showOptimizeResult();
+        await showOptimizeResult(progressMessages);
       } else {
         // The job records its failure reason in the optimization tracker
         // (e.g. "the compute context lacks the dspy package") — prefer that
-        // over Job Execution's generic error message.
-        const read = await readOptimizationEntry();
+        // over Job Execution's generic error message. One that could not
+        // record it said it in its log; the last run of the history is then
+        // another run, and is not taken for this one.
+        const failure = jobFailureMilestone(progressMessages);
+        const read = await readOptimizationEntry(failure !== '');
         const failedEntry = typeof read === 'string' ? null : read;
         const failureDetail = failedEntry?.error
           ? ` ${failedEntry.error}`
-          : job.error?.message
-            ? ` ${job.error.message}`
-            : '';
+          : failure
+            ? ` ${failure}`
+            : job.error?.message
+              ? ` ${job.error.message}`
+              : '';
         showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${failureDetail}`);
         showToast(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}`);
         void refreshOptimizationHistory(true);
@@ -7104,10 +7122,15 @@ ${scoreCodeReturn}`;
      * the source prompt-test and render the outcome (metric before/after, a
      * link to the produced prompt-test, and a load-into-workbench button).
      */
-    async function showOptimizeResult(): Promise<void> {
+    async function showOptimizeResult(milestones: string[] = []): Promise<void> {
       if (!optimizeUI) return;
       if (optimizeJobIsShown()) optimizeUI.resultBox.innerHTML = '';
-      const entry = await readOptimizationEntry();
+      // A job that says in its log that it failed is shown with its own entry
+      // only: one that could not record its run on the prompt (a session that
+      // does not run as the user) has none, and the last run of the history
+      // - an earlier one - is not its result.
+      const failure = jobFailureMilestone(milestones);
+      const entry = await readOptimizationEntry(failure !== '');
       // The result box is that of the prompt-test the job ran for. With
       // another one open the outcome is a toast, and the run is in the
       // history of its own prompt-test the next time that one is opened.
@@ -7121,8 +7144,10 @@ ${scoreCodeReturn}`;
       }
       if (!entry || entry.status !== 'succeeded') {
         // The job completed but its tracker entry is missing/failed — surface
-        // whatever error the entry carries.
-        const entryError = entry?.error ? ` ${entry.error}` : '';
+        // whatever error the entry carries. A job that may not write to the
+        // prompt (a session that does not run as the user) records no entry:
+        // its reason is then the last milestone of its log.
+        const entryError = entry?.error ? ` ${entry.error}` : failure ? ` ${failure}` : '';
         showOptimizeOutcome(`${promptBuilderInterfaceText?.promptBuilderOptimizeJobFailed}${entryError}`);
         return;
       }

@@ -591,7 +591,7 @@ The report stores a switch as the word `true` or `false`. Up to release 2.2 **En
 
 | Properties-panel field | URL parameter | Default | Meaning |
 |---|---|---|---|
-| Optimization: compute context | `computeContext` | *blank* | SAS Compute context the optimization job runs in. Its Python needs `dspy`. Not used by RAG. |
+| Optimization: compute context | `computeContext` | *blank* | SAS Compute context the optimization job runs in. It **must run as the requesting user** — *SAS Studio compute context* does, the stock *SAS Job Execution compute context* does not, and the job ends there before its first model call. Its Python needs `dspy`. Not used by RAG. |
 | Optimization: job path | `optimizeJobProgram` | *blank* | SAS Content path of the optimize job definition, e.g. `/Public/Jobs/Optimize-Prompt-DSPy`. |
 | Optimization: minimum samples | `minOptimizeSamples` | `30` | Minimum dataset rows before an optimization run is allowed; the Optimize panel warns below 50. |
 
@@ -614,7 +614,7 @@ The report stores a switch as the word `true` or `false`. Up to release 2.2 **En
 | RAG: offer SingleStore | `enable_singlestore` | on | As above. |
 
 :::note Two compute contexts, two options
-`computeContext` is the context of the **optimization** job and `ragComputeContext` the context of the **RAG ingestion**; neither is ever read for the other. They are kept apart because they usually cannot be the same context: the optimization job is commonly run in the stock *SAS Job Execution compute context*, which runs its servers as a service account — and an ingestion cannot reuse its CAS session there (see [the two prerequisites](./RAG-Ingestion-and-Retrieval.md#two-prerequisites-that-are-not-optional)). Before release 2.3.0 the RAG Builder's own report called its context `computeContext` too; `mdb options-save` renames it when it carries that report's options over.
+`computeContext` is the context of the **optimization** job and `ragComputeContext` the context of the **RAG ingestion**; neither is ever read for the other. Both have to run as the requesting user: the stock *SAS Job Execution compute context* runs its servers as a service account, where an ingestion cannot reuse its CAS session (see [the two prerequisites](./RAG-Ingestion-and-Retrieval.md#two-prerequisites-that-are-not-optional)) and the optimization job ends before its first model call (see [Enabling Prompt Optimization](./Enabling-Prompt-Optimization.md#1-prepare-the-compute-context)). They are two options because a site may give each job a context of its own, with the Python packages that job needs. Before release 2.3.0 the RAG Builder's own report called its context `computeContext` too; `mdb options-save` renames it when it carries that report's options over.
 :::
 
 :::info

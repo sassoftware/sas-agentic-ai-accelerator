@@ -191,3 +191,8 @@ jobs:
         # of the release table are held against the ones mdb writes - hence
         # the mdb installed above.
         run: python -m pytest SAS-Viya-Integrations/Setup/tests -q
+      - name: Prompt optimization job test suite
+        # The Python program of Optimize-Prompt-DSPy.sas runs against stand-ins
+        # for SAS, SAS Viya and dspy: what it checks before its first model
+        # call, and how it writes an HTTP error.
+        run: python -m pytest SAS-Viya-Integrations/Prompt-Optimization/tests -q

@@ -119,7 +119,10 @@ const PROMPT_DEFAULTS: PromptBuilderConfig = {
   modelCardReportURI: '',
   // DSPy prompt optimization. These three settings only matter while the
   // optimization switch is on (features.optimization).
-  // Compute context the optimize job runs in (its Python needs dspy).
+  // Compute context the optimize job runs in (its Python needs dspy). It
+  // must run as the requesting user: in a context that runs its servers
+  // under a service account the job ends before its first model call, since
+  // that account resolves the provider keys and writes to the prompt.
   computeContext: '',
   // SAS Content path of the deployed optimize Job Definition.
   optimizeJobProgram: '',

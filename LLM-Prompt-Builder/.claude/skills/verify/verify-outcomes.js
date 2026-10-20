@@ -48,6 +48,10 @@
  *     Run test, Run optimization): with the running jobs listed, the page
  *     says that the job is not among them; with that listing failed too,
  *     that what SAS Viya holds could not be read back.
+ *   - An optimization job that ended before its first model call and could
+ *     not record its run on the prompt (a session that does not run as the
+ *     user) completes without an entry in the tracker: the Optimize step
+ *     gives the reason the job wrote into its log.
  *   - Save setup, Manifest setup and Save documentation cannot be used while
  *     the stored setup is read.
  *   - While a write is out, a change of a picker sent by a script (as the
@@ -1823,6 +1827,23 @@ function writesCensus() {
     step(
       seen.launches === 1 && seen.listings.length > 0 && seen.listings.every((code) => code === 200) && said.includes(NOT_RUNNING) && !said.includes(NOT_READ_BACK),
       `Run optimization whose request never reached Job Execution, with the jobs that are running listed (200): the Optimize step says "${NOT_RUNNING}" (launches: ${seen.launches}; listings: ${JSON.stringify(seen.listings)}; said: "${clip(said)}")`
+    );
+  });
+  await road('an optimization job that ended before its first model call and recorded no run', async (page) => {
+    await openPage(page);
+    await openPromptTest(page, 'proj-1', 'model-used');
+    await goStep(page, 'LPB', 'optimize');
+    await page.selectOption(lpb('optimize-target'), 'demo_llm');
+    await waitUntil(async () => !(await page.isDisabled(lpb('optimize-run'))), 'the optimization can be started', 15000);
+    await post('/__failjob', { unwritten: true });
+    await page.click(lpb('optimize-run'));
+    await waitUntil(async () => (await textOf(page, lpb('optimize-run'))) === 'Run optimization' && (await textOf(page, lpb('optimize-result'))) !== '', 'the optimization job has ended', 60000).catch(() => {});
+    await atRest();
+    const said = await textOf(page, lpb('optimize-result'));
+    step(
+      said.startsWith('The optimization job failed. The optimization job runs as sas (to SAS Viya: sas.compute), not as demo, who started it:') &&
+        said.includes('Point the option Optimization: compute context of the Prompt Builder at one that does, such as SAS Studio compute context.'),
+      `an optimization job in a session that does not run as the user, which completes without an entry in the tracker: the Optimize step gives the reason the job wrote into its log (said: "${clip(said)}")`
     );
   });
 
