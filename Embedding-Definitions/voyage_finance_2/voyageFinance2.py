@@ -74,6 +74,23 @@ def _parse_options(opts):
         return parsed
     return {}
 
+# -- The provider key: the API_KEY option of the call (auth.mode api_key) ------
+# Every call carries the key in its API_KEY option; options.json names the
+# credential-domain entry that holds it. A call without it fails before any
+# request, naming the option, not as a bare KeyError. SCR answers a call whose
+# score code raised with HTTP 422 and the source line of the raise as its
+# errorMessage, not the text of the exception - so the message is written out
+# on that one line.
+
+def _api_key(options):
+    "The API_KEY option the caller passed; a missing or blank one fails naming the option."
+    # A blank option is 'not set' - UIs send empty strings for controls the
+    # user left alone.
+    apiKey = str(options.get("API_KEY") or '').strip()
+    if not apiKey:
+        raise RuntimeError("No API key: pass the provider key in the API_KEY option of the call.")
+    return apiKey
+
 def scoreModel(document, project, options):
     "Output: embedding, run_time, tokens"
     started_timestamp = time.time()
@@ -85,6 +102,7 @@ def scoreModel(document, project, options):
 
     }
     options = {**optionsDefaults, **_parse_options(options)}
+    options["API_KEY"] = _api_key(options)
     payload = {
         "input": document,
         "model": modelVersion,

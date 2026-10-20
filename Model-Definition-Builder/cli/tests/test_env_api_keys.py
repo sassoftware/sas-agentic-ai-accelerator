@@ -5,8 +5,8 @@ variable of the SCR container instead of the API_KEY scoring option.
 
 - the manifest: mode env, env_var (default per adapter), the refusals
 - options.json without API_KEY; the score code of every template that sends
-  the key reads the variable through one partial, and api_key/none output is
-  untouched
+  the key reads the variable through one partial, which takes the place of the
+  API_KEY option partial and changes nothing else
 - the generated scorer run against a stand-in server: the key travels in the
   provider's header, an API_KEY option still wins, neither fails naming the
   variable
@@ -202,10 +202,15 @@ def test_env_mode_only_adds_to_the_score_code(template, core):
     compile(code, score, "exec")
     assert f"API_KEY_ENV = '{env_var}'" in code
     assert '    options["API_KEY"] = _api_key(options)\n' in code
-    removed = [line for line in difflib.ndiff(keyed[score].decode().splitlines(), code.splitlines())
+    # Env mode takes the place of the option partial (partials/_option_api_key.py.j2)
+    # and changes nothing else.
+    option_partial = set((core.core_dir / "templates" / "partials" / "_option_api_key.py.j2").read_text(
+        encoding="utf-8").splitlines())
+    removed = [line[2:] for line in difflib.ndiff(keyed[score].decode().splitlines(), code.splitlines())
                if line.startswith("- ")]
-    assert removed == []
-    assert "_api_key" not in keyed[score].decode() and "API_KEY_ENV" not in keyed[score].decode()
+    assert removed and set(removed) <= option_partial
+    assert '    options["API_KEY"] = _api_key(options)\n' in keyed[score].decode()
+    assert "API_KEY_ENV" not in keyed[score].decode()
     for doc in ("README.md", "Model-Card.md"):
         assert f"container environment variable `{env_var}`" in from_env[doc].decode()
         assert "arrives per call in the `API_KEY` option" not in from_env[doc].decode()

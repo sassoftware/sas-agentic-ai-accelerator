@@ -4,6 +4,9 @@
 # options.json declares no API_KEY. A caller that passes a non-empty API_KEY
 # option anyway still wins, so a credential-domain caller keeps working
 # unchanged. Neither set fails naming the variable, not as an opaque 401.
+# SCR answers a call whose score code raised with HTTP 422 and the source line
+# of the raise as its errorMessage, not the text of the exception - so the
+# message is written out on that one line, the variable's name included.
 import os
 API_KEY_ENV = '{{ key_env_var }}'
 
@@ -13,8 +16,5 @@ def _api_key(options):
     # for controls the user left alone.
     apiKey = str(options.get("API_KEY") or '').strip() or (os.environ.get(API_KEY_ENV) or '').strip()
     if not apiKey:
-        raise RuntimeError(
-            f"No API key: set the {API_KEY_ENV} environment variable on this container "
-            "(or pass an API_KEY option)."
-        )
+        raise RuntimeError("No API key: set the {{ key_env_var }} environment variable on this container (or pass an API_KEY option).")
     return apiKey

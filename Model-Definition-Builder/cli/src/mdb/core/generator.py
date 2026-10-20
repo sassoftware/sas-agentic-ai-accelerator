@@ -31,7 +31,9 @@ AZURE_ENV_TEMPLATE = "azure_openai_env"
 AZURE_EMBEDDING_TEMPLATE = "emb_azure_openai_v1"
 # Score templates that send the provider key a call carries in the API_KEY
 # option - the ones `auth.mode: env` can feed from the container's environment
-# instead (partials/_env_api_key.py.j2). The others take no key (self-hosted
+# instead (partials/_env_api_key.py.j2). In the other modes they read the option
+# through partials/_option_api_key.py.j2, which fails naming API_KEY when a call
+# carries none. The others take no key (self-hosted
 # weights), read their own token variable (OpenAI-compatible servers) or the
 # AWS credential chain (sigv4), or already read the key from the environment
 # (azure_openai_env).
