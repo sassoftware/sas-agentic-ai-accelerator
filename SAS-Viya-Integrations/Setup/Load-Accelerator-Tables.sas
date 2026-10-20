@@ -67,8 +67,15 @@
  * An error of SAS or of CAS on the way is an
  * error of the job as well; it stops no table behind it from being loaded.
  *
+ * THE PAGE. Started from its address in SAS Job Execution the job writes a
+ * short page to _webout: each of the four tables with its rows and whether
+ * this run loaded it, left it as it was or did not find it in the CAS library
+ * at the end. The log keeps every message. Run in SAS Studio, where a session
+ * has no _webout, the program writes no page.
+ *
  * Parameters of the job definition:
  *   _action       execute
+ *   _output_type  html - the job writes the page itself, to _webout
  *   _contextName  the compute context the job runs in: one that runs under the
  *                 identity of the person who starts the job
  *   contentRoot   the content folder (default /SAS Agentic AI Accelerator)
@@ -193,6 +200,53 @@ run;
     run;
     filename _latask clear;
 %mend _lat_ask_folder;
+
+/* ---- Which table this run loads ---------------------------------------------
+   The page the job writes for SAS Job Execution says of each of the four
+   tables whether this run loaded it. A table an upload takes the place of,
+   and a table that is loaded where there was none, is a table CAS made in
+   this run, with a time of its own at which it was made. So the rows of each
+   table and that time are read before the tables are loaded and again at the
+   end: a table with another time, or one that was not there before, is a
+   table this run loaded. CAS is asked for the tables of the CAS library, so a
+   table that is not there is no ERROR line. _lat_before and _lat_after hold
+   rows/time for each of the four, in their order: none for a table that is
+   not there, unknown where CAS did not list the tables. */
+%let _lat_before = ;
+%let _lat_after = ;
+%macro _lat_tables(_lat_when);
+    %local _lat_i _lat_name _lat_count _lat_made _lat_list;
+    %if &_lat_ready. NE 1 %then %return;
+    %let _lat_list = ;
+    %do _lat_i = 1 %to 4;
+        %let _lat_name = %scan(&releaseTable. LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET, &_lat_i., %str( ));
+        /* unknown until the step below answers: a step that halts sets nothing */
+        %let _lat_count = unknown;
+        %let _lat_made = ;
+        proc cas;
+            table.tableInfo result = listing status = listed / caslib = "&caslib.";
+            if listed.severity == 0 then do;
+                call symputx("_lat_count", "none", "L");
+                if exists(listing, "TableInfo") then do;
+                    do entry over listing.TableInfo;
+                        if upcase(entry.Name) == upcase("&_lat_name.") then do;
+                            call symputx("_lat_count", entry.Rows, "L");
+                            call symputx("_lat_made", entry.CreateTime, "L");
+                        end;
+                    end;
+                end;
+            end;
+        quit;
+        %let _lat_list = &_lat_list. &_lat_count./&_lat_made.;
+    %end;
+    %if &_lat_when. EQ before %then %do;
+        %let _lat_before = &_lat_list.;
+    %end;
+    %else %do;
+        %let _lat_after = &_lat_list.;
+    %end;
+%mend _lat_tables;
+%_lat_tables(before);
 
 /* ---- The release table -------------------------------------------------------
    The file is copied from SAS Content to WORK as it is, its lines are counted
@@ -507,6 +561,89 @@ filename _latlfs clear;
 %mend _lat_look;
 %_lat_look;
 %sysmacdelete _lat_look;
+%_lat_tables(after);
+%sysmacdelete _lat_tables;
+
+/* ---- The page ---------------------------------------------------------------------
+   Started from its address in SAS Job Execution, the job writes a short page
+   to the fileref _webout, as Start Here does: each of the four tables with its
+   rows and whether this run loaded it, left it as it was or did not find it in
+   the CAS library at the end. The log keeps every message. SAS Job Execution
+   shows what a job writes there as the page with the parameter _output_type =
+   html, which the job definition holds; for a job definition without it SAS
+   Job Execution has its own output on _webout, and no page is written, with a
+   NOTE. A session without _webout - the program run in SAS Studio - writes no
+   page and no NOTE. */
+%macro _lat_page;
+    %local _lat_html;
+    %if %sysfunc(fileref(_webout)) GT 0 %then %return;
+    %let _lat_html = 0;
+    %if %symexist(_output_type) %then %do;
+        %if %upcase(%superq(_output_type)) EQ HTML %then %let _lat_html = 1;
+    %end;
+    %if &_lat_html. NE 1 %then %do;
+        %put NOTE: Load-Accelerator-Tables: no page was written to _webout, because the job definition has no parameter _output_type with the value html. The lines above say what was loaded.;
+        %return;
+    %end;
+    data _null_;
+        file _webout lrecl=32767;
+        length _lat_line $ 2000 _lat_lib _lat_name $ 300 _lat_before _lat_after _lat_class _lat_state $ 200 _lat_rows $ 40;
+        _lat_lib = htmlencode(strip(symget('caslib')));
+        put '<!DOCTYPE html>';
+        put '<html lang="en"><head><meta charset="utf-8"><title>SAS Agentic AI Accelerator - Load Accelerator Tables</title>';
+        put '<style>body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#f5f6f7;color:#1b1d21;line-height:1.45}';
+        put 'main{max-width:60rem;margin:0 auto;padding:1.5rem 1rem 3rem}h1{font-size:1.6rem;margin:0 0 .5rem}p{margin:.4rem 0}';
+        put 'table{border-collapse:collapse;width:100%;background:#fff;margin:.8rem 0}th,td{text-align:left;padding:.35rem .6rem}';
+        put 'th,td{border-bottom:1px solid #d9dce1;overflow-wrap:anywhere}th{font-size:.85rem;background:#e9ebee}';
+        put 'td.ok{color:#1c6b2a;font-weight:bold}td.kept{color:#6a5300;font-weight:bold}td.missing{color:#a1260d;font-weight:bold}';
+        put '.summary{background:#fff;border-left:.3rem solid #0b5cab;padding:.6rem .8rem}.note{font-size:.9rem;color:#4a4f57}';
+        put '@media (prefers-color-scheme:dark){body{background:#17191c;color:#e8eaed}table,.summary{background:#22252a}';
+        put 'th{background:#2c3036}th,td{border-bottom-color:#3a3f47}td.ok{color:#7fd18b}td.kept{color:#e3c35a}';
+        put 'td.missing{color:#ff9c8a}.note{color:#b4b9c0}}</style></head><body><main>';
+        put '<h1>Load Accelerator Tables</h1>';
+        if symget('_lat_ready') NE '1' then do;
+            put '<p class="summary">A parameter of the job was refused, so nothing was read or written. The ERROR line of the log names it.</p>';
+        end;
+        else do;
+            if lengthn(symget('_lat_missing')) = 0 then
+                _lat_line = '<p class="summary">The four tables are in the CAS library ' || strip(_lat_lib) || '.</p>';
+            else _lat_line = '<p class="summary">The job failed: not in the CAS library ' || strip(_lat_lib)
+                || ' at the end of the run, or CAS did not say whether they are: ' || strip(htmlencode(strip(symget('_lat_missing')))) || '.</p>';
+            put _lat_line;
+            put '<table><thead><tr><th>Table</th><th>Rows</th><th>This run</th></tr></thead><tbody>';
+            do _lat_i = 1 to 4;
+                _lat_name = scan(catx(' ', symget('releaseTable'), 'LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET'), _lat_i, ' ');
+                _lat_before = scan(symget('_lat_before'), _lat_i, ' ');
+                _lat_after = scan(symget('_lat_after'), _lat_i, ' ');
+                _lat_rows = scan(_lat_after, 1, '/');
+                _lat_class = 'missing';
+                if _lat_rows = 'unknown' then _lat_state = 'CAS did not list the tables of the CAS library';
+                else if _lat_rows = 'none' then _lat_state = 'Not in the CAS library';
+                else if scan(_lat_before, 1, '/') = 'unknown' then do;
+                    _lat_class = 'ok';
+                    _lat_state = 'In the CAS library';
+                end;
+                else if _lat_after NE _lat_before then do;
+                    _lat_class = 'ok';
+                    _lat_state = 'Loaded by this run';
+                end;
+                else do;
+                    _lat_class = 'kept';
+                    _lat_state = 'Left as it was';
+                end;
+                if _lat_rows in ('unknown', 'none') then _lat_rows = '-';
+                _lat_line = '<tr><td>' || strip(_lat_lib) || '.' || strip(htmlencode(strip(_lat_name))) || '</td><td>' || strip(_lat_rows)
+                    || '</td><td class="' || strip(_lat_class) || '">' || strip(_lat_state) || '</td></tr>';
+                put _lat_line;
+            end;
+            put '</tbody></table>';
+            put '<p class="note">The log of the job says why a table was left as it was or is not there: its WARNING and ERROR lines name the file, the folder or the step.</p>';
+        end;
+        put '</main></body></html>';
+    run;
+%mend _lat_page;
+%_lat_page;
+%sysmacdelete _lat_page;
 
 * Clean up;
 %if &_lat_clean_cas_session. %then %do;
@@ -517,5 +654,5 @@ options &_lat_syntaxcheck.;
 %if &_lat_ready. NE 1 or &_lat_failed. EQ 1 %then %do;
     %let SYSCC = 1012;
 %end;
-%symdel _lat_vars _lat_ready _lat_failed _lat_missing _lat_clean_cas_session _lat_syntaxcheck / nowarn;
+%symdel _lat_vars _lat_ready _lat_failed _lat_missing _lat_clean_cas_session _lat_syntaxcheck _lat_before _lat_after / nowarn;
 %symdel _lfs_path _lfs_caslib / nowarn;

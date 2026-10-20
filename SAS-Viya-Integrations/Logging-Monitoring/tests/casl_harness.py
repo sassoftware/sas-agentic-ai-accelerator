@@ -284,7 +284,9 @@ def as_python(casl):
 class FakeCAS:
     """Tables in memory and saved files of CAS libraries. A table is {'columns': [...], 'rows': n, 'of': what it
     holds}; `refuse` holds the names of actions that end with an error, as 'table.promote' or, for one table only,
-    ('table.dropTable', 'LLM_FACT_SHEET')."""
+    ('table.dropTable', 'LLM_FACT_SHEET'). Every table that is made - by a test, an upload or a load of a file - gets a
+    time of its own, a number that grows, which tableInfo answers as its CreateTime; a promoted table keeps the time
+    of the table of the session it was. The times stand beside the tables, so that a table is the dict it was."""
 
     def __init__(self, refuse=(), upload_rows=None, lists_no_table_when_empty=True):
         self.session, self.promoted, self.files = {}, {}, {}
@@ -292,6 +294,13 @@ class FakeCAS:
         self.upload_rows = upload_rows
         self.lists_no_table_when_empty = lists_no_table_when_empty
         self.calls, self.errors, self.symbols = [], [], {}
+        self.made, self.clock = {}, 1000
+
+    def _made(self, table):
+        """The table, with a time at which it was made."""
+        self.clock += 1
+        self.made[id(table)] = self.clock
+        return table
 
     # -- what a test builds -------------------------------------------------
     @staticmethod
@@ -299,7 +308,7 @@ class FakeCAS:
         return (str(caslib).lower(), str(name).upper())
 
     def table(self, caslib, name, columns, rows=1, of="", scope="global"):
-        (self.promoted if scope == "global" else self.session)[self.key(caslib, name)] = {"columns": list(columns), "rows": rows, "of": of}
+        (self.promoted if scope == "global" else self.session)[self.key(caslib, name)] = self._made({"columns": list(columns), "rows": rows, "of": of})
 
     def file(self, caslib, name, columns, rows=1, of="", loadable=True):
         self.files[(str(caslib).lower(), name)] = {"columns": list(columns), "rows": rows, "of": of, "loadable": loadable}
@@ -326,14 +335,17 @@ class FakeCAS:
             if self._refused(action, out["name"]):
                 return self._end(action, error="the file could not be uploaded")
             columns = [entry["name"] for entry in parameters["importOptions"]["vars"]]
-            self.session[self.key(out["caslib"], out["name"])] = {"columns": columns, "rows": self.upload_rows, "of": "upload"}
+            self.session[self.key(out["caslib"], out["name"])] = self._made({"columns": columns, "rows": self.upload_rows, "of": "upload"})
             return self._end(action)
         if action == "table.tableExists":
             return self._end(action, {"exists": self.exists(caslib, name)})
         if action == "table.tableInfo":
+            if self._refused(action):
+                return self._end(action, error="the tables of the CAS library could not be listed")
             listed = dict(self.promoted)
             listed.update(self.session)
-            rows = [SimpleNamespace(Name=key[1], Rows=table["rows"]) for key, table in listed.items() if key[0] == str(caslib).lower()]
+            rows = [SimpleNamespace(Name=key[1], Rows=table["rows"], CreateTime=self.made.get(id(table), 0))
+                    for key, table in listed.items() if key[0] == str(caslib).lower()]
             return self._end(action, {"TableInfo": rows} if rows else {})
         if action == "table.columnInfo":
             key = self.key(parameters["table"]["caslib"], parameters["table"]["name"])
@@ -355,9 +367,9 @@ class FakeCAS:
             if out.get("promote"):
                 if target in self.promoted:
                     return self._end(action, error=f"a global table {target[1]} exists")
-                self.promoted[target] = {key: source[key] for key in ("columns", "rows", "of")}
+                self.promoted[target] = self._made({key: source[key] for key in ("columns", "rows", "of")})
             else:
-                self.session[target] = {key: source[key] for key in ("columns", "rows", "of")}
+                self.session[target] = self._made({key: source[key] for key in ("columns", "rows", "of")})
             return self._end(action)
         if action == "table.dropTable":
             key = self.key(caslib, name)
@@ -388,12 +400,16 @@ class FakeCAS:
 
     # -- running a step -------------------------------------------------------
     def run(self, casl):
-        """Runs the CASL of one PROC CAS step. Returns the macro variables it set with CALL SYMPUTX."""
+        """Runs the CASL of one PROC CAS step. Returns the macro variables it set with CALL SYMPUTX - this step, not an
+        earlier one: a step that sets no value leaves a macro variable at the value the macro gave it in front of the
+        step (self.symbols keeps every value set so far, for a test to read)."""
+        set_here = {}
+
         def index(text, part):
             return str(text).find(str(part)) + 1
 
         def symputx(name, value, scope=""):
-            self.symbols[name] = str(value)
+            self.symbols[name] = set_here[name] = str(value)
 
         def rows(table):
             return list(table)
@@ -401,4 +417,4 @@ class FakeCAS:
         namespace = {"_cas": self, "_symputx": symputx, "_rows": rows, "exists": lambda result, name: hasattr(result, name),
                      "upcase": lambda text: str(text).upper(), "index": index}
         exec(compile(as_python(casl), "CASL", "exec"), namespace)
-        return dict(self.symbols)
+        return set_here

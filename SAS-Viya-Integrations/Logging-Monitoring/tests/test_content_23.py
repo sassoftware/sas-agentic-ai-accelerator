@@ -67,6 +67,8 @@ NOT_ASKED = {
     "_log_kept_rows": "-1", "_log_took_rows": "-1", "_log_failed": "1",
     "_lat_taken": "refused", "_lat_outcome": "unknown", "_lat_staged": "-1", "_lat_helper": "unknown",
     "_lat_missing": "&releaseTable. LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET",
+    # the rows and the time of a table for the page of the job (2026-10-20): unknown, and no time
+    "_lat_count": "unknown", "_lat_made": "",
 }
 
 
@@ -126,7 +128,7 @@ def test_every_macro_variable_a_proc_cas_step_sets_starts_at_the_value_of_a_ques
     assert counted == {"Custom-Steps/LLM - Get All Prompts.step": 2, "Logging-Monitoring/Get-All-Prompts.sas": 2,
                        "Logging-Monitoring/Build-RAG-Cost-View.sas": 1, "Logging-Monitoring/Link-Logs-To-Models.sas": 8,
                        "Logging-Monitoring/Load-Fact-Sheets.sas": 3, "Custom-Steps/LLM - Log Parser.step": 11,
-                       "Logging-Monitoring/Log-Parser-Code.sas": 11, "Setup/Load-Accelerator-Tables.sas": 5}
+                       "Logging-Monitoring/Log-Parser-Code.sas": 11, "Setup/Load-Accelerator-Tables.sas": 7}
     # the frozen programs are the ones the rules name, and no other program is left out
     assert set(FROZEN) == {"RAG-Ingestion/Ingest-Documents.sas", "RAG-Ingestion/Test-Retrieval.sas", "Prompt-Optimization/Optimize-Prompt-DSPy.sas"}
     every = {path.relative_to(INTEGRATIONS).as_posix() for path in INTEGRATIONS.rglob("*.sas") if "/tests/" not in path.as_posix()}

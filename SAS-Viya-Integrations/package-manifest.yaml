@@ -269,7 +269,8 @@ entries:
   # Loads the four files above into CAS; it includes Load-Fact-Sheets.sas from
   # the folder Logging and Monitoring of the content root. _contextName: the
   # job reads the Data folder and loads into CAS as its session - that has to
-  # be the user who runs it.
+  # be the user who runs it. _output_type html: the job writes its page of
+  # what it loaded to _webout itself, as Start Here does.
   - path: Data/Load-Accelerator-Tables
     kind: jobDefinition
     code: SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas
@@ -277,6 +278,7 @@ entries:
     parameters:
       - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
       - {name: _action, type: character, default: execute}
+      - {name: _output_type, type: character, default: html}
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library, siteSetting: true}
       - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table, siteSetting: true}

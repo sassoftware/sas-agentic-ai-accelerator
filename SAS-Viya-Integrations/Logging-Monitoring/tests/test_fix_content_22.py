@@ -100,7 +100,8 @@ def test_every_action_whose_answer_a_program_reads_takes_a_refusal_for_no_answer
         "Logging-Monitoring/Link-Logs-To-Models.sas": Counter({"table.tableExists": 5, "table.fileInfo": 2}),
         "Logging-Monitoring/Load-Fact-Sheets.sas": Counter({"table.tableExists": 3, "table.tableInfo": 1}),
         "Logging-Monitoring/Log-Parser-Code.sas": Counter({"table.tableExists": 4, "table.fileInfo": 2, "table.columnInfo": 1, "table.tableInfo": 1}),
-        "Setup/Load-Accelerator-Tables.sas": Counter({"table.tableExists": 5, "table.fileInfo": 1, "table.tableInfo": 1, "table.columnInfo": 1,
+        # tableInfo twice: the rows of the release table, and the rows and the time of the four tables for the page (2026-10-20)
+        "Setup/Load-Accelerator-Tables.sas": Counter({"table.tableExists": 5, "table.fileInfo": 1, "table.tableInfo": 2, "table.columnInfo": 1,
                                                       "table.loadTable": 1}),
     }
 

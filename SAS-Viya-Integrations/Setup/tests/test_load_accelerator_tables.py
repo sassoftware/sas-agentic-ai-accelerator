@@ -124,9 +124,9 @@ def test_the_longest_cell_reaches_cas_as_it_is(release_file):
 
     assert longest > 4764                         # the changelog has grown since the table was measured
     assert longest_line < 1048576 and "infile \"&_lat_file.\" lrecl=1048576 truncover end=_lat_last;" in release
-    # four DATA steps, none of which makes a table: the parameters, the address the folder is asked for with, the
-    # first line of the file, and the file of one comment
-    assert re.findall(r"^\s*data\s+([^;]+);", code(), flags=re.MULTILINE | re.IGNORECASE) == ["_null_"] * 4
+    # five DATA steps, none of which makes a table: the parameters, the address the folder is asked for with, the
+    # first line of the file, the file of one comment and the page
+    assert re.findall(r"^\s*data\s+([^;]+);", code(), flags=re.MULTILINE | re.IGNORECASE) == ["_null_"] * 5
     assert "proc import" not in release.lower() and "_infile_" not in release
     assert "input _lat_first $char400.;" in release
     assert 'upload path = "&_lat_file."' in release
@@ -306,8 +306,9 @@ def test_the_fact_sheets_are_loaded_by_the_program_of_the_logging_folder():
     # nothing of the three sheets is written into the job: no file name, no table that is dropped, loaded or promoted
     for name in ("llm_fact_sheet.csv", "embedding_fact_sheet.csv", "decision_fact_sheet.csv", "proc import", "proc casutil"):
         assert name not in text.lower(), name
-    # in the look at the end, in the value the look starts at (content-23), and in its NOTE
-    assert text.count("LLM_FACT_SHEET") == text.count("DECISION_FACT_SHEET") == 3
+    # in the look at the end, in the value the look starts at (content-23), and in its NOTE - and in the list of the
+    # tables whose rows and time are read before and after the run, and in the rows of the page
+    assert text.count("LLM_FACT_SHEET") == text.count("DECISION_FACT_SHEET") == 5
 
 
 def test_the_include_stands_in_open_code():
