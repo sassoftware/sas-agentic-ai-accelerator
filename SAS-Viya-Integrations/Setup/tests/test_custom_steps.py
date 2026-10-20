@@ -58,6 +58,7 @@ line with V = 0 for an object or a list; the entries of a list have the path of 
 is held against what was measured with version 1.1.
 They sit in this folder because its tests run with the package checks, and Custom-Steps has none.
 """
+import base64
 import hashlib
 import json
 import re
@@ -159,6 +160,86 @@ EMPTY_GENERATION = [
 
 """),
 ]
+# The entry of the newest version in the changelog of both steps (Create LLM Call 1.6, Get Options 1.5)
+PROVIDER_KEY = ("      - The code for a model whose options file has the option API_KEY reads the provider key from the credential "
+                "domain agentic-ai-keys when it runs, from the entry the option names, and sends it in the place of the name; a NOTE "
+                "of the step says so. Version <before> wrote %let API_KEY=<entry name>; and the code sent the name as the key, so "
+                "the call failed (HTTP 422 from the container, 401 from the provider, measured on 2026-10-20) while the step "
+                "reported no problem. Where the domain holds no such entry the code writes a WARNING and sends an empty API_KEY. "
+                "The code for a model without the option is the code of before")
+# The sentence of the About tab of both steps on the provider key
+KEY_ABOUT = ("The option API_KEY of a model names the entry of the credential domain agentic-ai-keys that holds the provider key, "
+             "not the key: the code reads the key of that entry when it runs, under the identity of its SAS session, and sends it "
+             "in the place of the name. The key is not written to the log, and the macro variable options keeps the name. The line "
+             "%let API_KEY_DOMAIN of the code names the domain.")
+
+
+def key_step(text):
+    """The DATA step of a program that writes the code that reads the provider key (Create LLM Call 1.6, Get Options 1.5)."""
+    start = text.index("* Create code that reads the provider key.")
+    return text[start:text.index("* Create code that generates the JSON input;\n", start)]
+
+
+def key_generation(text):
+    """The lines of the steps that write the code from the options that changed for the provider key, as (the lines of before,
+    the lines of now): the DATA step of the key, the flag of an API_KEY option, the end of the options and the set of steps."""
+    return [
+        ("", key_step(text)),
+        ("", "    * 1 where the options hold API_KEY: the call then sends the key that was read, and the macro variable options "
+             "keeps the name of the entry;\n    retain _slo_key 0;\n    if option_name EQ 'API_KEY' then _slo_key = 1;\n"),
+        ("""        output;
+        _slo_code = 'put _slo_code;';
+        output;
+        _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+        output;
+        _slo_code = "put '}';";
+        output;
+        _slo_code = 'put "]}";';
+        output;
+        _slo_code = 'run;';
+        output;
+    end;
+    else do;
+""", """        output;
+        if _slo_key EQ 1 then do;
+            _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+            output;
+            _slo_code = '_slo_code = tranwrd(_slo_code, "API_KEY:&API_KEY.", "API_KEY:" || strip(symget(' || "'llmProviderKey'" || ')));';
+            output;
+            _slo_code = 'put _slo_code;';
+            output;
+        end;
+        else do;
+            _slo_code = 'put _slo_code;';
+            output;
+            _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+            output;
+        end;
+        _slo_code = "put '}';";
+        output;
+        _slo_code = 'put "]}";';
+        output;
+        _slo_code = 'run;';
+        output;
+        * The key is not kept in the session once the line is sent;
+        if _slo_key EQ 1 then do;
+            _slo_code = '%let llmProviderKey=;';
+            output;
+        end;
+    end;
+    else do;
+"""),
+        ("    set work._slo_final_macro_vars work._slo_final_json_input work._slo_final_http;\n",
+         "    set work._slo_final_macro_vars work._slo_final_key work._slo_final_json_input work._slo_final_http;\n"),
+    ]
+
+
+def resolved(block, key):
+    """A block of the DATA step that writes the code with its conditions on _slo_key followed for one value of it."""
+    branch = re.compile(r"        if _slo_key EQ 1 then do;\n(.*?)        end;\n(?:        else do;\n(.*?)        end;\n)?", flags=re.DOTALL)
+    return branch.sub(lambda found: found.group(1) if key == 1 else (found.group(2) or ""), block)
+
+
 # What a run without a model says in the place of the reason, and the URI of an options file of the tests
 NO_MODEL = ("no model with an options file was chosen - with Select name from a table the step needs a model table that has the columns "
             "name and optionsFileURI and a model name selected from it, otherwise a model name and an options file URI")
@@ -392,7 +473,10 @@ def test_the_two_statements_stand_around_the_step_that_writes_the_file():
 def test_the_macro_variables_of_the_step_are_deleted_at_its_end():
     text = program()
 
-    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_chosen _slo_fl_end _slo_ok _slo_why / nowarn;")
+    # / nowarn on both: code that runs inside a macro makes its variables local to that macro, and %symdel deletes
+    # global variables only - it wrote a WARNING for each, measured with Load-Fact-Sheets.sas included from a macro
+    # on 2026-10-20 (three WARNING lines and SYSCC 4), and every program and step deletes its variables that way now
+    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost / nowarn;\n%symdel _slo_chosen _slo_fl_end _slo_ok _slo_why / nowarn;")
     assert FOR_A_PATH in saving()
 
 
@@ -406,7 +490,9 @@ def test_the_about_tab_and_the_changelog_say_what_the_step_does():
 
     assert ("It is possible to save the resulting code to a file or printing it to the Results pane. Without a path the code is saved to a "
             "temporary file, which the fileref _slo_LLM names until the SAS session ends.") in about
+    assert about.endswith(" " + KEY_ABOUT)
     assert changelog.split("\n") == [
+        "* Version: 1.6 (20OCT2026)", PROVIDER_KEY.replace("<before>", "1.5"),
         "* Version: 1.5 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.4"),
         "* Version: 1.4 (13OCT2026)"] + [line.replace("<before>", "1.3") for line in NO_MODEL_AND_TRIMMED] + [
         "* Version: 1.3 (13OCT2026)",
@@ -518,7 +604,8 @@ def test_the_model_of_alldata_gives_what_was_measured_for_gpt_5_mini():
 
 def test_the_options_files_of_the_repository_have_the_shapes_the_programs_read():
     """Every key an option of an LLM definition holds: default, range and description, and label, type and
-    values of some. values is the one that is a list - three definitions have it."""
+    values of some. values is the one that is a list - eight definitions have it, each for its option
+    reasoning_effort (three until the definitions of GPT-6 and Claude 5.5 came in 2.3.0)."""
     keys, lists, options = Counter(), set(), 0
     for path in OPTION_FILES:
         for option, spec in json.loads(path.read_text(encoding="utf-8")).items():
@@ -528,7 +615,7 @@ def test_the_options_files_of_the_repository_have_the_shapes_the_programs_read()
             lists.update(key for key, value in spec.items() if isinstance(value, (list, dict)))
     assert set(keys) == {"default", "range", "description", "label", "type", "values"}
     assert lists == {"values"} and keys["default"] == keys["range"] == keys["description"] == options
-    assert sum('"values"' in path.read_text(encoding="utf-8") for path in OPTION_FILES) == 3
+    assert sum('"values"' in path.read_text(encoding="utf-8") for path in OPTION_FILES) == 8
 
 
 @pytest.mark.parametrize("name", list(PROGRAMS))
@@ -642,7 +729,8 @@ def test_an_options_file_without_any_option_gets_code_that_sends_an_empty_option
     assert step.index("if _slo_count GT 0 then set work._slo_options end=EoF nobs=_slo_count;") < step.index("if _n_ = 1 then do;")
     header = step[step.index("if _n_ = 1 then do;"):step.index("* Without any option there is no row to read")]
     empty = step[step.index("if _slo_count EQ 0 then do;"):step.index("if eof then do;")]
-    last = step[step.index("if eof then do;"):step.index("else do;", step.index("if eof then do;"))]
+    # the end of the last option, for options without API_KEY - an options file without any option has none
+    last = resolved(step[step.index("if eof then do;"):step.index("\n    else do;\n", step.index("if eof then do;"))], 0)
     assert empty.rstrip().endswith("stop;\n    end;")
     assert written(empty)[0] == """_slo_code = compress(_slo_code) ||'}"';"""
     assert written(last, "top_p")[0] == """_slo_code = compress(_slo_code) ||"top_p:"|| "&top_p."||'}"';"""
@@ -655,6 +743,130 @@ def test_an_options_file_without_any_option_gets_code_that_sends_an_empty_option
     assert opening == """_slo_code='{"name": "options", "value": "{';"""
     put = sas_text(opening[len("_slo_code="):-1]).replace(" ", "") + '}"'
     assert json.loads(json.loads(put + "}")["value"]) == {}
+
+
+# ---------------------------------------------------------------------------
+# The provider key (Create LLM Call 1.6, Get Options 1.5 and the script)
+# ---------------------------------------------------------------------------
+
+# The lines of the code that read the provider key, as the three programs write them for a model with the option API_KEY
+KEY_CODE = [
+    "* API_KEY is the name of the entry of the credential domain that holds the provider key, not the key. The next steps read the "
+    "key of that entry under your identity, and the call sends it in the place of the name;",
+    "%let API_KEY_DOMAIN=agentic-ai-keys;",
+    "%let llmProviderKey=;",
+    "%let SYS_PROCHTTP_STATUS_CODE=;",
+    "filename llmKey temp;",
+    "proc http",
+    "method='Get'",
+    'url="&_slo_viyaHost./credentials/domains/&API_KEY_DOMAIN./secrets?lookupInGroup=true"',
+    "oauth_bearer=sas_services",
+    "out=llmKey;",
+    "headers 'Accept' = 'application/json';",
+    "run; quit;",
+    "data _null_;",
+    "infile llmKey lrecl=32767 truncover;",
+    "input;",
+    "retain _llm_rx;",
+    """if _n_ = 1 then _llm_rx = prxparse('/"\\Q' || strip(symget('API_KEY')) || '\\E"\\s*:\\s*"([A-Za-z0-9+\\/=]+)"/');""",
+    "if prxmatch(_llm_rx, _infile_) then call symputx('llmProviderKey', input(prxposn(_llm_rx, 1, _infile_), $base64x32767.));",
+    "run;",
+    "filename llmKey clear;",
+    "data _null_;",
+    "if missing(symget('llmProviderKey')) then do;",
+    'put "WARNING: No key was read for the entry &API_KEY. of the credential domain &API_KEY_DOMAIN. (HTTP status &SYS_PROCHTTP_STATUS_CODE.).";',
+    'put "WARNING- The call sends an empty API_KEY, which only a model whose container holds the provider key can answer.";',
+    'put "WARNING- Add the entry for your user or a group of yours: see Managing Credentials in the guides of the accelerator.";',
+    "end;",
+    'else put "NOTE: The key of the entry &API_KEY. was read from the credential domain &API_KEY_DOMAIN..";',
+    "run;",
+]
+
+
+def answer_of_the_domain(entries):
+    """The answer of GET /credentials/domains/<domain>/secrets as the Credentials service of SAS Viya 2026.09 gave it on
+    2026-10-20: one line of JSON, the secrets base64-encoded, beside the id of the domain, the identity and its links."""
+    return json.dumps({"createdBy": "admin", "domainId": "agentic-ai-keys", "domainType": "base64", "identityId": "LLMConsumers",
+                       "identityType": "group", "links": [{"href": "/credentials/domains/agentic-ai-keys/groups/LLMConsumers", "rel": "self"}],
+                       "secrets": {name: base64.b64encode(value.encode("utf-8")).decode("ascii") for name, value in entries.items()},
+                       "version": 1}, separators=(",", ":"))
+
+
+def key_read(code_lines, answer, entry):
+    """Follows the DATA step of the code that reads the key: the Perl expression of its PRXPARSE line, with \\Q...\\E for
+    the name, against each line of the answer; $BASE64X decodes what it captured. Returns the key, '' for none."""
+    line = next(line for line in code_lines if "prxparse(" in line)
+    pattern = sas_text(line[line.index("prxparse(") + len("prxparse("):-len(");")].replace("strip(symget('API_KEY'))", "'<entry>'"))
+    assert pattern.startswith("/") and pattern.endswith("/")
+    body = pattern[1:-1].replace("\\/", "/")
+    head, tail = body.split("\\Q<entry>\\E")
+    expression = re.compile(head + re.escape(entry) + tail)
+    for text in answer.split("\n"):
+        found = expression.search(text)
+        if found:
+            return base64.b64decode(found.group(1)).decode("utf-8")
+    return ""
+
+
+@pytest.mark.parametrize("name", list(PROGRAMS))
+def test_the_code_for_a_model_with_api_key_reads_the_key_from_the_credential_domain(name):
+    """live-27 (2026-10-20). The option API_KEY of an options file holds the name of the entry of the credential domain that
+    holds the key, such as OpenAI. The code of the three programs set %let API_KEY=OpenAI; and sent API_KEY:OpenAI as the key:
+    the container of gpt_5_mini answered 422, its log held the 401 of the provider, and the step had ended without a word.
+    The code now reads the key of the entry from the domain, as the Prompt Builder and the optimization job do, under the
+    identity of its SAS session, and the call sends it in the place of the name."""
+    text = PROGRAMS[name]()
+    step = key_step(text)
+
+    # the step reads the row of API_KEY only, and says in a NOTE of its own log that the code reads a key
+    assert "    set work._slo_options;\n    where option_name EQ 'API_KEY';\n" in step
+    assert re.findall(r"putLog (.*);", step) == [
+        "_slo_note", "'NOTE- The code reads the key of that entry when it runs, under the identity of the person who runs it, and sends it "
+        "in the place of the name.'"]
+    assert ("_slo_note = catx(' ', 'NOTE: The option API_KEY of the options file names the entry', compress(default), 'of the "
+            "credential domain agentic-ai-keys and is no key.');") in step
+    assert written(step) == KEY_CODE
+    # the comment the code holds is one statement: no quotation mark, no semicolon but its last
+    assert KEY_CODE[0].count(";") == 1 and not set(KEY_CODE[0]) & set("'\"%&")
+    # it stands behind the lines of the options, so &API_KEY. is the name of the entry, and in front of the request
+    assert "set work._slo_final_macro_vars work._slo_final_key work._slo_final_json_input work._slo_final_http;" in text
+    assert "delete _slo_options _slo_final_macro_vars _slo_final_key _slo_final_json_input _slo_final_http _slo_final;" in text
+
+    # the expression finds the entry it names and no other, whatever characters its name holds
+    keys = {"OpenAI": "sk-test-openai-0123456789", "OpenAI2": "sk-other", "Azure OpenAI": "azure-key-42", "Voyage.ai": "pa-voyage"}
+    answer = answer_of_the_domain(keys)
+    for entry, key in keys.items():
+        assert key_read(KEY_CODE, answer, entry) == key
+    assert key_read(KEY_CODE, answer, "Anthropic") == "" and key_read(KEY_CODE, "", "OpenAI") == ""
+    assert key_read(KEY_CODE, '{"errorCode":404,"message":"The credential was not found."}', "OpenAI") == ""
+
+
+@pytest.mark.parametrize("name", list(PROGRAMS))
+def test_the_call_sends_the_key_and_the_macro_variable_options_keeps_the_name(name):
+    """The macro variable options is what LLM-Call-Result-Table.sas puts into the result table that
+    Track-Prompt-Experiments.sas stores in SAS Model Manager: it is set from the line with the name of the entry, and only
+    then does the key take the place of the name in the line that is sent. The key is cleared behind the step."""
+    text = PROGRAMS[name]()
+    start = text.index("data work._slo_final_json_input;")
+    step = text[start:text.index("run;\n", text.index("keep _slo_code;", start))]
+    last = step[step.index("if eof then do;"):step.index("\n    else do;\n", step.index("if eof then do;"))]
+
+    assert "    retain _slo_key 0;\n    if option_name EQ 'API_KEY' then _slo_key = 1;\n" in step
+    assert written(resolved(last, 1), "top_p") == [
+        """_slo_code = compress(_slo_code) ||"top_p:"|| "&top_p."||'}"';""",
+        'call symputx("options", compress(_slo_code) || "}");',
+        """_slo_code = tranwrd(_slo_code, "API_KEY:&API_KEY.", "API_KEY:" || strip(symget('llmProviderKey')));""",
+        "put _slo_code;", "put '}';", 'put "]}";', "run;", "%let llmProviderKey=;"]
+    # without the option the end is the one of before
+    assert written(resolved(last, 0), "top_p")[1:] == [
+        "put _slo_code;", 'call symputx("options", compress(_slo_code) || "}");', "put '}';", 'put "]}";', "run;"]
+
+    # what the code of gpt_5_mini does with it: the line of the options as the code builds it, with the name of the entry
+    line = '{"name":"options","value":"{API_KEY:OpenAI,max_completion_tokens:4000,reasoning_effort:medium}"'
+    options = line + "}"                                                       # call symputx("options", ...)
+    sent = line.replace("API_KEY:" + "OpenAI", "API_KEY:" + "sk-test-0123")   # tranwrd(_slo_code, "API_KEY:&API_KEY.", ...)
+    assert "sk-test" not in options and "API_KEY:OpenAI" in options
+    assert json.loads(sent + "}")["value"] == "{API_KEY:sk-test-0123,max_completion_tokens:4000,reasoning_effort:medium}"
 
 
 def test_the_code_the_step_writes_is_the_code_of_version_1_1():
@@ -675,8 +887,9 @@ def test_the_code_the_step_writes_is_the_code_of_version_1_1():
         return block
 
     text, get = program(), PROGRAMS["LLM - Get Options"]()
-    # ... but for the lines of an options file without any option (Create LLM Call 1.5, Get Options 1.4)
-    assert hashlib.sha256(before(generation(text), EMPTY_GENERATION).encode("utf-8")).hexdigest() == GENERATION_OF_1_1
+    # ... but for the lines of an options file without any option (Create LLM Call 1.5, Get Options 1.4) and the lines
+    # of the provider key (Create LLM Call 1.6, Get Options 1.5)
+    assert hashlib.sha256(before(generation(text), key_generation(text) + EMPTY_GENERATION).encode("utf-8")).hexdigest() == GENERATION_OF_1_1
     assert generation(get) == generation(text)
     # the block that saves the code is the one of 1.1 but for the lines of the path (1.3) ...
     assert hashlib.sha256(before(saved(text), QUOTED).encode("utf-8")).hexdigest() == SAVING_OF_1_1
@@ -696,12 +909,18 @@ def test_the_two_steps_say_what_they_read():
     sentence = ("Every option of the options file is read with its default, also an option that lists the values it can take. A run that "
                 "can not read the default of every option writes no code and no file: it ends with an ERROR line that says why.")
     assert sentence in control("textAbout")["text"] and sentence in get_texts["textAbout"]
-    assert control("textChangelog")["text"].startswith("* Version: 1.5 (18OCT2026)\n")
+    assert control("textAbout")["text"].endswith(" " + KEY_ABOUT) and get_texts["textAbout"].endswith(" " + KEY_ABOUT)
+    for texts in (get_texts["textDocumentation"], control("textDocumentation")["text"]):
+        assert texts.endswith("\n* The code it writes for a model with the option API_KEY asks the Credentials service of SAS Viya for "
+                              "/credentials/domains/<domain>/secrets?lookupInGroup=true")
+    assert control("textChangelog")["text"].startswith("* Version: 1.6 (20OCT2026)\n" + PROVIDER_KEY.replace("<before>", "1.5")
+                                                       + "\n* Version: 1.5 (18OCT2026)\n")
     assert "\n* Version: 1.4 (13OCT2026)\n" in control("textChangelog")["text"]
     assert "\n* Version: 1.3 (13OCT2026)\n" in control("textChangelog")["text"] and "\n* Version: 1.2 (13OCT2026)\n" in control("textChangelog")["text"]
-    assert get_texts["textChangelog"].split("\n")[:2] == ["* Version: 1.4 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.3")]
-    assert get_texts["textChangelog"].split("\n")[2:5] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
-    assert get_texts["textChangelog"].split("\n")[5:9] == [
+    assert get_texts["textChangelog"].split("\n")[:2] == ["* Version: 1.5 (20OCT2026)", PROVIDER_KEY.replace("<before>", "1.4")]
+    assert get_texts["textChangelog"].split("\n")[2:4] == ["* Version: 1.4 (18OCT2026)", EMPTY_OPTIONS.replace("<before>", "1.3")]
+    assert get_texts["textChangelog"].split("\n")[4:7] == ["* Version: 1.3 (13OCT2026)"] + [line.replace("<before>", "1.2") for line in NO_MODEL_AND_TRIMMED]
+    assert get_texts["textChangelog"].split("\n")[7:11] == [
         "* Version: 1.2 (13OCT2026)",
         "      - With the box Save the code to a filename ticked and no path, the values the step comes with, version 1.1 wrote the code "
         "file and then ended with ERROR 180-322 and a failed job (measured on 2026-10-13): the statement that assigns the temporary file "
@@ -769,7 +988,7 @@ def test_the_fileref_of_get_options_stays_assigned_and_is_named_by_the_note():
     text = get_options()
 
     assert "filename _slo_LLM clear" not in text and "_slo_fl_end" not in text
-    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost;\n%symdel _slo_chosen _slo_ok _slo_why / nowarn;")
+    assert text.endswith("%symdel _slo_LLM_name _slo_optionsFileURI _slo_viyaHost / nowarn;\n%symdel _slo_chosen _slo_ok _slo_why / nowarn;")
     assert "LLM - Get Options: no code was written" in text and text.upper().count("ERROR") == 1
 
 

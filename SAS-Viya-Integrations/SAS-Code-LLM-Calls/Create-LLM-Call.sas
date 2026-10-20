@@ -13,6 +13,12 @@
     The code is printed to the Results tab and written to the
       fileref _slo_LLM, as the settings below say. No table is left.
 
+    The option API_KEY of a model names the entry of the credential
+      domain agentic-ai-keys that holds the provider key, not the
+      key. The code reads the key of that entry when it runs, under
+      the identity of its SAS session, and sends it in the place of
+      the name; the log says so in a NOTE.
+
     slo is short for:
       SAS Large Language Model Options
 *******************************************************************************/
@@ -113,10 +119,80 @@ data work._slo_final_macro_vars;
     keep _slo_code;
 run;
 
+* Create code that reads the provider key. The option API_KEY names the entry of the credential domain that holds the key and is no key, so the code reads the key of that entry when it runs;
+data work._slo_final_key;
+    length _slo_code _slo_note $32767.;
+    set work._slo_options;
+    where option_name EQ 'API_KEY';
+    _slo_note = catx(' ', 'NOTE: The option API_KEY of the options file names the entry', compress(default), 'of the credential domain agentic-ai-keys and is no key.');
+    putLog _slo_note;
+    putLog 'NOTE- The code reads the key of that entry when it runs, under the identity of the person who runs it, and sends it in the place of the name.';
+    _slo_code = '* API_KEY is the name of the entry of the credential domain that holds the provider key, not the key. The next steps read the key of that entry under your identity, and the call sends it in the place of the name;';
+    output;
+    _slo_code = '%let API_KEY_DOMAIN=agentic-ai-keys;';
+    output;
+    _slo_code = '%let llmProviderKey=;';
+    output;
+    _slo_code = '%let SYS_PROCHTTP_STATUS_CODE=;';
+    output;
+    _slo_code = 'filename llmKey temp;';
+    output;
+    _slo_code = 'proc http';
+    output;
+    _slo_code = "method='Get'";
+    output;
+    _slo_code = 'url="' || "&_slo_viyaHost." || '/credentials/domains/&API_KEY_DOMAIN./secrets?lookupInGroup=true"';
+    output;
+    _slo_code = 'oauth_bearer=sas_services';
+    output;
+    _slo_code = 'out=llmKey;';
+    output;
+    _slo_code = "headers 'Accept' = 'application/json';";
+    output;
+    _slo_code = 'run; quit;';
+    output;
+    _slo_code = 'data _null_;';
+    output;
+    _slo_code = 'infile llmKey lrecl=32767 truncover;';
+    output;
+    _slo_code = 'input;';
+    output;
+    _slo_code = 'retain _llm_rx;';
+    output;
+    _slo_code = "if _n_ = 1 then _llm_rx = prxparse('/""\Q' || strip(symget('API_KEY')) || '\E""\s*:\s*""([A-Za-z0-9+\/=]+)""/');";
+    output;
+    _slo_code = "if prxmatch(_llm_rx, _infile_) then call symputx('llmProviderKey', input(prxposn(_llm_rx, 1, _infile_), $base64x32767.));";
+    output;
+    _slo_code = 'run;';
+    output;
+    _slo_code = 'filename llmKey clear;';
+    output;
+    _slo_code = 'data _null_;';
+    output;
+    _slo_code = "if missing(symget('llmProviderKey')) then do;";
+    output;
+    _slo_code = 'put "WARNING: No key was read for the entry &API_KEY. of the credential domain &API_KEY_DOMAIN. (HTTP status &SYS_PROCHTTP_STATUS_CODE.).";';
+    output;
+    _slo_code = 'put "WARNING- The call sends an empty API_KEY, which only a model whose container holds the provider key can answer.";';
+    output;
+    _slo_code = 'put "WARNING- Add the entry for your user or a group of yours: see Managing Credentials in the guides of the accelerator.";';
+    output;
+    _slo_code = 'end;';
+    output;
+    _slo_code = 'else put "NOTE: The key of the entry &API_KEY. was read from the credential domain &API_KEY_DOMAIN..";';
+    output;
+    _slo_code = 'run;';
+    output;
+    keep _slo_code;
+run;
+
 * Create code that generates the JSON input;
 data work._slo_final_json_input;
     length _slo_code $32767.;
     if _slo_count GT 0 then set work._slo_options end=EoF nobs=_slo_count;
+    * 1 where the options hold API_KEY: the call then sends the key that was read, and the macro variable options keeps the name of the entry;
+    retain _slo_key 0;
+    if option_name EQ 'API_KEY' then _slo_key = 1;
 
     if _n_ = 1 then do;
         _slo_code = '%let systemPrompt=Your system prompt;';
@@ -169,16 +245,31 @@ data work._slo_final_json_input;
     if eof then do;
         _slo_code = '_slo_code = compress(_slo_code) ||"' || compress(option_name) || ':"|| "&' || compress(option_name) || '."' || "||'" || '}"' || "'" || ';';
         output;
-        _slo_code = 'put _slo_code;';
-        output;
-        _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
-        output;
+        if _slo_key EQ 1 then do;
+            _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+            output;
+            _slo_code = '_slo_code = tranwrd(_slo_code, "API_KEY:&API_KEY.", "API_KEY:" || strip(symget(' || "'llmProviderKey'" || ')));';
+            output;
+            _slo_code = 'put _slo_code;';
+            output;
+        end;
+        else do;
+            _slo_code = 'put _slo_code;';
+            output;
+            _slo_code = 'call symputx("options", compress(_slo_code) || "}");';
+            output;
+        end;
         _slo_code = "put '}';";
         output;
         _slo_code = 'put "]}";';
         output;
         _slo_code = 'run;';
         output;
+        * The key is not kept in the session once the line is sent;
+        if _slo_key EQ 1 then do;
+            _slo_code = '%let llmProviderKey=;';
+            output;
+        end;
     end;
     else do;
         _slo_code = '_slo_code = compress(_slo_code) ||"' || compress(option_name) || ':"|| "&' || compress(option_name) || '.,";';
@@ -213,7 +304,7 @@ run;
 
 * Combine the datasets;
 data work._slo_final;
-    set work._slo_final_macro_vars work._slo_final_json_input work._slo_final_http;
+    set work._slo_final_macro_vars work._slo_final_key work._slo_final_json_input work._slo_final_http;
 run;
 %end;
 
@@ -244,12 +335,12 @@ run;
 %end;
 filename _slo_rsp clear;
 proc datasets library=work noList noWarn;
-    delete _slo_options _slo_final_macro_vars _slo_final_json_input _slo_final_http _slo_final;
+    delete _slo_options _slo_final_macro_vars _slo_final_key _slo_final_json_input _slo_final_http _slo_final;
 run; quit;
 * A run that could not read the default of every option wrote no code. It says why, and ends with the condition code of a failed job;
 %if &_slo_ok. NE 1 %then %do;
     %put ERROR: Create-LLM-Call.sas: no code was written, because %superq(_slo_why).;
     %let SYSCC = %sysfunc(max(&SYSCC., 1012));
 %end;
-%symdel _slo_LLM_name _slo_optionsFileURI _slo_LLMSCR _slo_result _slo_fl _slo_fl_path _slo_viyaHost;
+%symdel _slo_LLM_name _slo_optionsFileURI _slo_LLMSCR _slo_result _slo_fl _slo_fl_path _slo_viyaHost / nowarn;
 %symdel _slo_chosen _slo_ok _slo_why / nowarn;

@@ -71,10 +71,43 @@ def test_the_comments_and_the_readme_say_what_the_script_does():
     # the header says what the script leaves: the code on the Results tab and in the fileref, and no table
     header = text[:text.index("*/")]
     assert "written to the\n      fileref _slo_LLM" in header and "No table is left." in header and "_slo_models" not in text
-    assert "delete _slo_options _slo_final_macro_vars _slo_final_json_input _slo_final_http _slo_final;" in text
+    assert "delete _slo_options _slo_final_macro_vars _slo_final_key _slo_final_json_input _slo_final_http _slo_final;" in text
     readme = " ".join((FOLDER / "README.md").read_text(encoding="utf-8").split())
     assert "*_slo_fl*, setting this value to 1 will create a filename with the base LLM call code in it" in readme
     assert "You can either specify *temp*, which creates a temporary file" in readme
+    # the header says what the code does with the option API_KEY
+    assert ("The option API_KEY of a model names the entry of the credential domain agentic-ai-keys that holds the provider key, "
+            "not the key. The code reads the key of that entry when it runs, under the identity of its SAS session, and sends it "
+            "in the place of the name; the log says so in a NOTE.") in " ".join(header.split())
+
+
+def test_the_readme_says_that_a_file_of_sas_content_is_written():
+    """live-27 (2026-10-20). The README said of _slo_fl_path that paths in the SAS Content are currently not supported -
+    while LLM - Create LLM Call 1.5 wrote its code to SAS Content and read it from there, and the script takes a FILESRVC
+    file the same way: it puts the value behind FILENAME _slo_LLM. Measured the same day with the script and the value
+    filesrvc folderPath='/Users/<user>/My Folder/<folder>' filename='<name>.sas': the NOTE named that file, the fileref
+    _slo_LLM was assigned, and the code included from it called gpt_5_mini with HTTP 200."""
+    readme = " ".join((FOLDER / "README.md").read_text(encoding="utf-8").split())
+    text = script()
+
+    assert "not supported" not in readme
+    assert ("A file in the *SAS Content* is set with the access method FILESRVC, the folder and the file name each between quotes: "
+            "*filesrvc folderPath='/Users/\\<you\\>/My Folder' filename='\\<llmName\\>Call.sas'*. The script writes the code to that "
+            "file, and the fileref *_slo_LLM* names it. The custom steps take a path on the SAS Server and a path in the SAS Content "
+            "alike, from their path control.") in readme
+    # what the script does with the value: the statement that assigns the fileref, then the file is written through it
+    assert "filename _slo_LLM &_slo_fl_path.;" in text and "file _slo_LLM;" in text
+
+
+def test_the_readme_says_where_the_key_comes_from():
+    readme = " ".join((FOLDER / "README.md").read_text(encoding="utf-8").split())
+
+    assert "### The provider key" in (FOLDER / "README.md").read_text(encoding="utf-8")
+    for said in ("The code keeps that name in `%let API_KEY=<entry name>;` and reads the key of the entry when it runs",
+                 "`%let API_KEY_DOMAIN=agentic-ai-keys;`", "The key is not written to the log, and the macro variable *options*",
+                 "`NOTE: The key of the entry OpenAI was read from the credential domain agentic-ai-keys.`",
+                 "`WARNING: No key was read for the entry ...`", "the provider answers 401 - the container answers 422"):
+        assert said in readme, said
 
 
 # ---------------------------------------------------------------------------

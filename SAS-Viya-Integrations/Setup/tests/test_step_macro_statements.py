@@ -89,7 +89,9 @@ def test_the_steps_that_are_read():
     # what the reading is made of: every line of the nine programs that holds one of the three, a text of the
     # code a step writes included
     kinds = [kind for name in READ for kind, _ in macro_statements(program(name))]
-    assert {kind: kinds.count(kind) for kind in ("put", "let", "call")} == {"put": 18, "let": 85, "call": 36}
+    # 18, 85 and 36 until 2026-10-20: MM - Get Model Information 1.2 has four %put, four %let and one macro call more, and
+    # the code LLM - Create LLM Call 1.6 and LLM - Get Options 1.5 write four %let more each (the provider key)
+    assert {kind: kinds.count(kind) for kind in ("put", "let", "call")} == {"put": 22, "let": 97, "call": 37}
 
 
 @pytest.mark.parametrize("name", READ, ids=[name[:-5] for name in READ])
@@ -103,8 +105,10 @@ def test_no_statement_of_the_macro_language_resolves_a_text_the_program_made(nam
                 resolved.setdefault(variable, []).append(statement)
 
     assert sorted(resolved) == sorted(RESOLVED.get(name, {})), resolved
-    # the reading is not empty: every program has such statements, and all but one make a variable while they run
-    assert macro_statements(text) and bool(made) == (name != "MM - Get Model Information.step")
+    # the reading is not empty: every program has such statements, and each makes a variable while it runs - MM - Get
+    # Model Information since 1.2, whose list of properties is the one of the model (_mgi_vars, the names of SAS
+    # variables of the table the JSON engine makes, which a %length reads and a VAR statement names)
+    assert macro_statements(text) and made
 
 
 def test_what_the_two_steps_that_write_a_code_file_make_is_read_as_text():
@@ -156,7 +160,8 @@ def test_a_step_deletes_the_macros_it_defines_and_no_other(name):
 
     assert sorted(deleted) == sorted(defined), name
     if name == "MM - Get Model Information.step":
-        assert defined == [] and text.endswith("%symdel _mgi_viyaHost _mgi_model_id;")
+        # version 1.2 reads the model in a macro of its own, and deletes it
+        assert defined == ["_mgi_get_information"] and text.endswith("%symdel _mgi_viyaHost _mgi_model_id / nowarn;")
         # the comment at the top names this step and the prefix of its macro variables
         assert text.startswith("/**************************************************************\n"
                                "    Get the information SAS Model Manager holds on one model\n\n"
@@ -165,6 +170,8 @@ def test_a_step_deletes_the_macros_it_defines_and_no_other(name):
         ui = json.loads(json.loads((STEPS / name).read_bytes().decode("utf-8"))["ui"])
         changelog = [child["text"] for page in ui["pages"] for section in page["children"] for child in section.get("children", [])
                      if child["id"] == "textChangelog"]
+        assert changelog[0].startswith("* Version: 1.2 (20OCT2026)\n")
+        changelog = [changelog[0][changelog[0].index("* Version: 1.1 "):]]
         assert changelog == [
             "* Version: 1.1 (13OCT2026)\n"
             "      - The last statement of the program deleted the macro of the step MM - Get Models in Project, which this step does not "
