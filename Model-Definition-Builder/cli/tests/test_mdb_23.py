@@ -131,7 +131,9 @@ def test_every_print_of_mdb_and_of_its_skills_loses_its_control_characters():
 def audit_script(monkeypatch):
     """The audit script as a module, without the .env of the checkout: the
     script loads one at its import, and the folders above a worktree hold
-    the real one."""
+    the real one. The script imports sasctl: skipped where sasctl is not
+    installed."""
+    pytest.importorskip("sasctl")
     monkeypatch.setitem(sys.modules, "dotenv", types.SimpleNamespace(find_dotenv=lambda **_: "",
                                                                       load_dotenv=lambda *_, **__: False))
     spec = importlib.util.spec_from_file_location("audit_models_under_test", AUDIT_SCRIPT)
@@ -346,7 +348,9 @@ def test_the_commands_that_reach_sas_viya_are_known():
 
 def _run(command, tmp_path, monkeypatch, repo_root, way, kind):
     """One command, one way in, a transport that raises `kind`; what one
-    run patches is undone before the next."""
+    run patches is undone before the next. The sign-in is sasctl's:
+    skipped where sasctl is not installed."""
+    pytest.importorskip("sasctl")
     tmp = tmp_path / way / command
     tmp.mkdir(parents=True)
     with monkeypatch.context() as patched:
@@ -414,7 +418,9 @@ def test_a_token_that_is_answered_reaches_the_command(monkeypatch, tmp_path, sta
     it says is not read: a 401, a 404 or a redirect of `/` goes on to the
     command, as before. sasctl's own `request` reads a 401 that says
     'access token expired' and asks the token address again - and with a
-    token alone ends with a ValueError -, so the HEAD is sent past it."""
+    token alone ends with a ValueError -, so the HEAD is sent past it.
+    Skipped where sasctl is not installed."""
+    pytest.importorskip("sasctl")
     _sign_in_env(monkeypatch, "token", home=tmp_path)
     sent, carried = [], []
 

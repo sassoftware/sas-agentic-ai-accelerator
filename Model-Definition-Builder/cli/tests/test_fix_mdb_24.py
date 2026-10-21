@@ -42,7 +42,8 @@ def test_every_command_that_reaches_sas_viya_shows_an_answer_on_one_line(
     BODY - a CR LF in the middle - to every request after the sign-in:
     wherever the answer is shown, in a line of the command or in the
     traceback, it is SHOWN, whole, on one line; its second half never
-    starts a line of its own."""
+    starts a line of its own. Skipped where sasctl is not installed."""
+    pytest.importorskip("sasctl")
     shown_in_a_line = set()
     for command in sorted(_reaching_sas_viya()):
         tmp = tmp_path / command

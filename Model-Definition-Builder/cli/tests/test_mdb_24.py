@@ -78,15 +78,16 @@ def test_a_port_from_1_to_65535_reaches_sasctl(env, fake_sasctl, port, tail):
 @pytest.mark.parametrize("way", ["password", "token"])
 @pytest.mark.parametrize("tail", TAILS)
 def test_mdb_list_with_an_empty_port_ends_with_the_one_line_and_sends_nothing(
-        monkeypatch, capsys, no_dotenv, tmp_path, way, tail):
+        monkeypatch, capsys, no_dotenv, fake_sasctl, tmp_path, way, tail):
     """The same through `mdb list` as the console script runs it: exit
-    code 2, the one line, and no request."""
+    code 2, the one line, and no request. A stand-in for sasctl: without
+    sasctl mdb says so before it reads the address."""
     _sign_in_env(monkeypatch, way, home=tmp_path)
     url = f"http://127.0.0.1:{tail}"
     monkeypatch.setenv(s.URL_ENV, url)
     sent = _answering(monkeypatch, 500)
     code, text = _main(monkeypatch, capsys, "list")
-    assert (code, sent) == (2, []), (code, sent, text)
+    assert (code, sent, fake_sasctl) == (2, [], []), (code, sent, text)
     assert text == f"SAS_VIYA_URL is {url!r}, " + ADDRESS.format(NO_PORT) + "\n"
 
 
@@ -175,7 +176,9 @@ def test_the_message_of_a_syntax_error_is_on_the_line_that_names_it(args):
 @pytest.mark.parametrize("way", ["password", "token", "cli"])
 def test_mdb_list_ends_with_the_one_line_of_the_answer(monkeypatch, capsys, no_dotenv, tmp_path, way, status):
     """live-23b B2: `mdb list` against a stand-in that answers 401 or 500
-    with BODY ended with a traceback whose last line was split."""
+    with BODY ended with a traceback whose last line was split. Skipped
+    where sasctl is not installed."""
+    pytest.importorskip("sasctl")
     _sign_in_env(monkeypatch, way, home=tmp_path)
     _answering(monkeypatch, status)
     code, text = _main(monkeypatch, capsys, "list")

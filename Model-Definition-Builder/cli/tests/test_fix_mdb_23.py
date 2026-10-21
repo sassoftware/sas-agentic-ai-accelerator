@@ -120,7 +120,9 @@ def test_every_command_that_reaches_sas_viya_prints_an_answer_it_did_not_catch_w
     typer's traceback, which printed it as it is (exit code 1). Every
     command that reaches SAS Viya, with every way in: the command ends -
     with a line of its own, or with the traceback Python prints and exit
-    code 1 - and nothing it prints holds a control character."""
+    code 1 - and nothing it prints holds a control character. Skipped
+    where sasctl is not installed."""
+    pytest.importorskip("sasctl")
     ended_by_traceback = []
     for command in sorted(_reaching_sas_viya()):
         tmp = tmp_path / command
@@ -211,7 +213,9 @@ def test_every_exception_click_shows_is_printed_without_control_characters(monke
     """review-23a: `mdb list --x$'\\e[31m'zz` showed `No such option:
     --x^[[31mzz`. Each exception click shows, raised by a command with a
     text that holds control characters: the line shows the text without
-    them."""
+    them. Newer releases of typer (0.27.3 was read) write a control
+    character of an unknown option as `\\x1b` themselves, which is the text
+    without them too."""
     kind, = [kind for kind in _click_errors() if kind.__name__ == name]
     info, = [info for info in cli.app.registered_commands if info.name == "list"]
 
@@ -222,7 +226,8 @@ def test_every_exception_click_shows_is_printed_without_control_characters(monke
         raise error
     monkeypatch.setattr(info, "callback", ends)
     code, text = _main(monkeypatch, capsys, "list")
-    assert code == kind.exit_code and ("zz[31mRED" in text) == (name != "NoArgsIsHelpError"), (code, text)
+    shown = "zz[31mRED" in text or "zz\\x1b[31mRED" in text
+    assert code == kind.exit_code and shown == (name != "NoArgsIsHelpError"), (code, text)
     assert "\x1b[31mRED" not in text and "\x9b" not in text and "\r" not in text, repr(text)
 
 
