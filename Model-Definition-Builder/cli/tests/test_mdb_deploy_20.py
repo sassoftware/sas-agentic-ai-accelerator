@@ -633,7 +633,8 @@ def test_the_help_and_the_readme_say_what_the_commands_do():
            "- fail the entry" in readme
     assert "(--only Data --to \"/Team/Tables/Data\" writes /Team/Tables)" in deploy_help
     assert "--only Data --to \"/Team/Tables/Data\" writes /Team/Tables into contentRoot" in readme
-    assert "with --no-reports added where the reports were refused for the content root" in import_help
+    assert "with --no-reports / --no-decisions added where the reports / the decisions were refused for the content " \
+           "root" in import_help
     # nothing here states what has or has not run against SAS Viya: that belongs in the changelog and the guide
     for text in (deploy_help, import_help):
         assert not re.search(r"not (been )?(run|measured)|has not run|untested", text)

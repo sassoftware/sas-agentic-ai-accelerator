@@ -48,14 +48,18 @@ back. The old node type is kept unless --delete-old is given AND no version
 of any decision uses it any more. A run that stopped is run again: what is
 done is found done (the renamed node type says where the first run got to).
 
-WHERE THE TARGET IS THERE ALREADY - the package or the Create program made
-it after the old node type was renamed by hand to free its name - every
-decision is still read, and every version that calls a node type LIKE the
-target is listed: one whose name starts with the node's name (any case;
-this covers "<name> (before <id8>)") or whose code is the target's
-(`similar_node_types`). `--from-id <its id>` moves the decisions of one of
-them to the target and creates nothing. A version whose node lost its
-address (a node type deleted earlier) is a warning: no mapping moves it.
+EVERY RUN reads every decision and lists every version that calls a node
+type LIKE the target (`similar_node_types`): a COPY - its code is the
+target's, or the code the target gets from the old node type - or a node
+type whose name ALONE starts with the node's name (any case) while its code
+is another. Decisions left on a copy make a run with --apply end with exit
+code 1; a name alone is a warning only, since another node type may be named
+like it ("Call LLM Streaming"). Where the target is there already - the
+package or the Create program made it after the old node type was renamed
+by hand to free its name - `--from-id <its id>` moves the decisions of one
+of them to the target and creates nothing; it warns where that node type is
+no copy. A version whose node lost its address (a node type deleted
+earlier) is a warning: no mapping moves it.
 
 Every request goes through a session with `get` / `post` / `put` /
 `delete` that take a path, and every call of the transfer service through
@@ -68,7 +72,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from ..core.packages import NODE_TYPE_URI, _reduce, custom_objects, locate, node_type_uris
+from ..core.packages import NODE_TYPE_URI, _reduce, custom_objects, locate, node_code, node_type_uris
 from . import transfer
 from .answer import answer, one_line
 
@@ -393,37 +397,54 @@ def _versions_text(versions: list) -> str:
 def _code(content: Optional[dict]) -> str:
     """The code of a node type's content - line ends, and blanks at the end
     of a line, aside."""
-    text = str((content or {}).get("staticContent") or "").replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+    return node_code((content or {}).get("staticContent"))
 
 
-def similar_node_types(session, nodes: list, name: str, target_id: str, target_content: Optional[dict]) -> list:
-    """[(node type, why)] of the node types other than the target that look
-    like an older copy of it, by ONE RULE: its name starts with `name`, in
-    any case - which covers the "<name> (before <id8>)" an earlier run of
-    the move gave the old node type and a name an administrator made by
-    adding to it - or its code is the code of the target (line ends and
-    blanks at the end of a line aside). The code is read only of a node type
-    whose name does not say it already."""
+def similar_node_types(session, nodes: list, name: str, target_id: str, target_content: Optional[dict],
+                       skip=()) -> list:
+    """[(node type, why, copy)] of the node types other than the target (and
+    `skip`) that are like it.
+
+    A COPY (`copy` True): its code is the code of the target (line ends and
+    blanks at the end of a line aside), or its name is the
+    "<name> (before <id8>)" this command gives the old node type. A copy
+    whose decisions are left makes a run with --apply end with exit code 1.
+
+    A NAME ALONE (`copy` False): its name starts with `name`, in any case -
+    a node renamed by hand to free the name, or another node type named like
+    it ("Call LLM Streaming") - and its code is another, or cannot be
+    compared. It is listed with its decisions as a warning, and never counts
+    as left: a node type with other code is not moved on a name."""
     code = _code(target_content)
     found = []
     for node in nodes:
         node_id = str(node.get("id") or "")
-        if node_id == target_id:
+        if node_id == target_id or node_id in skip:
             continue
-        if str(node.get("name") or "").lower().startswith(name.lower()):
-            found.append((node, f"its name starts with '{name}'"))
-            continue
-        if not code:
+        node_name = str(node.get("name") or "")
+        by_name = node_name.lower().startswith(name.lower())
+        if not by_name and not code:
             continue
         try:
             content = get_node_content(session, node_id)
         except NodeError:
             # a node type whose content cannot be read (a REST node type, a refusal) is not taken for a copy
-            continue
-        if _code(content) == code:
-            found.append((node, f"it has the code of {target_id}"))
+            content = None
+            if not by_name:
+                continue
+        same = bool(code) and content is not None and _code(content) == code
+        if same:
+            found.append((node, (f"its name starts with '{name}' and it" if by_name else "it")
+                          + f" has the code of {target_id}", True))
+        elif by_name:
+            why = (f"{target_id} has no code to compare" if not code else "its code cannot be read"
+                   if content is None else f"its code is not the code of {target_id}")
+            found.append((node, f"its name starts with '{name}', but {why}", node_name == renamed_name(name, target_id)))
     return found
+
+
+def _named_alike(node: dict, name: str) -> bool:
+    return str(node.get("name") or "").lower().startswith(name.lower())
 
 
 def _broken_lines(broken: list, say: Say) -> None:
@@ -461,8 +482,6 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     target = target_found[0] if target_found else None
     need_rename = need_create = need_content = False
     old = None
-    #: (node type, why) of the node types like the target that this run does not move
-    others: list = []
     moves = command or (lambda node_id: f"mdb decision-node-migrate --from-id {node_id} --apply")
 
     if from_id is not None:
@@ -480,22 +499,22 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
             say(f"The node type {from_id} (--from-id) is not on this site. Nothing was changed.", "red")
             return 1
 
+    target_content = None
     if target is not None and (from_id is not None or (named and named[0].get("id") == target_id)):
         say(f"Node type '{target.get('name')}': it has the id {target_id} already.", None)
         target_content = get_node_content(session, target_id)
-        similar = similar_node_types(session, nodes, name, target_id, target_content)
         if old is not None:
-            why = next((reason for node, reason in similar if node.get("id") == from_id), None)
             say(f"--from-id: the decisions that call the node type '{old.get('name')}' ({from_id}) are moved to "
                 f"{target_id}; no node type is created or renamed.", None)
-            if why is None:
-                say(f"  '{old.get('name')}' neither has a name that starts with '{name}' nor the code of {target_id}: "
-                    f"check that it is a copy of that node type - its decisions get the code and the terms of "
-                    f"{target_id}.", "yellow")
+            if not any(copy for _node, _reason, copy in
+                       similar_node_types(session, [old], name, target_id, target_content)):
+                say(f"  '{old.get('name')}' does not have the code of {target_id}"
+                    + (f", though its name starts with '{name}'" if _named_alike(old, name) else "")
+                    + ": check that it is a copy of that node type - its decisions get the code and the terms of "
+                    f"{target_id}" + (", and --delete-old then deletes it." if delete_old else "."), "yellow")
         elif renamed:
             old = renamed[0]
             say(f"The old node type '{old_name}' ({old.get('id')}) is still there - an earlier run renamed it.", None)
-        others = [(node, reason) for node, reason in similar if old is None or node.get("id") != old.get("id")]
         need_content = old is not None and target_content is None
         if target_content is None and old is None:
             say(f"The node type {target_id} has no content (code and terms): a decision that calls it cannot run. "
@@ -528,8 +547,8 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
             if alike:
                 say(f"Node type(s) whose name starts with '{name}': "
                     + "; ".join(f"'{node.get('name')}' ({node.get('id')})" for node in alike)
-                    + f". Decisions that call one of them keep calling it. Once {target_id} is there, "
-                    f"`{moves('<its id>')}` moves them to it.", "yellow")
+                    + f". Decisions that call one of them keep calling it. Once {target_id} is there, a run of this "
+                    "command says which of them has its code, and which decisions call them.", "yellow")
             return 0
         old = renamed[0]
         say(f"No node type is named '{name}', and the old node type '{old_name}' ({old.get('id')}) is there: an "
@@ -543,6 +562,11 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     if need_content and old_content is None:
         say(f"The node type {old_id} has no content (code and terms) to copy. Nothing was changed.", "red")
         return 1
+    # the node types like the target that this run does not move: compared with the code the target has, or - where
+    # this run creates it or gives it its content - the code it gets
+    others = similar_node_types(session, nodes, name, target_id,
+                                target_content if target_content is not None else old_content,
+                                skip={old_id} if old_id else ())
 
     say("Looking for every decision with a version that calls "
         + (f"{old_uri}" if old_uri else "a node type like it") + " - every version of every decision is read ...",
@@ -555,18 +579,28 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
             say(f"  '{use.name}' ({use.id}): version(s) {_versions_text(use.using(old_uri))}", None)
     elif old_uri:
         say("No decision calls the old node type.", None)
+    #: the copies of the target that decisions still call - a run with --apply that leaves them ends with exit code 1
     left = []
-    for node, reason in others:
+    later = f"Once {target_id} is there (this command with --apply), " if target is None else ""
+    for node, reason, copy in others:
         uri = node_uri(str(node.get("id")))
         calling = [use for use in every if use.using(uri)]
         if calling:
-            left.append(node)
+            if copy:
+                left.append(node)
             say(f"The node type '{node.get('name')}' ({node.get('id')}) - {reason} - is called by {len(calling)} "
-                "decision(s), which this run does not move:", "yellow")
+                + ("decision(s), which this run does not move:" if copy else
+                   f"decision(s). It is not taken for a copy of {target_id}, and this run does not move them:"),
+                "yellow")
             for use in calling:
                 say(f"  '{use.name}' ({use.id}): version(s) {_versions_text(use.using(uri))}", "yellow")
-            say(f"  `{moves(str(node.get('id')))}` moves them to {target_id}. Do not delete that node type while a "
-                "version calls it.", "yellow")
+            if copy:
+                say(f"  {later}`{moves(str(node.get('id')))}` moves them to {target_id}. Do not delete that node type "
+                    "while a version calls it.", "yellow")
+            else:
+                say(f"  {later}{'if' if later else 'If'} it is an older version of that node type all the same, "
+                    f"`{moves(str(node.get('id')))}` moves them to {target_id} - they then run its code and its "
+                    "terms. Do not delete that node type while a version calls it.", "yellow")
         else:
             say(f"The node type '{node.get('name')}' ({node.get('id')}) - {reason} - is called by no version of any "
                 "decision.", None)

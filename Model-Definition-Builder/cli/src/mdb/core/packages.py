@@ -1619,10 +1619,72 @@ def _version_label(version: dict) -> str:
     return f"{version.get('majorRevision', '?')}.{version.get('minorRevision', '?')}"
 
 
-def _node_type_problems(node: Located, listed: dict, where: str, allowed=ALLOWED_HOSTS) -> list:
+#: The data step of the Create and the Update program of a custom node that
+#: writes the request body of its content - one `put '...';` per line.
+NODE_PROGRAM_START = "* Create the content for the node type;"
+#: The fields of a signature term the gate compares with the program.
+TERM_COMPARED = ("name", "dataType", "length", "direction")
+
+
+def node_code(text) -> str:
+    """The code of a node type - line ends, and blanks at the end of a line,
+    aside."""
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def program_node_content(text: str) -> dict:
+    """The content (code and signature terms) a SAS program gives a custom
+    node type: the JSON its data step after NODE_PROGRAM_START writes, one
+    `put '<line>';` at a time (a quote doubled in the SAS string is one).
+    ValueError where the program writes none that can be read."""
+    text = text.replace("\r\n", "\n")
+    start = text.find(NODE_PROGRAM_START)
+    if start < 0:
+        raise ValueError(f"it has no data step after '{NODE_PROGRAM_START}'")
+    end = text.find("run;", start)
+    lines = re.findall(r"^\s*put '(.*)';\s*$", text[start:end if end >= 0 else None], flags=re.MULTILINE)
+    try:
+        content = json.loads("\n".join(line.replace("''", "'") for line in lines))
+    except ValueError as exc:
+        raise ValueError(f"the content it writes is no JSON ({exc})") from exc
+    if not isinstance(content, dict) or not str(content.get("staticContent") or "").strip():
+        raise ValueError("the content it writes has no staticContent")
+    return content
+
+
+def _terms(content: dict) -> list:
+    return sorted(({key: term.get(key) for key in TERM_COMPARED}
+                   for term in content.get("nodeTypeSignatureTerms") or [] if isinstance(term, dict)),
+                  key=lambda term: str(term["name"]))
+
+
+def _node_program_problems(shown: str, content: dict, listed: dict, repo_root) -> list:
+    """Where the entry names the SAS program of the node type (`content`):
+    the packaged code and terms are the ones that program writes - the
+    import overwrites the node type of that id on every site with them."""
+    program = listed.get("content")
+    if not program or repo_root is None:
+        return []
+    try:
+        expected = program_node_content(_content.repository_file(repo_root, program).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"{shown}: {program} cannot be read for the code of the release - {exc}"]
+    problems = []
+    if node_code(content.get("staticContent")) != node_code(expected.get("staticContent")):
+        problems.append(f"{shown}: its code is not the code {program} writes - the import would give every site "
+                        "the code of the package")
+    if _terms(content) != _terms(expected):
+        problems.append(f"{shown}: its terms ({', '.join(str(t['name']) for t in _terms(content)) or 'none'}) are not "
+                        f"the ones {program} writes - name, type, length and direction")
+    return problems
+
+
+def _node_type_problems(node: Located, listed: dict, where: str, allowed=ALLOWED_HOSTS, repo_root=None) -> list:
     """What a packaged custom node type does not pass: it is the node type the
     entry of its decision lists - that name, that id in its summary, in its
-    own representation and in its content - with code to run, and it carries
+    own representation and in its content - with code to run, the code and
+    the terms of the program its entry names under `content`, and it carries
     nothing an export does not give one (no connector, no substitution)."""
     shown = f"node type '{node.name}' ({node_type_id(node)}) of {where}"
     body = _body(node.obj)
@@ -1637,8 +1699,10 @@ def _node_type_problems(node: Located, listed: dict, where: str, allowed=ALLOWED
         problems.append(f"{shown} is named '{rep.get('name')}', its manifest entry lists '{listed['name']}'")
     if not isinstance(content, dict) or not str(content.get("staticContent") or "").strip():
         problems.append(f"{shown} carries no code (decisionNodeTypeContentRep with staticContent)")
-    elif content.get("nodeTypeId") != listed["id"]:
-        problems.append(f"{shown}: its content belongs to the node type {content.get('nodeTypeId')}")
+    else:
+        if content.get("nodeTypeId") != listed["id"]:
+            problems.append(f"{shown}: its content belongs to the node type {content.get('nodeTypeId')}")
+        problems += _node_program_problems(shown, content, listed, repo_root)
     for connector in list(node.detail.get("connectors") or []) + list(node.obj.get("connectors") or []):
         problems.append(f"{shown} carries a connector of type '{(connector or {}).get('type')}' - an export gives a "
                         "node type none")
@@ -1650,7 +1714,7 @@ def _node_type_problems(node: Located, listed: dict, where: str, allowed=ALLOWED
     return problems
 
 
-def _decision_differences(item: Located, entry, items: list, allowed=ALLOWED_HOSTS) -> list:
+def _decision_differences(item: Located, entry, items: list, allowed=ALLOWED_HOSTS, repo_root=None) -> list:
     """What a packaged decision does not pass: sentences.
 
     * its body is a decision of that name, with every version;
@@ -1710,7 +1774,7 @@ def _decision_differences(item: Located, entry, items: list, allowed=ALLOWED_HOS
             problems.append(f"{where}: the node type '{listed['name']}' ({listed['id']}) is not in the package - an "
                             "import would leave the decision without it")
             continue
-        problems += _node_type_problems(nodes[uri], listed, where, allowed)
+        problems += _node_type_problems(nodes[uri], listed, where, allowed, repo_root)
     told = json.dumps([item.obj.get("summary") or {}, body,
                        {key: value for key, value in item.obj.items() if key not in ("content", "summary")}])
     for host, n in sorted(hosts_in(told).items()):
@@ -1817,7 +1881,8 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
                             + _report_file_differences(item, entry, children))
             continue
         if entry.kind == "decision":
-            problems.extend(Difference(text) for text in _decision_differences(item, entry, items))
+            problems.extend(Difference(text) for text in
+                            _decision_differences(item, entry, items, repo_root=manifest.repo_root))
             continue
         problems.extend(Difference(text) for text in _metadata_problems(item))
         if entry.kind != "folder":

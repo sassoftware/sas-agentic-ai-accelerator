@@ -46,6 +46,9 @@ THE KINDS.
                     overwrites the one of that id in place). The decision of
                     the accelerator holds the Call LLM node only: it is how the
                     package brings that node to a site under one fixed id.
+                    `content:` of a node type names the SAS program that gives
+                    it the code and the terms of the release; `mdb
+                    package-check` holds the packaged node type to them.
 
 A SITE SETTING. A parameter marked `siteSetting: true` holds a value of the
 site, not of the release: the compute context a job runs in (`_contextName`),
@@ -105,7 +108,7 @@ FIELDS = {
 TRANSFER_KINDS = ("report", "decision")
 
 #: What an entry of `nodeTypes:` of a decision carries.
-NODE_TYPE_FIELDS = ("name", "id")
+NODE_TYPE_FIELDS = ("name", "id", "content")
 
 #: A node type id as SAS Intelligent Decisioning writes one.
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -372,10 +375,12 @@ def _report_files(raw, where: str, problems: list) -> tuple:
     return tuple(result)
 
 
-def _node_types(raw, where: str, problems: list) -> tuple:
+def _node_types(raw, where: str, problems: list, repo_root=None, check_sources: bool = True) -> tuple:
     """The `nodeTypes:` of a decision entry: the name and the id of each
-    custom node type the decision uses. A decision of the content folder
-    exists to carry its node types, so it lists at least one."""
+    custom node type the decision uses - and, as `content`, the repository
+    path of the SAS program that writes its code and its terms, where one
+    does. A decision of the content folder exists to carry its node types,
+    so it lists at least one."""
     if not isinstance(raw, list) or not raw:
         problems.append(f"{where}: a decision lists the custom node types it uses under nodeTypes, each with its "
                         "name and id")
@@ -396,7 +401,16 @@ def _node_types(raw, where: str, problems: list) -> tuple:
             problems.append(f"{where}: node type '{item['name']}' is listed twice")
         ids.add(node_id)
         names.add(item["name"])
-        result.append({"name": item["name"], "id": node_id})
+        listed = {"name": item["name"], "id": node_id}
+        if "content" in item:
+            bad = _repo_file_problem(repo_root, item["content"], "content") if check_sources else None
+            if not isinstance(item["content"], str):
+                problems.append(f"{where}: node type '{item['name']}': content must name a file of the repository")
+            elif bad:
+                problems.append(f"{where}: node type '{item['name']}': {bad}")
+            else:
+                listed["content"] = item["content"]
+        result.append(listed)
     return tuple(result)
 
 
@@ -531,7 +545,7 @@ def parse_manifest(document, repo_root, where="package-manifest.yaml", check_sou
             values["checks"] = _checks(raw.get("checks"), where_entry, problems)
             values["files"] = _report_files(raw.get("files"), where_entry, problems)
         elif kind == "decision":
-            values["node_types"] = _node_types(raw.get("nodeTypes"), where_entry, problems)
+            values["node_types"] = _node_types(raw.get("nodeTypes"), where_entry, problems, repo_root, check_sources)
         if "description" in raw and kind in ("folder", "jobDefinition"):
             if not isinstance(raw["description"], str):
                 problems.append(f"{where_entry}: description must be text")

@@ -266,6 +266,9 @@ def sid(monkeypatch):
 
 
 TARGET = "1b1b1b1b-0000-4000-8000-000000000002"
+#: The program that gives the Call LLM node the code and the terms of the release.
+UPDATE_PROGRAM = ("SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration/"
+                  "Update-Custom-SAS-Intelligent-Decisioning-Node.sas")
 
 
 def migrate(*args):
@@ -288,7 +291,7 @@ def migrate(*args):
 def test_the_defaults_are_the_call_llm_node_of_the_package():
     assert (CALL_LLM_NODE_NAME, CALL_LLM_NODE_ID) == ("Call LLM", "f9efcbb7-f57b-4a62-b56d-1a89595e2039")
     entry = load_manifest(REPO_ROOT, check_sources=False).find("Decisions/Call LLM Node", "decision")
-    assert entry.node_types == ({"name": CALL_LLM_NODE_NAME, "id": CALL_LLM_NODE_ID},)
+    assert entry.node_types == ({"name": CALL_LLM_NODE_NAME, "id": CALL_LLM_NODE_ID, "content": UPDATE_PROGRAM},)
     assert cli._migrate_command(CALL_LLM_NODE_NAME, CALL_LLM_NODE_ID, apply=True) == \
         "mdb decision-node-migrate --apply"
     assert cli._migrate_command("ZZ Call", TARGET) == \
@@ -491,7 +494,7 @@ def test_a_locked_version_the_import_left_on_the_old_node_is_found_by_the_read_b
 def test_every_page_of_node_types_decisions_and_versions_is_read(sid):
     """A service gives at most a few items a page, whatever limit is asked for."""
     for number in range(3):
-        sid.node(f"5e5e5e5e-0000-4000-8000-00000000000{number}", f"Another node {number}")
+        sid.node(f"5e5e5e5e-0000-4000-8000-00000000000{number}", f"Another node {number}", code=f"other {number}")
     sid.node(OLD, "ZZ Call")                                  # the last of four node types
     for number in range(3):
         sid.decision(f"d{number}", f"Other {number}", ["5e5e5e5e-0000-4000-8000-000000000000"])
@@ -534,8 +537,8 @@ def test_a_node_renamed_by_hand_is_listed_with_its_decisions_and_nothing_says_it
     sid.decision("d1", "Uses old", [OLD], [OLD])
     code, text = migrate("--apply", "--delete-old")
     assert code == 1
-    assert (f"The node type 'ZZ Call old' ({OLD}) - its name starts with 'ZZ Call' - is called by 1 decision(s), which "
-            "this run does not move:") in text
+    assert (f"The node type 'ZZ Call old' ({OLD}) - its name starts with 'ZZ Call' and it has the code of {TARGET} - is "
+            "called by 1 decision(s), which this run does not move:") in text
     assert "  'Uses old' (d1): version(s) 1.0 (locked), 2.0 (current)" in text
     assert f'  `mdb decision-node-migrate --node-name "ZZ Call" --target-id {TARGET} --from-id {OLD} --apply` moves ' \
            f"them to {TARGET}." in text
@@ -596,8 +599,8 @@ def test_a_node_like_the_target_that_no_decision_calls_is_said_so_and_kept(sid):
     sid.node(TARGET, "ZZ Call")
     code, text = migrate("--apply", "--delete-old")
     assert code == 0, text
-    assert f"The node type 'ZZ Call (before 1b1b1b1b) copy' ({OLD}) - its name starts with 'ZZ Call' - is called by " \
-           "no version of any decision." in text
+    assert f"The node type 'ZZ Call (before 1b1b1b1b) copy' ({OLD}) - its name starts with 'ZZ Call' and it has the " \
+           f"code of {TARGET} - is called by no version of any decision." in text
     assert OLD in sid.nodes and sid.writes == []
 
 
@@ -607,8 +610,106 @@ def test_from_id_of_a_node_like_no_rule_is_moved_with_a_warning(sid):
     sid.decision("d1", "Uses it", [OLD])
     code, text = migrate("--from-id", OLD, "--apply")
     assert code == 0, text
-    assert f"'Something else' neither has a name that starts with 'ZZ Call' nor the code of {TARGET}" in text
+    assert f"  'Something else' does not have the code of {TARGET}: check that it is a copy of that node type" in text
     assert sid.uses("d1") == [[NODE + TARGET]]
+
+
+# ---- a node type named like the target, with other code, is no copy ----
+OTHER = "5e5e5e5e-0000-4000-8000-000000000005"
+
+
+def test_a_node_named_like_the_target_with_other_code_is_a_warning_and_never_fails_the_run(sid):
+    """'ZZ Call Streaming' is another node type: its name starts like the node, its code is another. The first run
+    with --apply names it and its decisions, moves only the old node type and ends with 0; so does the run after it."""
+    sid.node(OLD, "ZZ Call", code="the call code")
+    sid.node(OTHER, "ZZ Call Streaming", code="totally different streaming code")
+    sid.decision("d1", "Uses old", [OLD])
+    sid.decision("d2", "Uses streaming", [OTHER], [OTHER])
+    warning = (f"The node type 'ZZ Call Streaming' ({OTHER}) - its name starts with 'ZZ Call', but its code is not the "
+               f"code of {TARGET} - is called by 1 decision(s). It is not taken for a copy of {TARGET}, and this run "
+               "does not move them:")
+    command = f'`mdb decision-node-migrate --node-name "ZZ Call" --target-id {TARGET} --from-id {OTHER} --apply`'
+    code, text = migrate()
+    assert code == 0, text
+    assert warning in text and "  'Uses streaming' (d2): version(s) 1.0 (locked), 2.0 (current)" in text
+    assert f"  Once {TARGET} is there (this command with --apply), if it is an older version of that node type all " \
+           f"the same, {command} moves them" in text
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert warning in text and "Not everything is done" not in text
+    assert sid.uses("d1") == [[NODE + TARGET]] and sid.uses("d2") == [[NODE + OTHER], [NODE + OTHER]]
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert warning in text and f"  If it is an older version of that node type all the same, {command} moves them " \
+                               f"to {TARGET} - they then run its code and its terms." in text
+    assert "Not everything is done" not in text
+    # the command it names warns that the node type is no copy - and moves its decisions where that is meant
+    code, text = migrate("--from-id", OTHER, "--apply", "--delete-old")
+    assert code == 0, text
+    assert f"  'ZZ Call Streaming' does not have the code of {TARGET}, though its name starts with 'ZZ Call': check " \
+           f"that it is a copy of that node type - its decisions get the code and the terms of {TARGET}, and " \
+           "--delete-old then deletes it." in text
+    assert sid.uses("d2") == [[NODE + TARGET], [NODE + TARGET]]
+
+
+def test_a_first_run_that_leaves_decisions_on_a_copy_ends_with_1(sid):
+    """A copy of the node type (its code, another name) that decisions call: the first run with --apply moves the
+    decisions of the node type it renames, names the copy and ends with exit code 1 - after it moved."""
+    sid.node(OLD, "ZZ Call", code="the call code")
+    sid.node(HAND, "Our LLM node", code="the call code\r\n")
+    sid.decision("d1", "Uses old", [OLD])
+    sid.decision("d2", "Uses the copy", [HAND])
+    code, text = migrate()
+    assert code == 0, text
+    assert (f"The node type 'Our LLM node' ({HAND}) - it has the code of {TARGET} - is called by 1 decision(s), which "
+            "this run does not move:") in text
+    assert f'  Once {TARGET} is there (this command with --apply), `mdb decision-node-migrate --node-name "ZZ Call" ' \
+           f"--target-id {TARGET} --from-id {HAND} --apply` moves them to {TARGET}." in text
+    code, text = migrate("--apply")
+    assert code == 1, text
+    assert sid.uses("d1") == [[NODE + TARGET]] and sid.uses("d2") == [[NODE + HAND]]
+    assert "moved       decision 'Uses old' (d1)" in text
+    assert text.rstrip().endswith(f"Not everything is done: 1 other node type(s) like {TARGET} are still called by "
+                                  "decisions (above). Move them with --from-id.")
+    # the command it names moves them, and the run after that ends with 0
+    code, text = migrate("--from-id", HAND, "--apply")
+    assert code == 0, text
+    assert "check that it is a copy" not in text and sid.uses("d2") == [[NODE + TARGET]]
+    assert migrate("--apply")[0] == 0
+
+
+def test_a_from_id_run_that_leaves_decisions_on_another_copy_ends_with_1(sid):
+    sid.node(TARGET, "ZZ Call", code="the code")
+    sid.node(OLD, "ZZ Call old", code="the code")
+    sid.node(HAND, "Our LLM node", code="the code")
+    sid.decision("d1", "Uses old", [OLD])
+    sid.decision("d2", "Uses the copy", [HAND])
+    code, text = migrate("--from-id", OLD, "--apply")
+    assert code == 1, text
+    assert sid.uses("d1") == [[NODE + TARGET]] and sid.uses("d2") == [[NODE + HAND]]
+    assert "Done. Every decision that called the old node type calls 'ZZ Call'" in text
+    assert text.rstrip().endswith(f"Not everything is done: 1 other node type(s) like {TARGET} are still called by "
+                                  "decisions (above). Move them with --from-id.")
+
+
+def test_the_old_node_type_an_earlier_run_renamed_is_a_copy_whatever_its_code(sid):
+    """The node type of the id got the code of a newer release after the move: the renamed old one keeps its old code,
+    and is still the copy this command made."""
+    sid.node(TARGET, "ZZ Call", code="the code of the release")
+    sid.node(OLD, "ZZ Call (before 1b1b1b1b)", code="the code before")
+    sid.node(HAND, "ZZ Call old", code="the code before")
+    nodes = list(sid.nodes.values())
+    found = decision_nodes.similar_node_types(sid, nodes, "ZZ Call", TARGET, sid.contents[TARGET])
+    assert [(node["id"], copy) for node, _why, copy in found] == [(OLD, True), (HAND, False)]
+    # without code of the target a name alone is no copy; where the code of a node type cannot be read, neither
+    found = decision_nodes.similar_node_types(sid, nodes, "ZZ Call", TARGET, None)
+    assert [(node["id"], why) for node, why, copy in found if not copy] == [
+        (HAND, f"its name starts with 'ZZ Call', but {TARGET} has no code to compare")]
+    del sid.contents[HAND]
+    found = decision_nodes.similar_node_types(sid, nodes, "ZZ Call", TARGET, {"staticContent": "the code before"})
+    assert [(node["id"], why, copy) for node, why, copy in found] == [
+        (OLD, f"its name starts with 'ZZ Call' and it has the code of {TARGET}", True),
+        (HAND, "its name starts with 'ZZ Call', but its code cannot be read", False)]
 
 
 @pytest.mark.parametrize("args, expected, exit_code", [
@@ -793,6 +894,84 @@ def test_the_gate_holds_the_node_type_to_its_id_name_and_code(manifest):
     assert f"{shown} carries no code (decisionNodeTypeContentRep with staticContent)" in texts
     assert ("decision 'Decisions/Call LLM Node': a step of version 1.0 calls the node 'Call LLM' and names no node "
             "type - its node type was deleted where the decision was exported, and the version cannot run") in texts
+
+
+# ---- the code and the terms of the release: the program the entry names under `content` ----
+def test_the_programs_of_the_release_write_one_content_and_the_gate_reads_it():
+    from mdb.core.packages import program_node_content
+    folder = REPO_ROOT / "SAS-Viya-Integrations" / "SAS-Intelligent-Decisioning-Integration"
+    create, update = (program_node_content((folder / f"{kind}-Custom-SAS-Intelligent-Decisioning-Node.sas")
+                                           .read_text(encoding="utf-8")) for kind in ("Create", "Update"))
+    assert create == update
+    code = update["staticContent"]
+    assert code.startswith('package "${PACKAGE_NAME}" /inline;\n') and code.endswith("endpackage;")
+    assert "webreq.setRequestContentType('application/json');" in code          # the doubled quote is one
+    assert [term["name"] for term in update["nodeTypeSignatureTerms"]] == [
+        "llmBody", "llmURL", "llmGenerated", "output_length", "prompt_length"]
+
+
+PROGRAM = """%macro node;
+    * Create the content for the node type;
+    data _null_;
+        file _dntIn;
+        put '{';
+        put '"contentType": "DS2",';
+        put '"staticContent": "package \\"${PACKAGE_NAME}\\" /inline;\\n  x = ''y'';\\nendpackage;",';
+        put '"nodeTypeSignatureTerms": [';
+        put '{"name": "llmBody", "dataType": "string", "length": 10485760, "defaultValue": "", "direction": "input", "generateDataGridColumns": false}';
+        put ']';
+        put '}';
+    run;
+%mend;
+"""
+
+
+@pytest.fixture
+def program_manifest(tmp_path):
+    with_content = MANIFEST.replace("      - {name: Call LLM, id: f9efcbb7-f57b-4a62-b56d-1a89595e2039}\n",
+                                    "      - name: Call LLM\n        id: f9efcbb7-f57b-4a62-b56d-1a89595e2039\n"
+                                    "        content: Node/Update.sas\n")
+    assert with_content != MANIFEST
+    return load_manifest(make_repo(tmp_path, with_content, sources={"Node/Update.sas": PROGRAM}))
+
+
+def _with_node_code(manifest, code):
+    built = package_of(manifest, change={"Decisions/Call LLM Node": None})
+    built.node_type(CALL_LLM_NODE_ID, "Call LLM", code=code)
+    built.decision("Decisions/Call LLM Node", [(CALL_LLM_NODE_ID, "Call LLM")])
+    return [f.text for f in package_findings(built.build(), manifest) if "release.json" not in f.text]
+
+
+def test_the_gate_holds_the_node_type_to_the_code_and_the_terms_of_its_program(program_manifest):
+    shown = f"node type 'Call LLM' ({CALL_LLM_NODE_ID}) of decision 'Decisions/Call LLM Node'"
+    entry = program_manifest.find("Decisions/Call LLM Node", "decision")
+    assert entry.node_types[0]["content"] == "Node/Update.sas"
+    # the code of the program, line ends and blanks at the end of a line aside: no finding
+    assert _with_node_code(program_manifest, 'package "${PACKAGE_NAME}" /inline;\r\n  x = \'y\';  \r\nendpackage;\r\n') == []
+    # the stub an export of an older node would carry: a finding, before the package can ship
+    assert _with_node_code(program_manifest, 'package "${PACKAGE_NAME}" /inline; endpackage;') == [
+        f"{shown}: its code is not the code Node/Update.sas writes - the import would give every site the code of "
+        "the package"]
+    # the terms: another length is a finding
+    (path,) = [p for p in program_manifest.repo_root.rglob("Update.sas")]
+    path.write_text(PROGRAM.replace('"length": 10485760', '"length": 32767'), encoding="utf-8")
+    assert _with_node_code(program_manifest, 'package "${PACKAGE_NAME}" /inline;\n  x = \'y\';\nendpackage;') == [
+        f"{shown}: its terms (llmBody) are not the ones Node/Update.sas writes - name, type, length and direction"]
+    # a program the gate cannot read is a finding of its own
+    path.write_text("%macro node; %mend;", encoding="utf-8")
+    texts = _with_node_code(program_manifest, "x")
+    assert texts == [f"{shown}: Node/Update.sas cannot be read for the code of the release - it has no data step "
+                     "after '* Create the content for the node type;'"]
+
+
+def test_a_node_type_program_that_is_not_in_the_repository_is_refused(tmp_path):
+    entry = {"path": "Decisions/D", "kind": "decision",
+             "nodeTypes": [{"name": "Call LLM", "id": CALL_LLM_NODE_ID, "content": "Node/missing.sas"}]}
+    document = {"version": 1, "contentRoot": "/R", "package": "p.json", "entries": [entry]}
+    with pytest.raises(ManifestError) as caught:
+        parse_manifest(document, tmp_path)
+    assert "'Decisions/D': node type 'Call LLM': content 'Node/missing.sas' does not exist in the repository" in \
+        " ".join(caught.value.problems)
 
 
 def test_a_node_type_of_a_decision_that_is_not_listed_fails_the_gate(manifest):
@@ -1016,6 +1195,29 @@ def test_another_content_root_refuses_the_decisions_and_the_repeat_leaves_them_o
                                     package=_with_decision())
     assert result.exit_code == 0, text
     assert "Decisions (Decisions/Call LLM Node): left out (--no-decisions)" in text
+
+
+def test_no_reports_alone_with_another_content_root_still_fails_and_the_help_says_so(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), "--content-root", "/Team/Accelerator",
+                                    "--create", "--no-reports", package=_with_decision())
+    assert result.exit_code == 1
+    assert "  Decisions (Decisions/Call LLM Node): NOT imported - " in text
+    # the help and the README name both options, and no longer say that --no-reports is enough
+    help_text = " ".join(CliRunner().invoke(cli.app, ["builders-import", "--help"],
+                                            env={"COLUMNS": "200"}).output.split())
+    readme = " ".join((REPO_ROOT / "SAS-Viya-Integrations" / "README.md").read_text(encoding="utf-8").split())
+    for text in (" ".join(cli.builders_import.__doc__.split()), readme):
+        assert "unless --no-reports says that is meant" not in text
+        assert "for everything but the reports" not in text
+    assert "unless --no-reports and --no-decisions say that is meant - --no-reports alone does not" in help_text
+    import typer.main
+    command = typer.main.get_command(cli.app).commands["builders-import"]
+    (root_help,) = [param.help for param in command.params if "--content-root" in param.opts]
+    assert "The reports and the decisions are imported only into the folder the package was exported from" in root_help
+    assert "ends with exit code 1 unless `--no-reports --no-decisions` leaves both out" in readme
 
 
 @pytest.mark.parametrize("case", ["--no-decisions", "a clash", "another content root"])

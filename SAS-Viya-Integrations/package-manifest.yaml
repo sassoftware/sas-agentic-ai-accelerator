@@ -298,11 +298,15 @@ entries:
   # import creates it under this id, or overwrites the node type of this id in
   # place. A site that created its Call LLM node with the SAS program has it
   # under another id: `mdb decision-node-migrate --apply` moves it and the
-  # decisions that use it to this id before the import.
+  # decisions that use it to this id before the import. `content` is the
+  # program that writes the code and the terms of the release: the package
+  # check holds the packaged node type to them.
   - path: Decisions/Call LLM Node
     kind: decision
     nodeTypes:
-      - {name: Call LLM, id: f9efcbb7-f57b-4a62-b56d-1a89595e2039}
+      - name: Call LLM
+        id: f9efcbb7-f57b-4a62-b56d-1a89595e2039
+        content: SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration/Update-Custom-SAS-Intelligent-Decisioning-Node.sas
 
   # ---- Custom Steps -----------------------------------------------------------
   # Not listed, and so not shipped: `LLM - Get Prompt Experiments.step`, the

@@ -2794,8 +2794,8 @@ def builders_import(
     content_root: Optional[str] = typer.Option(
         None, "--content-root",
         help="SAS Content folder the files, custom steps and job definitions of the package are brought into "
-             "(default: the content root the manifest names). The reports are imported only into the folder "
-             "the package was exported from, at the root of SAS Content."),
+             "(default: the content root the manifest names). The reports and the decisions are imported only "
+             "into the folder the package was exported from, at the root of SAS Content."),
     compute_context: Optional[str] = typer.Option(
         None, "--compute-context",
         help="Compute context written into the parameter _contextName of every job definition that has one. "
@@ -2873,13 +2873,15 @@ def builders_import(
     gets a line and no failure. The tasks of the job are read, and an object
     without a completed task counts.
 
-    WHERE. --content-root names the folder for everything but the reports. A
-    report is imported only into the folder the package was exported from,
-    and only when that folder is at the root of SAS Content - the one mapping
-    known to work. Otherwise the reports are not imported and the command
-    says so (and ends with exit code 1 unless --no-reports says that is
-    meant): the transfer service takes no target folder, and a package from a
-    folder below others was measured to land in a new folder at the root.
+    WHERE. --content-root names the folder for the files, custom steps and
+    job definitions. A report and a decision are imported only into the
+    folder the package was exported from, and only when that folder is at
+    the root of SAS Content - the one mapping known to work. Otherwise they
+    are not imported and the command says so, and ends with exit code 1
+    unless --no-reports and --no-decisions say that is meant - --no-reports
+    alone does not: the transfer service takes no target folder, and a
+    package from a folder below others was measured to land in a new folder
+    at the root.
 
     WHAT A SITE SEES whose objects were registered under other ids - a step
     its flows use, a file, a job definition: `updated ... (id <its own id>
@@ -2943,10 +2945,11 @@ def builders_import(
 
     A run that did not do everything ends with exit code 1 and the command to
     go on with: `mdb builders-import` with the options of the run - and with
-    --no-reports added where the reports were refused for the content root
-    and no package's reports went to the transfer service; two commands
-    where the reports of one package went there and those of another were
-    refused, the second for that package with --no-reports - or `mdb
+    --no-reports / --no-decisions added where the reports / the decisions
+    were refused for the content root and nothing of any package went to the
+    transfer service; two commands where something of one package went
+    there and the reports or decisions of another were refused, the second
+    for that package without what was refused of it - or `mdb
     options-restore` where only options are left to write. The tasks of the
     import job are read to the end: one that ended
     with a warning or an error is printed and counts. The in-place part stops
@@ -3452,21 +3455,24 @@ def decision_node_migrate(
     type that is deleted empties the node of every version that calls it,
     for good.
 
-    WHERE THE NODE TYPE OF THE ID IS THERE ALREADY - the package or the
-    Create program brought it, after the old node type was renamed by hand
-    to free its name - the command still reads every decision and lists
-    every version that calls a node type like it. Like it, by one rule: its
-    name starts with --node-name (in any case, which covers the "(before
-    ...)" name a run gives the old node type), or its code is the code of
-    the node type of the id. --from-id <its id> moves the decisions of one
-    of them to the node type of the id, and --delete-old then deletes it
-    once no version calls it.
+    NODE TYPES LIKE IT. Every run reads every decision and lists every
+    version that calls a node type like the one of the id: a copy - its
+    code is the code of the node type of the id (or the code a run gives
+    it) - or a node type whose name alone starts with --node-name, in any
+    case, while its code is another. Decisions left on a copy make a run
+    with --apply end with exit code 1; a name alone is a warning, since
+    another node type may be named like it. Where the node type of the id is
+    there already - the package or the Create program brought it, after the
+    old node type was renamed by hand to free its name - --from-id <its id>
+    moves the decisions of one of them to it, with a warning where that node
+    type is no copy, and --delete-old then deletes it once no version calls
+    it.
 
     Versions whose node lost its address - a node type deleted earlier -
     are listed as a warning: they cannot run, and no mapping can move them.
 
     One line per step; exit code 1 when something was refused or failed,
-    or when a run with --apply leaves decisions on a node type like the one
+    or when a run with --apply leaves decisions on a copy of the node type
     of the id. Run it again after a failure: what was done is found done
     (the renamed node type says how far a run got). A site without SAS
     Intelligent Decisioning gets one line and exit code 0.

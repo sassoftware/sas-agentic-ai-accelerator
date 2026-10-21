@@ -28,7 +28,7 @@ from pathlib import Path
 
 from mdb.core import content
 from mdb.core.options import MERGED_REPORT_LABELS
-from mdb.core.packages import NEUTRAL_DEFAULTS, deflate
+from mdb.core.packages import NEUTRAL_DEFAULTS, deflate, program_node_content
 
 CONTENT_ROOT = "/SAS Agentic AI Accelerator"
 PACKAGE = "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json"
@@ -236,19 +236,20 @@ class Package:
                                           "relatedUris": [report_uri], "forceMapping": False})
 
     def node_type(self, node_id: str, name: str, code: str = 'package "${PACKAGE_NAME}" /inline; endpackage;',
-                  content_id=None, user=None) -> str:
+                  content_id=None, user=None, terms=None) -> str:
         """A custom node type as an export carries it: in no folder, under its
         own id, with its content (code and terms) in the same body - and, with
         `user`, the user who made it in createdBy."""
+        if terms is None:
+            terms = [{"name": "llmBody", "dataType": "string", "length": 10485760, "direction": "input",
+                      "generateDataGridColumns": False}]
         who = {"createdBy": user} if user else {}
         uri = f"/decisions/decisionNodeTypes/{node_id}"
         body = {"decisionNodeTypeRep": {"id": node_id, "name": name, "type": "static", "themeId": "DNT_THEME1",
                                         **who, "links": [{"rel": "self", "uri": uri}]},
                 "decisionNodeTypeContentRep": {"id": content_id or self._id(), "nodeTypeId": node_id,
                                                "contentType": "DS2", "staticContent": code, **who,
-                                               "nodeTypeSignatureTerms": [
-                                                   {"name": "llmBody", "dataType": "string", "length": 10485760,
-                                                    "direction": "input", "generateDataGridColumns": False}]}}
+                                               "nodeTypeSignatureTerms": terms}}
         self.details.append({"connectors": [], "transferObject": {
             "id": self._id(), "version": 2, "state": "enabled", "substitutions": {},
             "summary": {"id": node_id, "type": "decisionNodeType", "name": name, **who,
@@ -325,8 +326,16 @@ def package_of(manifest, change=None, **kwargs) -> Package:
         elif entry.kind == "decision":
             # the node types the entry lists, as dependencies of the decision
             nodes = [(listed["id"], listed["name"]) for listed in entry.node_types] if other is None else other
+            programs = {listed["id"]: listed.get("content") for listed in entry.node_types}
             for node_id, node_name in nodes:
-                package.node_type(node_id, node_name)
+                if programs.get(node_id):
+                    # the code and the terms of the program the entry names, as the release exports them
+                    made = program_node_content(content.repository_file(manifest.repo_root, programs[node_id])
+                                                .read_text(encoding="utf-8"))
+                    package.node_type(node_id, node_name, code=made["staticContent"],
+                                      terms=made["nodeTypeSignatureTerms"])
+                else:
+                    package.node_type(node_id, node_name)
             package.decision(entry.path, nodes)
         else:
             report = package.report(entry.path, ALL_NEUTRAL if other is None else other,
