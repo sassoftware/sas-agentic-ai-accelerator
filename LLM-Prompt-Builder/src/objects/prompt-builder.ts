@@ -285,6 +285,11 @@ const TRACKER_ICON_PATHS = {
     'M280-120v-80h160v-124q-49-11-87.5-41.5T296-442q-75-9-125.5-65.5T120-640v-40q0-33 23.5-56.5T200-760h80v-80h400v80h80q33 0 56.5 23.5T840-680v40q0 76-50.5 132.5T664-442q-18 56-56.5 86.5T520-324v124h160v80H280Zm0-408v-152h-80v40q0 38 22 68.5t58 43.5Zm200 128q50 0 85-35t35-85v-240H360v240q0 50 35 85t85 35Zm200-128q36-13 58-43.5t22-68.5v-40h-80v152Zm-200-52Z',
 };
 
+// Path data of the refresh icon (Material Symbols, same view box) of the
+// button that lists the tables of the Optimize step's caslib again.
+const REFRESH_ICON_PATH =
+  'M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z';
+
 /** A user-defined output variable parsed from the LLM's JSON response. */
 interface PromptOutputVariable {
   name: string;
@@ -6066,6 +6071,9 @@ ${scoreCodeReturn}`;
     // when the table is picked) so the panel's call estimate reflects the
     // CAS source instead of the tracker count; null = not (yet) known.
     let optimizeCasRowCount: number | null = null;
+    // True when the row count of the picked table could not be read: the
+    // estimate line then says so instead of waiting for a pick.
+    let optimizeCasRowCountFailed = false;
     // Launch timestamp for the run-log's runtime display (0 = frozen) and the
     // 1-second browser-side ticker that keeps it smooth between job polls.
     let optimizeJobStartedAt = 0;
@@ -6147,8 +6155,10 @@ ${scoreCodeReturn}`;
     // CAS dataset picker: cascading server → caslib → table dropdowns over
     // the CAS Management listings (the interactive-selection pattern of the
     // portal framework's prompt controls). Listings are cached per
-    // server/caslib; the server list loads at most once, lazily, the first
-    // time the CAS source is revealed.
+    // server/caslib for as long as the page is loaded; the refresh button
+    // beside the table picker drops the tables of one caslib and lists them
+    // again. The server list loads at most once, lazily, the first time the
+    // CAS source is revealed.
     const casPickerCache = { caslibs: new Map<string, string[]>(), tables: new Map<string, string[]>() };
     let casServersPromise: Promise<void> | null = null;
     // Counts the times the pickers were emptied for another prompt-test: a
@@ -6233,10 +6243,54 @@ ${scoreCodeReturn}`;
           tables = await getCasTables(server, caslib);
           casPickerCache.tables.set(cacheKey, tables);
         }
+        // A list that arrives after another server or caslib was chosen (or
+        // the pickers were emptied for another prompt-test) is not drawn.
+        if (optimizeUI.casServerSelect.value !== server || optimizeUI.casLibSelect.value !== caslib) return;
+        const pickedTable = optimizeUI.casTableSelect.value;
         fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, tables);
+        // A picked table that is no longer listed (dropped since) is no
+        // longer picked, and its row count goes with it.
+        if (pickedTable !== '' && optimizeUI.casTableSelect.value !== pickedTable) {
+          optimizeCasRowCount = null;
+          optimizeCasRowCountFailed = false;
+          updateOptimizeState();
+        }
       } catch (error) {
         console.debug('Prompt Builder: CAS table listing failed', error);
       }
+    }
+
+    /**
+     * The refresh button beside the table picker: forget the tables listed
+     * for the chosen server/caslib and ask CAS for them again, so a table
+     * built (or dropped) after the first listing shows without reloading the
+     * report. With no caslib chosen yet it lists the caslibs again instead,
+     * and with no server (the server list failed) the servers. A table that
+     * is still picked has its rows counted again: it may have been rebuilt
+     * under the same name.
+     */
+    function refreshCasTableOptions(): void {
+      if (!optimizeUI) return;
+      const ui = optimizeUI;
+      const server = ui.casServerSelect.value;
+      const caslib = ui.casLibSelect.value;
+      if (server === '') {
+        casServersPromise = null;
+        void loadCasServerOptions();
+        return;
+      }
+      if (caslib === '') {
+        casPickerCache.caslibs.delete(server);
+        void loadCaslibOptions();
+        return;
+      }
+      const pickedTable = ui.casTableSelect.value;
+      casPickerCache.tables.delete(`${server}/${caslib}`);
+      void loadCasTableOptions().then(() => {
+        if (pickedTable !== '' && ui.casTableSelect.value === pickedTable) {
+          ui.casTableSelect.dispatchEvent(new Event('change'));
+        }
+      });
     }
 
     /**
@@ -6315,11 +6369,17 @@ ${scoreCodeReturn}`;
           : selectedOptimizer === 'miprov2'
             ? samples * 8 + 30
             : samples * 3 + 10;
+      // While the row count of a CAS table is not known, the line says what
+      // is missing (a table to pick, or a row count that could not be read)
+      // instead of a number.
       const estimateParts = [
-        `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace(
-          '{calls}',
-          casSource && optimizeCasRowCount === null ? '?' : String(estimatedCalls)
-        ),
+        casSource && optimizeCasRowCount === null
+          ? `${
+              optimizeCasRowCountFailed
+                ? promptBuilderInterfaceText?.promptBuilderOptimizeEstimateRowCountFailed
+                : promptBuilderInterfaceText?.promptBuilderOptimizeEstimatePending
+            }`
+          : `${promptBuilderInterfaceText?.promptBuilderOptimizeEstimate}`.replace('{calls}', String(estimatedCalls)),
       ];
       if (
         optimizeUI.metricSelect.value === 'judge' &&
@@ -6387,14 +6447,16 @@ ${scoreCodeReturn}`;
      */
     function clearOptimizeRun(): void {
       if (!optimizeUI) return;
-      // The CAS pickers were put back to "choose one" with the other fields;
-      // the servers, caslibs and tables they listed go as well. The next time
-      // the CAS source is chosen the servers are asked for again, which also
-      // chooses the usual one and lists its caslibs - as on a page that was
-      // just loaded.
+      // The CAS pickers were put back to "choose one" with the other fields,
+      // and the entries they showed are emptied. The next time the CAS source
+      // is chosen the servers are asked for again, which also chooses the
+      // usual one and lists its caslibs. The caslibs and tables come from
+      // casPickerCache, which is kept: the refresh button beside the table
+      // picker lists the tables of a caslib again.
       casPickerGeneration += 1;
       casServersPromise = null;
       optimizeCasRowCount = null;
+      optimizeCasRowCountFailed = false;
       fillCasSelect(optimizeUI.casServerSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasServerPlaceholder, []);
       fillCasSelect(optimizeUI.casLibSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasLibPlaceholder, []);
       fillCasSelect(optimizeUI.casTableSelect, promptBuilderInterfaceText?.promptBuilderOptimizeCasTablePlaceholder, []);
@@ -7411,6 +7473,8 @@ ${scoreCodeReturn}`;
       // Sample count for the estimate: the tracker count is known; a CAS
       // table's row count is fetched best-effort when one is fully selected.
       let samples = optimizeUI.datasetCasRadio.checked ? NaN : countOptimizeSamples();
+      // Tells apart a row count that could not be read from a table not picked.
+      let casRowCountFailed = false;
       if (
         optimizeUI.datasetCasRadio.checked &&
         optimizeUI.casServerSelect.value !== '' &&
@@ -7425,7 +7489,8 @@ ${scoreCodeReturn}`;
           );
           samples = casInfo.rowCount;
         } catch {
-          /* estimate renders without a sample count */
+          // The estimate line says that the row count could not be read.
+          casRowCountFailed = true;
         }
       }
 
@@ -7512,9 +7577,16 @@ ${scoreCodeReturn}`;
                 ? perTarget * 8 + 30
                 : perTarget * 3 + 10;
         }
-        estimateLine.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareEstimate}`
-          .replace('{calls}', Number.isFinite(samples) ? String(selectedCount * perTargetCalls) : '?')
-          .replace('{targets}', String(selectedCount));
+        // Without a row count the line says what is missing instead of a number.
+        estimateLine.innerText = Number.isFinite(samples)
+          ? `${promptBuilderInterfaceText?.promptBuilderOptimizeCompareEstimate}`
+              .replace('{calls}', String(selectedCount * perTargetCalls))
+              .replace('{targets}', String(selectedCount))
+          : `${
+              casRowCountFailed
+                ? promptBuilderInterfaceText?.promptBuilderOptimizeEstimateRowCountFailed
+                : promptBuilderInterfaceText?.promptBuilderOptimizeEstimatePending
+            }`;
       };
       candidateBoxes.forEach((box) => box.addEventListener('change', updateCompareEstimate));
       screenRadio.addEventListener('change', updateCompareEstimate);
@@ -7817,6 +7889,28 @@ ${scoreCodeReturn}`;
       // so typing filters the open dropdown itself.
       attachCombobox(optimizeCasLibSelect);
       attachCombobox(optimizeCasTableSelect);
+      // The tables of a caslib are listed once per page (casPickerCache); this
+      // icon button lists them again, e.g. after Create-Optimization-Dataset.sas
+      // ran in another tab. Built as elements: its label is a locale text.
+      const casRefreshLabel = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasRefreshButton}`;
+      const casRefreshButton = document.createElement('button');
+      casRefreshButton.type = 'button';
+      casRefreshButton.id = `${paneID}-obj-${promptBuilderObject?.id}-optimize-cas-refresh`;
+      casRefreshButton.classList.add('btn', 'btn-outline-primary', 'btn-sm', 'pb-optimize-cas-refresh');
+      casRefreshButton.title = casRefreshLabel;
+      casRefreshButton.setAttribute('aria-label', casRefreshLabel);
+      const casRefreshIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      casRefreshIcon.setAttribute('height', '20px');
+      casRefreshIcon.setAttribute('width', '20px');
+      casRefreshIcon.setAttribute('viewBox', '0 -960 960 960');
+      casRefreshIcon.setAttribute('fill', 'currentColor');
+      casRefreshIcon.setAttribute('aria-hidden', 'true');
+      const casRefreshPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      casRefreshPath.setAttribute('d', REFRESH_ICON_PATH);
+      casRefreshIcon.appendChild(casRefreshPath);
+      casRefreshButton.appendChild(casRefreshIcon);
+      casRefreshButton.addEventListener('click', () => refreshCasTableOptions());
+      casInputs.appendChild(casRefreshButton);
       const casTemplateHint = document.createElement('small');
       casTemplateHint.classList.add('text-muted', 'd-block');
       casTemplateHint.innerText = `${promptBuilderInterfaceText?.promptBuilderOptimizeCasTemplateHint}`;
@@ -7825,16 +7919,20 @@ ${scoreCodeReturn}`;
       datasetBlock.appendChild(casRow);
       optimizeCasServerSelect.addEventListener('change', () => {
         optimizeCasRowCount = null;
+        optimizeCasRowCountFailed = false;
         void loadCaslibOptions();
       });
       optimizeCasLibSelect.addEventListener('change', () => {
         optimizeCasRowCount = null;
+        optimizeCasRowCountFailed = false;
         void loadCasTableOptions();
       });
       // Fetch the picked table's row count (best effort) so the panel's call
-      // estimate reflects the CAS dataset; '?' is shown while unknown.
+      // estimate reflects the CAS dataset; while it is unknown the estimate
+      // line says what is missing.
       optimizeCasTableSelect.addEventListener('change', () => {
         optimizeCasRowCount = null;
+        optimizeCasRowCountFailed = false;
         updateOptimizeState();
         const pickedServer = optimizeCasServerSelect.value;
         const pickedLib = optimizeCasLibSelect.value;
@@ -7848,7 +7946,11 @@ ${scoreCodeReturn}`;
             }
           })
           .catch(() => {
-            /* the estimate keeps showing '?' */
+            // The estimate line says that the row count could not be read.
+            if (optimizeUI && optimizeUI.casTableSelect.value === pickedTable) {
+              optimizeCasRowCountFailed = true;
+              updateOptimizeState();
+            }
           });
       });
 
