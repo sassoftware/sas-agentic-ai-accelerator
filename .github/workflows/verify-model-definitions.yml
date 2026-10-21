@@ -130,12 +130,8 @@ jobs:
         # The content gate, lenient: every entry of package-manifest.yaml is
         # in the package, nothing else is in it, and no report names a host
         # or carries a user's state. A difference in content against the
-        # checkout is a "drift:" line and does not fail. --allow-missing is
-        # for the time before the package of the release is in the
-        # repository; it goes with the commit that adds the file - and mdb
-        # no longer honours it once the package files of the earlier
-        # releases are gone, which that commit removes.
-        run: mdb package-check --allow-missing
+        # checkout is a "drift:" line and does not fail.
+        run: mdb package-check
       - name: A package file that changes equals the checkout
         # A push or pull request that replaces the package file is held to
         # the gate of a release: a difference in content inside it - another
