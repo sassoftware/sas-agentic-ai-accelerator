@@ -58,3 +58,34 @@ def test_the_renamed_entries():
     assert providers.api_key_entry("titan_embed_text_v2") == "AWSBedrock"
     # a self-hosted scorer that takes an endpoint_url and no API_KEY needs no entry
     assert providers.llm_api_key_entry("llama_31_405b") == ""
+
+
+def test_a_definition_switched_to_env_mode_leaves_the_map_when_it_is_regenerated(tmp_path):
+    """mdb add --auth env: the container holds the key and options.json has no
+    API_KEY. The static map still names the entry until it is regenerated, and
+    the refusal says so; regenerated, the model needs no entry and gets ""."""
+    import json
+
+    import pytest
+
+    sheet = tmp_path / "embedding_fact_sheet.csv"
+    sheet.write_text("model_id,cost_type\ntext_embedding_3_small,Tokens\nvoyage_35,Tokens\n", encoding="utf-8")
+    for model_id, options in (("text_embedding_3_small", {"Embedding_Length": {"default": 1536}}),
+                              ("voyage_35", {"API_KEY": {"default": "VoyageAI"}})):
+        (tmp_path / model_id).mkdir()
+        (tmp_path / model_id / "options.json").write_text(json.dumps(options), encoding="utf-8")
+
+    with pytest.raises(KeyError, match="regenerate the maps of rag_core/providers.py"):
+        providers.api_key_for("text_embedding_3_small", {})
+    regenerated = providers.key_entries(str(tmp_path / "embedding_fact_sheet.csv"), api_only=False)
+    assert regenerated == {"voyage_35": "VoyageAI"}
+    assert 'API_KEY_ENTRIES = {\n    "voyage_35": "VoyageAI",\n}' == providers._regenerate(
+        str(sheet), "API_KEY_ENTRIES", api_only=False)
+    original = dict(providers.API_KEY_ENTRIES)
+    try:
+        providers.API_KEY_ENTRIES.clear()
+        providers.API_KEY_ENTRIES.update(regenerated)
+        assert providers.api_key_for("text_embedding_3_small", {}) == ""
+    finally:
+        providers.API_KEY_ENTRIES.clear()
+        providers.API_KEY_ENTRIES.update(original)

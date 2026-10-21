@@ -7,6 +7,7 @@
                     "default": "api_key",
                     "enum": [
                         "api_key",
+                        "env",
                         "none"
                     ],
                     "title": "Mode",
@@ -22,7 +23,21 @@
                         }
                     ],
                     "default": null,
+                    "pattern": "^[A-Za-z0-9._-]+$",
                     "title": "Key Name"
+                },
+                "env_var": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "pattern": "^[A-Z_][A-Z0-9_]*$",
+                    "title": "Env Var"
                 }
             },
             "title": "AuthBlock",
@@ -303,6 +318,21 @@
                     ],
                     "default": null,
                     "title": "Informational"
+                },
+                "value_map": {
+                    "anyOf": [
+                        {
+                            "additionalProperties": {
+                                "type": "string"
+                            },
+                            "type": "object"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Value Map"
                 }
             },
             "required": [

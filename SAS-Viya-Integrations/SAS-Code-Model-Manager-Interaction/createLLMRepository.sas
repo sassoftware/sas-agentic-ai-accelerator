@@ -91,7 +91,7 @@ run; quit;
 filename rpstryIn clear;
 libname rpstryOt clear;
 filename rpstryOt clear;
-%symdel repositoryName repositoryDescription defaultRepository;
+%symdel repositoryName repositoryDescription defaultRepository / nowarn;
 
 * Create the rule that enables access to the repository;
 * Create the input data for the request;
@@ -186,7 +186,7 @@ title;
 filename rlIn clear;
 libname rlOut clear;
 filename rlOut clear;
-%symdel principal principalType;
+%symdel principal principalType / nowarn;
 
 * Final clean up;
-%symdel viyaHost repositoryID folderID;
+%symdel viyaHost repositoryID folderID / nowarn;

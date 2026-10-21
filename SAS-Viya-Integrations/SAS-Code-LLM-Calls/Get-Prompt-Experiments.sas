@@ -83,7 +83,7 @@ proc sql noPrint;
 run; quit;
 
 * Clean up;
-%symdel _gpe_nvar;
+%symdel _gpe_nvar / nowarn;
 libname _gpe_pro clear;
 filename _gpe_pro clear;
 
@@ -118,7 +118,7 @@ proc sql noPrint;
 run; quit;
 
 * Clean up;
-%symdel _gpe_nvar;
+%symdel _gpe_nvar / nowarn;
 libname _gpe_mID clear;
 filename _gpe_mID clear;
 
@@ -155,7 +155,7 @@ proc sql noPrint;
 run; quit;
 
 * Clean up;
-%symdel _gpe_nvar;
+%symdel _gpe_nvar / nowarn;
 libname _gpe_mci clear;
 filename _gpe_mci clear;
 
@@ -187,4 +187,4 @@ libname _gpe_mcc clear;
 filename _gpe_mcc clear;
 
 * Final clean up;
-%symdel _gpe_llm_repository _gpe_llm_project _gpe_llm_prompt _gpe_llm_pte _gpe_viyaHost _gpe_repositoryID _gpe_projectID _gpe_model_id _gpe_pet_id;
+%symdel _gpe_llm_repository _gpe_llm_project _gpe_llm_prompt _gpe_llm_pte _gpe_viyaHost _gpe_repositoryID _gpe_projectID _gpe_model_id _gpe_pet_id / nowarn;

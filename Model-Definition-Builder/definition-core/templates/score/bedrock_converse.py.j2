@@ -21,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("scoreModel")
 
 {% include "partials/_options_parser.py.j2" %}
+{% if key_env_var %}{% include "partials/_env_api_key.py.j2" %}{% else %}{% include "partials/_option_api_key.py.j2" %}{% endif %}
 
 def scoreModel(userPrompt, systemPrompt, options):
     "Output: response, run_time, prompt_length, output_length"
@@ -34,6 +35,7 @@ def scoreModel(userPrompt, systemPrompt, options):
         "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
     }
     options = {**optionsDefaults, **_parse_options(options)}
+    options["API_KEY"] = _api_key(options)
     region = options["aws_bedrock_region"]
     modelEndpoint = (
         f"https://bedrock-runtime.{region}.amazonaws.com/model/"

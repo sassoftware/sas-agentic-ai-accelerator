@@ -1,0 +1,337 @@
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# What ships in the accelerator's SAS Content folder - the one list.
+#
+# `mdb content-deploy` brings a content folder to this list from the checkout,
+# `mdb package-export` keeps exactly these objects of an export, and
+# `mdb package-check` compares the transfer package named below with it.
+# An object that is not listed here is not deployed, not exported and fails
+# the check when it is found in the package.
+#
+# One entry per object: `path` below the content root, `kind`, and where the
+# object comes from in the repository.
+#
+#   folder         only for an empty folder or a description - the folders of
+#                  the entries below are implied
+#   file           source: <repository path>      or
+#                  generated: release-info | release-table   (mdb writes it)
+#   step           source: <repository path of the .step file>; the last part
+#                  of the path is the name the .step file holds
+#   jobDefinition  code: <repository path of the program>   and / or
+#                  form: <repository path of an HTML file>
+#                  parameters: [{name, type, default, label, siteSetting}]
+#                  description
+#   report         no source (the package is its only one);
+#                  checks: {optionSet: prompt-builder, tables: [...]}
+#                  files: [{name, sha256}] - the files that are children of
+#                  the report (its pictures); the hash is what the check
+#                  compares, because their bytes are not in the repository
+#   decision       no source either (the package is its only one);
+#                  nodeTypes: [{name, id}] - the custom node types of SAS
+#                  Intelligent Decisioning it uses, each with the id it must
+#                  have: the export carries a node type as a dependency of the
+#                  decision, under its id, and `mdb package-export` keeps it
+#                  for the decision that lists it. `mdb content-deploy` does
+#                  not deploy a decision - its line says whether it is on the
+#                  site - and `mdb builders-import` brings it, with its node
+#                  types, through the transfer service
+#
+# A parameter with `siteSetting: true` holds a value of the site: the compute
+# context a job runs in (_contextName), the CAS library and server, the
+# credential domain, the names of the repository and the projects, the
+# release table. The default is what a new job definition gets, and one on
+# the site that has no such parameter (for _contextName `mdb builders-import`
+# gives both the ingestion compute context of the options it restores); a
+# value a job definition on the site holds is left alone by a deploy and an
+# import, unless they are given one (--compute-context). contentRoot is
+# always written with the content root the content goes to: a job reads the
+# content root it sits in (one job definition named with --to keeps the one
+# it has). A value that belongs to the release - the address of the guides,
+# _action, _output_type - is no site setting and is set back to the manifest.
+# The package of a release holds the defaults.
+#
+# A path with Showcases, Example, a folder whose name holds generated or a
+# name that starts with ZZ_VERIFY is refused: such content never ships.
+version: 1
+contentRoot: /SAS Agentic AI Accelerator
+package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+
+entries:
+  # ---- the first page, and the release of this folder ------------------------
+  # Start Here writes one HTML page: the links and the installation check. It
+  # reads release.json of the content root, so the page needs no checkout.
+  # _output_type = html is what makes SAS Job Execution show what the program
+  # writes to _webout as a page. _contextName: the page shows what its session
+  # may read, so the job runs as the user who opens it. What a session of the
+  # SAS Job Execution compute context may read depends on how a system
+  # configures that context: on 2026-10-12 one run there had every request of
+  # the page answered 401, and a later run the same day built the whole page,
+  # in a session whose SYSUSERID was not SYS_COMPUTE_SESSION_OWNER.
+  - path: Start Here
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Setup/Start-Here.sas
+    description: Start page of the SAS Agentic AI Accelerator - links to the reports and the guides, and an installation check. Reads only.
+    parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
+      - {name: _action, type: character, default: execute}
+      - {name: _output_type, type: character, default: html}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
+      - {name: caslib, type: character, default: Public, label: CAS library of the report tables, siteSetting: true}
+      - {name: casServer, type: character, default: cas-shared-default, label: CAS server, siteSetting: true}
+      - {name: credentialDomain, type: character, default: agentic-ai-keys, label: Credential domain, siteSetting: true}
+      - {name: repositoryName, type: character, default: LLM Repository, label: Model Manager repository, siteSetting: true}
+      - {name: llmProject, type: character, default: LLM Model Project, label: Project of the LLM definitions, siteSetting: true}
+      - {name: embeddingProject, type: character, default: Embedding Model Project, label: Project of the embedding model definitions, siteSetting: true}
+      - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions, siteSetting: true}
+      - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for, siteSetting: true}
+      - {name: guideUrl, type: character, default: "https://sassoftware.github.io/sas-agentic-ai-accelerator", label: Address of the guides}
+  - path: release.json
+    kind: file
+    generated: release-info
+
+  # ---- Prompt Builder -------------------------------------------------------
+  - path: Prompt Builder/Prompt Builder
+    kind: report
+    checks:
+      optionSet: prompt-builder
+      tables: [ACCELERATOR_RELEASES]
+  - path: Prompt Builder/SAS-LLM-Prompt-Builder-UI
+    kind: jobDefinition
+    form: LLM-Prompt-Builder/dist/index.html
+    description: Prompt Builder HTML code that is built from the SAS Agentic AI Accelerator repository.
+    parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
+      - {name: _action, type: character, default: "prompts,form,execute"}
+  - path: Prompt Builder/Optimize-Prompt-DSPy
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Prompt-Optimization/Optimize-Prompt-DSPy.sas
+    description: Optimize a Prompt Builder prompt with DSPy
+    parameters:
+      - {name: _action, type: character, default: execute}
+  - path: Prompt Builder/Create-Optimization-Dataset.sas
+    kind: file
+    source: SAS-Viya-Integrations/Prompt-Optimization/Create-Optimization-Dataset.sas
+
+  # ---- RAG: steps, rag_core, jobs, the retrieval model template ---------------
+  - path: RAG/steps/RAG - List Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - List Documents.step
+  - path: RAG/steps/RAG - Extract Text.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Extract Text.step
+  - path: RAG/steps/RAG - Chunk Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Chunk Documents.step
+  - path: RAG/steps/RAG - Enrich Chunks.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Enrich Chunks.step
+  - path: RAG/steps/RAG - Embed Chunks.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Embed Chunks.step
+  - path: RAG/steps/RAG - Load Vector Store.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Load Vector Store.step
+  - path: RAG/steps/RAG - Retrieve Context.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Retrieve Context.step
+  - path: RAG/steps/RAG - Register Setup.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Register Setup.step
+  - path: RAG/steps/RAG - Purge Documents.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/RAG - Purge Documents.step
+
+  - path: RAG/rag_core/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/__init__.py
+  - path: RAG/rag_core/chunkers.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/chunkers.py
+  - path: RAG/rag_core/credentials.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/credentials.py
+  - path: RAG/rag_core/enrich.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/enrich.py
+  - path: RAG/rag_core/env.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/env.py
+  - path: RAG/rag_core/filters.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/filters.py
+  - path: RAG/rag_core/history.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/history.py
+  - path: RAG/rag_core/manifest.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/manifest.py
+  - path: RAG/rag_core/pricing.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/pricing.py
+  - path: RAG/rag_core/providers.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/providers.py
+  - path: RAG/rag_core/registration.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/registration.py
+  - path: RAG/rag_core/schema.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/schema.py
+  - path: RAG/rag_core/scr.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/scr.py
+  - path: RAG/rag_core/sources.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/sources.py
+  - path: RAG/rag_core/steps.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/steps.py
+  - path: RAG/rag_core/tokens.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/tokens.py
+  - path: RAG/rag_core/adapters/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/__init__.py
+  - path: RAG/rag_core/adapters/base.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/base.py
+  - path: RAG/rag_core/adapters/pgvector.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/pgvector.py
+  - path: RAG/rag_core/adapters/singlestore.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/singlestore.py
+  - path: RAG/rag_core/extractors/__init__.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/__init__.py
+  - path: RAG/rag_core/extractors/base.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/base.py
+  - path: RAG/rag_core/extractors/builtin.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/extractors/builtin.py
+
+  - path: RAG/jobs/Ingest-Documents.sas
+    kind: file
+    source: SAS-Viya-Integrations/RAG-Ingestion/Ingest-Documents.sas
+  - path: RAG/jobs/Test-Retrieval.sas
+    kind: file
+    source: SAS-Viya-Integrations/RAG-Ingestion/Test-Retrieval.sas
+  - path: RAG/models/retrieve_context.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/retrieve_context.py
+
+  # ---- Logging and Monitoring -------------------------------------------------
+  # The four pictures of the report are files that are its children. Their
+  # names and hashes are as an export of 2026-10-12 held them; two of them are
+  # one picture under one name. A hash is compared with the file inside a
+  # package - by `mdb package-export` in what the system exports, by
+  # `mdb package-check` in the package file - and with no file of the
+  # repository: like the report, the pictures come from the system the package
+  # is exported from, and the package of the release is their only copy here
+  # once the packages of earlier releases are removed.
+  - path: Logging and Monitoring/LLM Usage Report
+    kind: report
+    checks:
+      tables: [LLM_LOGS, PROMPT_EXPERIMENTS, LLM_FACT_SHEET, EMBEDDING_FACT_SHEET]
+    files:
+      - {name: background_blue.png, sha256: b22fc6d5f1a0e183633fb6cd030431d03a9c3d13cf3e09055d574dad036b35f1}
+      - {name: background_blue.png, sha256: b22fc6d5f1a0e183633fb6cd030431d03a9c3d13cf3e09055d574dad036b35f1}
+      - {name: header-meridian.png, sha256: 90ac30878e65c72697c67b6733f7ddce62630a4ba32e9f218f7bf1f3bd81146e}
+      - {name: sas-logo-wht.png, sha256: 388d73a50cbcc27f03e55b1d17e207da6b27e9b6abd196ec4d04c0bc87193bb3}
+  - path: Logging and Monitoring/LLM - Log Parser.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Log Parser.step
+  - path: Logging and Monitoring/LLM - Get All Prompts.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get All Prompts.step
+  - path: Logging and Monitoring/Log-Parser-Code.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Log-Parser-Code.sas
+  - path: Logging and Monitoring/Get-All-Prompts.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Get-All-Prompts.sas
+  - path: Logging and Monitoring/Link-Logs-To-Models.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Link-Logs-To-Models.sas
+  - path: Logging and Monitoring/Build-RAG-Cost-View.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Build-RAG-Cost-View.sas
+  - path: Logging and Monitoring/Load-Fact-Sheets.sas
+    kind: file
+    source: SAS-Viya-Integrations/Logging-Monitoring/Load-Fact-Sheets.sas
+
+  # ---- Data: what the reports' tables are loaded from --------------------------
+  - path: Data/llm_fact_sheet.csv
+    kind: file
+    source: LLM-Definitions/llm_fact_sheet.csv
+  - path: Data/embedding_fact_sheet.csv
+    kind: file
+    source: Embedding-Definitions/embedding_fact_sheet.csv
+  - path: Data/decision_fact_sheet.csv
+    kind: file
+    source: Decision-Definitions/decision_fact_sheet.csv
+  - path: Data/ACCELERATOR_RELEASES.csv
+    kind: file
+    generated: release-table
+  # Loads the four files above into CAS; it includes Load-Fact-Sheets.sas from
+  # the folder Logging and Monitoring of the content root. _contextName: the
+  # job reads the Data folder and loads into CAS as its session - that has to
+  # be the user who runs it. _output_type html: the job writes its page of
+  # what it loaded to _webout itself, as Start Here does.
+  - path: Data/Load-Accelerator-Tables
+    kind: jobDefinition
+    code: SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas
+    description: Loads the release table and the three fact sheets from the Data folder into CAS (promoted and saved).
+    parameters:
+      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
+      - {name: _action, type: character, default: execute}
+      - {name: _output_type, type: character, default: html}
+      - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
+      - {name: caslib, type: character, default: Public, label: CAS library, siteSetting: true}
+      - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table, siteSetting: true}
+
+  # ---- Decisions: the Call LLM node, under one id on every site ----------------
+  # A decision that holds the Call LLM node only. It is not meant to be
+  # published: it is how the package brings the node type to a site - an
+  # import creates it under this id, or overwrites the node type of this id in
+  # place. A site that created its Call LLM node with the SAS program has it
+  # under another id: `mdb decision-node-migrate --apply` moves it and the
+  # decisions that use it to this id before the import. `content` is the
+  # program that writes the code and the terms of the release: the package
+  # check holds the packaged node type to them.
+  - path: Decisions/Call LLM Node
+    kind: decision
+    nodeTypes:
+      - name: Call LLM
+        id: f9efcbb7-f57b-4a62-b56d-1a89595e2039
+        content: SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration/Update-Custom-SAS-Intelligent-Decisioning-Node.sas
+
+  # ---- Custom Steps -----------------------------------------------------------
+  # Not listed, and so not shipped: `LLM - Get Prompt Experiments.step`, the
+  # step of August 2024 that reads the Prompt-Experiment-Tracker.json of one
+  # model. `LLM - Get All Prompts` (Logging and Monitoring) is the step that
+  # pulls the experiments. The file stays in Custom-Steps/ of the repository;
+  # tests/test_content_manifest.py names it as the one step that is not listed.
+  - path: Custom Steps/LLM - List Available LLMs.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - List Available LLMs.step
+  - path: Custom Steps/LLM - Get Options.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Get Options.step
+  - path: Custom Steps/LLM - Create LLM Call.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/LLM - Create LLM Call.step
+  - path: Custom Steps/MM - Get All Repositories.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get All Repositories.step
+  - path: Custom Steps/MM - Get Projects in Repository.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Projects in Repository.step
+  - path: Custom Steps/MM - Get Models in Project.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Models in Project.step
+  - path: Custom Steps/MM - Get Model Information.step
+    kind: step
+    source: SAS-Viya-Integrations/Custom-Steps/MM - Get Model Information.step

@@ -19,7 +19,11 @@ const config: Config = {
   projectName: "sas-agentic-ai-accelerator", // Usually your repo name.
 
   onBrokenLinks: "throw",
-  onBrokenMarkdownLinks: "throw",
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: "throw",
+    },
+  },
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -98,6 +102,7 @@ const config: Config = {
       "@easyops-cn/docusaurus-search-local",
       {
         docsRouteBasePath: "/",
+        indexBlog: false,
         explicitSearchResultPath: true,
         hashed: true,
         highlightSearchTermsOnTargetPage: true,

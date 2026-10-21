@@ -12,39 +12,208 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import re
+import sys
+from pathlib import Path, PurePath
 from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm as _RichConfirm, Prompt as _RichPrompt
 from rich.table import Table
+from rich.text import Text
+from typer.core import TyperGroup
 
 from . import __version__
 from .core import drift, facts
 from .core.generator import (
-    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, effective_score_file,
-    list_custom_options, render_assets,
+    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, OptionError, OptionRuleError,
+    _render_options_json, check_options_file, drop_family_value_maps, effective_score_file, list_custom_options,
+    render_assets,
 )
 from .core.importer import import_folder
-from .core.manifest import MANIFEST_FILENAME, ModelManifest, export_json_schema, load_manifest
+from .core.manifest import (
+    ENV_VAR_PATTERN, MANIFEST_FILENAME, AuthBlock, ModelManifest, default_key_env, export_json_schema,
+    load_manifest,
+)
 from .core.netutil import env_flag, make_session
 from .core.paths import (
     RepoNotFoundError, archive_dir, core_dir, definitions_dir, fact_sheet_path, find_repo_root,
     kind_folder_name, kind_of_folder,
 )
+from .core.printable import CONTROL, printable, traceback_text
 from .core.validator import validate_all, validate_folder
+from .viya.answer import one_line
 from .providers import load_adapters
 from .providers.base import CatalogModel, ProviderAdapter, slugify
 
+#: The parameters whose value is a text that is used as it is, an empty one included - neither a path nor a name.
+_TEXT_ITSELF = {("test", "--prompt"), ("test", "--system")}
+
+#: What a parameter names, for the line that refuses it empty, where that is not its own name: by the name of the
+#: parameter, or by (command, name of the parameter).
+_NAMES_NO = {
+    **dict.fromkeys(("manifest", "file", "env_file", "keys_file", "source", "options", "changelog", "csv",
+                     "packages", "files", ("package-export", "out")), "file"),
+    "out": "folder", "domain": "credential domain", "caslib": "CAS library", "report_caslib": "CAS library",
+    "server": "CAS server", "ids": "model id", "only": "entry name", "to": "target",
+}
+
+
+def _refuse_empty_values(command, name: str) -> None:
+    """Every parameter of a command - and of the commands of a group - that
+    takes a text or a path, an option or an argument, refuses an empty value
+    and one of blanks alone, with exit code 2 and one line, before the
+    command does anything: all but the two of _TEXT_ITSELF, whose empty
+    value is used as it is. Read as not given, such a value is the default -
+    the file, the folder, the library a site works with - so a command typed
+    for another one with a variable of the shell that is not set would read
+    or write that. The value is looked at as it was typed, before a path
+    type makes `.` of an empty one."""
+    for sub_name, sub in getattr(command, "commands", {}).items():
+        _refuse_empty_values(sub, f"{name} {sub_name}")
+    for param in getattr(command, "params", ()):
+        option = " / ".join(word for word in param.opts if word.startswith("--")) or (
+            param.metavar or param.name.upper())
+        if getattr(param, "is_flag", False) or param.type.name not in ("text", "str", "path") \
+                or (name, option) in _TEXT_ITSELF or getattr(param, "_mdb_refuses_empty", False):
+            continue
+
+        def checked(ctx, value, _process=param.process_value, _param=param, _option=option):
+            for given in value if isinstance(value, (list, tuple)) else (value,):
+                if isinstance(given, str) and not given.strip():
+                    _refuse_empty(name, _param.name, _option, given)
+            return _process(ctx, value)
+
+        param.process_value = checked
+        param._mdb_refuses_empty = True
+
+
+def _refuse_empty(command: str, name: str, option: str, value: str) -> None:
+    """The line that refuses an empty value of one parameter, and exit code 2."""
+    if name == "content_root":
+        _given_root(value)
+    if (command, name) == ("content-deploy", "only"):
+        _no_manifest_path(value)
+    _not_empty(option, value, _NAMES_NO.get((command, name)) or _NAMES_NO.get(name) or name.replace("_", " "))
+
+
+#: The exception click shows as a usage error - `No such option: <what was typed>` - and that a command raises to
+#: end with a line: click's own (typer 0.12.0 runs with click 8.1.7) or the copy typer brings along (typer 0.27.0).
+_CLICK_ERROR = next(kind for kind in typer.BadParameter.__mro__ if kind.__name__ == "ClickException")
+
+
+class _Commands(TyperGroup):
+    """The commands of mdb, each with `_refuse_empty_values`. The message of
+    a usage error loses its control characters before click shows it: it
+    can hold what was typed (review-23a)."""
+
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            _refuse_empty_values(command, cmd_name)
+        return command
+
+    def make_context(self, *args, **options):
+        try:
+            return super().make_context(*args, **options)
+        except _CLICK_ERROR as exc:
+            exc.message = printable(exc.message)
+            raise
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except _CLICK_ERROR as exc:
+            exc.message = printable(exc.message)
+            raise
+
+
+# pretty_exceptions_show_locals: with the default of typer 0.12.0 - the lowest version pyproject.toml allows - a
+# traceback prints the locals of every frame, and those of the credentials commands hold the values they write
 app = typer.Typer(
     name="mdb",
     help="Model Definition Builder for the SAS Agentic AI Accelerator.",
     no_args_is_help=True,
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
+    cls=_Commands,
+    pretty_exceptions_show_locals=False,
 )
-console = Console()
+#: What a text loses before it is printed: core/printable.py, which every other print of mdb uses too.
+_CONTROL, _printable = CONTROL, printable
+
+
+class _Console(Console):
+    """The console of mdb: every text it is handed - a line with markup on
+    or off, a table cell, a title - is turned into rich's own text here, and
+    loses its control characters (`_printable`) first."""
+
+    def render_str(self, text: str, *args, **options):
+        return super().render_str(_printable(text), *args, **options)
+
+    def print_json(self, *args, **options) -> None:
+        """--json output is JSON: a control character of a value stays in it,
+        written as an escape (`\\u001b`). rich writes the C0 range so
+        already; DEL and the C1 range only where every character outside
+        ASCII is written so."""
+        options["ensure_ascii"] = True
+        super().print_json(*args, **options)
+
+
+# emoji off: rich otherwise prints a `:name:` in any text as a picture - `urn:id:1` as `urn` + a sign + `1` -,
+# also in a line that is printed with markup off
+console = _Console(emoji=False)
+
+
+class _EmojiOff:
+    """A prompt of rich reads the text it is handed with emoji on, whatever
+    the console says. The two prompts of mdb read it with emoji off, as
+    its console does, and without control characters - the question and
+    the default it shows, which rich prints as a text of its own and not
+    through the console of mdb: a default can come from the catalog of a
+    provider."""
+
+    def __init__(self, prompt="", **options) -> None:
+        if isinstance(prompt, str):
+            prompt = Text.from_markup(_printable(prompt), style="prompt", emoji=False)
+        super().__init__(prompt, **options)
+
+    def render_default(self, default):
+        return super().render_default(_printable(default) if isinstance(default, str) else default)
+
+
+class Prompt(_EmojiOff, _RichPrompt):
+    pass
+
+
+class Confirm(_EmojiOff, _RichConfirm):
+    pass
+
+
+#: A pair of tags that prints nothing and styles nothing. `_plain` puts it behind backslashes that stand in
+#: front of a bracket or at the end of a value: rich reads backslashes together with the bracket behind them,
+#: which at the end of a value is the bracket of whatever the line goes on with.
+_NO_TAG = "[none][/none]"
+_BRACKET_OR_END = re.compile(r"(\\*)(\[|\Z)")
+
+
+def _plain(value) -> str:
+    """A value for a text that rich reads with markup on - a line, a table
+    cell, a title, a prompt: the value is printed as it is, whatever stands
+    in it and whatever the text goes on with. Without this a `[/folders/...]`
+    in an answer of SAS Viya is read as the end of a tag, and the command
+    ends with a MarkupError in place of its line; another word in brackets
+    is not printed at all.
+
+    Every bracket is spelled `\\[`, which rich prints as the bracket. Where
+    backslashes stand in front of a bracket or at the end of the value they
+    are doubled and closed with `_NO_TAG`: rich prints half of the
+    backslashes in front of a tag, and all of them anywhere else."""
+    def spelled(found) -> str:
+        backslashes, bracket = found.groups()
+        return (backslashes * 2 + _NO_TAG if backslashes else "") + ("\\[" if bracket else "")
+    return _BRACKET_OR_END.sub(spelled, str(value))
 
 
 def _print_version(value: bool) -> None:
@@ -97,7 +266,7 @@ class Context:
         try:
             self.repo = find_repo_root()
         except RepoNotFoundError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
         self.core = CoreAssets.load(core_dir(self.repo))
 
@@ -148,15 +317,20 @@ class Context:
         for model_id in ids:
             folder = self.find_folder(model_id)
             if folder is None:
-                console.print(f"[red]{model_id}: no such folder in LLM-Definitions, Embedding-Definitions "
+                console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions, Embedding-Definitions "
                               "or Decision-Definitions[/red]")
                 raise typer.Exit(2)
             folders.append(folder)
         return folders
 
 
-def _env_api_key(adapter: ProviderAdapter) -> Optional[str]:
-    if not adapter.env_key_var:
+def _env_api_key(adapter: Optional[ProviderAdapter], manifest: Optional[ModelManifest] = None) -> Optional[str]:
+    """The provider key on this workstation, from the environment or .env: an
+    `auth.mode: env` definition's own variable first, then the adapter's."""
+    auth = manifest.provider.auth if manifest is not None else None
+    if auth is not None and auth.mode == "env" and auth.env_var and os.environ.get(auth.env_var):
+        return os.environ[auth.env_var]
+    if adapter is None or not adapter.env_key_var:
         return None
     for name in (adapter.env_key_var, *getattr(adapter, "env_key_fallbacks", ())):
         value = os.environ.get(name)
@@ -170,9 +344,16 @@ def _print_issues(issues) -> bool:
     has_error = False
     for issue in issues:
         color = {"error": "red", "warning": "yellow", "info": "dim"}[issue.severity]
-        console.print(f"[{color}]{issue.format()}[/{color}]")
+        _line(issue.format(), color)
         has_error = has_error or issue.severity == "error"
     return has_error
+
+
+def _line(text: str, style: Optional[str] = None) -> None:
+    """A line of mdb as it is: no markup read into it, and not broken at the
+    width of the console - 80 columns where the output goes to a pipe or a
+    file -, so a refusal is one line wherever it is read."""
+    console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +361,9 @@ def _print_issues(issues) -> bool:
 # ---------------------------------------------------------------------------
 
 def _pick_from_list(title: str, entries: list[str]) -> int:
-    console.print(f"\n[bold]{title}[/bold]")
+    console.print(f"\n[bold]{_plain(title)}[/bold]")
     for index, entry in enumerate(entries, start=1):
-        console.print(f"  {index}. {entry}")
+        console.print(f"  {_plain(index)}. {_plain(entry)}")
     while True:
         raw = Prompt.ask("Number", default="1")
         try:
@@ -215,7 +396,13 @@ def _enrich_from_static(live: list[CatalogModel], static: list[CatalogModel]) ->
         if model.kind == "llm" and known.kind in ("embedding", "decision"):
             model.kind = known.kind
         model.reasoning = model.reasoning or known.reasoning
-        model.extended_thinking = model.extended_thinking or known.extended_thinking
+        model.adaptive_thinking = model.adaptive_thinking or known.adaptive_thinking
+        # Either source knowing that the model refuses sampling is enough.
+        model.sampling = model.sampling and known.sampling
+        # Adaptive thinking replaces the budget: keep the snapshot's word.
+        model.extended_thinking = (model.extended_thinking or known.extended_thinking) \
+            and not model.adaptive_thinking
+        model.reasoning_efforts = model.reasoning_efforts or known.reasoning_efforts
         if known.source != "static":
             model.source = f"live, enriched from {known.source}"
     return live
@@ -228,7 +415,7 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
             session = make_session(verify_ssl)
             models = adapter.live_catalog(session, _env_api_key(adapter))
             if models:
-                console.print(f"[dim]Live catalog: {len(models)} models from {adapter.display_name}.[/dim]")
+                console.print(f"[dim]Live catalog: {len(models)} models from {_plain(adapter.display_name)}.[/dim]")
                 enriched = _enrich_from_static(models, static)
                 # A live listing does not carry everything a provider serves
                 # (OpenRouter's /models omits its decision models); the
@@ -237,11 +424,11 @@ def _catalog_for(adapter: ProviderAdapter, ctx: Context, offline: bool, verify_s
                 enriched.extend(m for m in static if m.ref not in live_refs)
                 return enriched
         except NotImplementedError as exc:
-            console.print(f"[dim]{exc}[/dim]")
+            console.print(f"[dim]{_plain(exc)}[/dim]")
         except Exception as exc:
-            console.print(f"[yellow]Live catalog unavailable ({exc}) - falling back to the bundled snapshot.[/yellow]")
+            console.print(f"[yellow]Live catalog unavailable ({_plain(one_line(str(exc)))}) - falling back to the bundled snapshot.[/yellow]")
     if static:
-        console.print(f"[dim]Using bundled static catalog ({static[0].source}) - confirm pricing before relying on cost monitoring.[/dim]")
+        console.print(f"[dim]Using bundled static catalog ({_plain(static[0].source)}) - confirm pricing before relying on cost monitoring.[/dim]")
     return static
 
 
@@ -306,18 +493,22 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
         return
 
     unknown = "[dim]unknown[/dim]"
-    table = Table(title=f"Catalog-derived values for {manifest.model_id}")
+    table = Table(title=f"Catalog-derived values for {_plain(manifest.model_id)}")
     table.add_column("Section")
     table.add_column("Name")
     table.add_column("Value")
-    table.add_row("definition", "kind", manifest.kind.upper())
+    table.add_row("definition", "kind", _plain(manifest.kind.upper()))
     for name, spec in manifest.options.items():
         bounds = "" if spec.max is None else f"  (max {spec.max:g})"
-        table.add_row("options", name, f"{spec.default}{bounds}")
-    table.add_row("metadata", "description", metadata.description)
-    table.add_row("metadata", "context_length", str(metadata.context_length) if metadata.context_length else unknown)
-    table.add_row("metadata", "release_date", metadata.release_date or unknown)
-    table.add_row("metadata", "knowledge_cutoff", metadata.knowledge_cutoff or unknown)
+        if spec.value_map:
+            # Only what this model sends other than the word it is offered
+            moved = [f"{key} -> {value}" for key, value in spec.value_map.items() if key != value]
+            bounds += f"  (sent as {', '.join(moved)})" if moved else ""
+        table.add_row("options", _plain(name), f"{_plain(spec.default)}{_plain(bounds)}")
+    table.add_row("metadata", "description", _plain(metadata.description))
+    table.add_row("metadata", "context_length", _plain(metadata.context_length) if metadata.context_length else unknown)
+    table.add_row("metadata", "release_date", _plain(metadata.release_date) if metadata.release_date else unknown)
+    table.add_row("metadata", "knowledge_cutoff", _plain(metadata.knowledge_cutoff) if metadata.knowledge_cutoff else unknown)
     if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens":
         table.add_row("pricing", "input_token_price",
                       unknown if pricing.input_token_price is None else f"{pricing.input_token_price:g}")
@@ -329,11 +520,11 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
     if adjust:
         console.print("[dim]Press Enter to keep a value.[/dim]")
         for name, spec in manifest.options.items():
-            raw = Prompt.ask(f"options.{name}.default", default=str(spec.default))
+            raw = Prompt.ask(f"options.{_plain(name)}.default", default=str(spec.default))
             try:
                 spec.default = _cast_like(spec.default, raw)
             except (TypeError, ValueError):
-                console.print(f"[yellow]'{raw}' does not fit {name} - keeping {spec.default}.[/yellow]")
+                console.print(f"[yellow]'{_plain(raw)}' does not fit {_plain(name)} - keeping {_plain(spec.default)}.[/yellow]")
         # Option NAMES are part of the provider contract (e.g. newer OpenAI
         # models take max_completion_tokens instead of max_tokens) - allow
         # fixing them here instead of editing definition.yaml afterwards.
@@ -347,19 +538,19 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
             if action.startswith("-"):
                 target = action[1:].strip()
                 if manifest.options.pop(target, None) is None:
-                    console.print(f"[yellow]No option named '{target}'.[/yellow]")
+                    console.print(f"[yellow]No option named '{_plain(target)}'.[/yellow]")
                 else:
-                    console.print(f"[dim]Dropped {target}.[/dim]")
+                    console.print(f"[dim]Dropped {_plain(target)}.[/dim]")
                 continue
             if "=" not in action:
                 console.print("[yellow]Use old=new to rename, -name to drop, or Enter to continue.[/yellow]")
                 continue
             old_name, new_name = (part.strip() for part in action.split("=", 1))
             if old_name not in manifest.options:
-                console.print(f"[yellow]No option named '{old_name}'.[/yellow]")
+                console.print(f"[yellow]No option named '{_plain(old_name)}'.[/yellow]")
                 continue
             if not new_name or new_name in manifest.options:
-                console.print(f"[yellow]'{new_name}' is empty or already exists.[/yellow]")
+                console.print(f"[yellow]'{_plain(new_name)}' is empty or already exists.[/yellow]")
                 continue
             manifest.options = {
                 (new_name if key == old_name else key): value
@@ -368,21 +559,21 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
             spec = manifest.options[new_name]
             if core is not None and new_name not in core.vocabulary and spec.type is None:
                 console.print(
-                    f"[yellow]'{new_name}' is not in the option vocabulary - generation will fail "
+                    f"[yellow]'{_plain(new_name)}' is not in the option vocabulary - generation will fail "
                     "unless you pick a vocabulary name or add an inline type in definition.yaml.[/yellow]"
                 )
             else:
-                console.print(f"[dim]Renamed {old_name} -> {new_name}.[/dim]")
+                console.print(f"[dim]Renamed {_plain(old_name)} -> {_plain(new_name)}.[/dim]")
         metadata.description = Prompt.ask("metadata.description", default=metadata.description)
         for attribute in ("release_date", "knowledge_cutoff"):
-            raw = Prompt.ask(f"metadata.{attribute}", default=getattr(metadata, attribute) or "").strip()
+            raw = Prompt.ask(f"metadata.{_plain(attribute)}", default=getattr(metadata, attribute) or "").strip()
             setattr(metadata, attribute, raw or None)
         raw = Prompt.ask("metadata.context_length",
                          default=str(metadata.context_length) if metadata.context_length else "").strip()
         try:
             metadata.context_length = int(float(raw)) if raw else None
         except ValueError:
-            console.print(f"[yellow]'{raw}' is not a number - keeping {metadata.context_length}.[/yellow]")
+            console.print(f"[yellow]'{_plain(raw)}' is not a number - keeping {_plain(metadata.context_length)}.[/yellow]")
     if manifest.kind in ("llm", "decision") and pricing.cost_type == "Tokens" and (adjust or pricing_unknown):
         if pricing_unknown:
             console.print(
@@ -392,13 +583,13 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
         for attribute, label in (("input_token_price", "pricing.input_token_price"),
                                  ("output_token_price", "pricing.output_token_price")):
             current = getattr(pricing, attribute)
-            raw = Prompt.ask(label, default="" if current is None else f"{current:g}").strip()
+            raw = Prompt.ask(_plain(label), default="" if current is None else f"{current:g}").strip()
             if raw == "":
                 continue
             try:
                 setattr(pricing, attribute, float(raw))
             except ValueError:
-                console.print(f"[yellow]'{raw}' is not a number - keeping {current}.[/yellow]")
+                console.print(f"[yellow]'{_plain(raw)}' is not a number - keeping {_plain(current)}.[/yellow]")
 
 
 @app.command()
@@ -434,27 +625,48 @@ def add(
     kind: Optional[str] = typer.Option(None, help="Model kind: llm, embedding or decision (any provider whose adapter has a template for that kind)"),
     license_: Optional[str] = typer.Option(None, "--license", help="License class for self-hosted models (Open-Source/Proprietary)"),
     description: Optional[str] = typer.Option(None, help="Model description for Model Manager and the fact sheet"),
+    auth: Optional[str] = typer.Option(
+        None, "--auth",
+        help="Where the provider key comes from: api_key (the API_KEY scoring option, a credential-domain "
+             "entry - the default) or env (an environment variable of the SCR container; options.json "
+             "then has no API_KEY)",
+    ),
+    key_env: Optional[str] = typer.Option(
+        None, "--key-env",
+        help="With --auth env: the container environment variable that holds the key "
+             "(default: the provider's own, e.g. OPENAI_API_KEY)",
+    ),
 ):
     """Add a new model definition: pick a provider and model, answer a few questions,
     and every framework asset is generated."""
     ctx = Context()
     adapters = load_adapters()
+    if auth is not None and auth not in ("api_key", "env"):
+        console.print(f"[red]--auth must be api_key or env, not '{_plain(auth)}'.[/red]")
+        raise typer.Exit(2)
+    if key_env is not None and auth != "env":
+        console.print("[red]--key-env names the variable of --auth env - pass --auth env with it.[/red]")
+        raise typer.Exit(2)
+    if key_env is not None and not ENV_VAR_PATTERN.fullmatch(key_env):
+        console.print(f"[red]--key-env '{_plain(key_env)}' is not an environment variable name "
+                      "(upper-case letters, digits and underscores, not starting with a digit).[/red]")
+        raise typer.Exit(2)
 
     if provider is None:
         ids = list(adapters)
         labels = [f"{adapters[i].display_name}  ({i})" for i in ids]
         provider = ids[_pick_from_list("Providers", labels)]
     if provider not in adapters:
-        console.print(f"[red]Unknown provider '{provider}'. Known: {', '.join(adapters)}[/red]")
+        console.print(f"[red]Unknown provider '{_plain(provider)}'. Known: {_plain(', '.join(adapters))}[/red]")
         raise typer.Exit(2)
     adapter = adapters[provider]
 
     if adapter.env_key_var:
         if _env_api_key(adapter):
-            console.print(f"[green]Using {adapter.env_key_var} from the environment/.env.[/green]")
+            console.print(f"[green]Using {_plain(adapter.env_key_var)} from the environment/.env.[/green]")
         else:
             console.print(
-                f"[yellow]No {adapter.env_key_var} found.[/yellow] Get one at {adapter.docs_url} "
+                f"[yellow]No {_plain(adapter.env_key_var)} found.[/yellow] Get one at {_plain(adapter.docs_url)} "
                 "and add it to your .env - catalog browsing may be limited and smoke tests will be skipped."
             )
 
@@ -473,11 +685,11 @@ def add(
             answers[question.param] = supplied
         elif yes:
             if question.required and not question.default:
-                console.print(f"[red]--yes needs --{question.param.replace('_', '-')} for {adapter.display_name}.[/red]")
+                console.print(f"[red]--yes needs --{_plain(question.param.replace('_', '-'))} for {_plain(adapter.display_name)}.[/red]")
                 raise typer.Exit(2)
             answers[question.param] = question.default
         else:
-            answers[question.param] = Prompt.ask(question.prompt, default=question.default or None)
+            answers[question.param] = Prompt.ask(_plain(question.prompt), default=question.default or None)
     # The definition KIND (llm vs embedding) decides the score template, the
     # destination folder (LLM-Definitions vs Embedding-Definitions) and the
     # Model Manager project - so --kind is honored for EVERY adapter that can
@@ -486,10 +698,10 @@ def add(
     supports_decision = getattr(adapter, "decision_template", None) is not None
     kind_is_flaggable = (supports_embedding or supports_decision) and "kind" not in question_params
     if kind is not None and kind not in KINDS:
-        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        console.print(f"[red]--kind must be one of {_plain(', '.join(KINDS))}.[/red]")
         raise typer.Exit(2)
     if (kind == "embedding" and not supports_embedding) or (kind == "decision" and not supports_decision):
-        console.print(f"[red]Provider '{provider}' has no {kind} template - see mdb providers.[/red]")
+        console.print(f"[red]Provider '{_plain(provider)}' has no {_plain(kind)} template - see mdb providers.[/red]")
         raise typer.Exit(2)
     # Surface flags that this provider does not consume, so a misdirected flag
     # (e.g. --kind on an LLM-only provider) is not silently ignored.
@@ -497,8 +709,8 @@ def add(
         if flag_name == "kind" and kind_is_flaggable:
             continue
         if flag_value is not None and flag_name != "description" and flag_name not in question_params:
-            console.print(f"[yellow]--{flag_name.replace('_', '-')} is not used by provider "
-                          f"'{provider}' - ignored.[/yellow]")
+            console.print(f"[yellow]--{_plain(flag_name.replace('_', '-'))} is not used by provider "
+                          f"'{_plain(provider)}' - ignored.[/yellow]")
     if description:
         answers["description"] = description
     if answers.get("resource"):
@@ -506,7 +718,7 @@ def add(
             answers["commit_resource"] = commit_resource
         else:
             answers["commit_resource"] = Confirm.ask(
-                f"Bake '{answers['resource']}' into the definition as its default resource? "
+                f"Bake '{_plain(answers['resource'])}' into the definition as its default resource? "
                 "(No keeps it environment-driven via AZURE_OPENAI_RESOURCE)",
                 default=False,
             )
@@ -550,33 +762,41 @@ def add(
     modeler = os.environ.get("SAS_RESPONSIBLE_PARTY", "") or os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     try:
         manifest = adapter.build_manifest(cm, final_id, answers, modeler)
+        # A value_map the catalog gave that says what the family says anyway
+        # is not written: a definition carries one only where its model differs.
+        drop_family_value_maps(manifest, ctx.core)
+        if auth is not None:
+            _apply_auth(manifest, adapter, auth, key_env)
         # State the kind up front - it decides the score template, the folder
         # and the Model Manager project, and used to be visible only as an
         # easily-missed folder name near the end.
         kind_folder = kind_folder_name(manifest.kind)
-        console.print(f"\n[bold cyan]Adding a {manifest.kind.upper()} model definition -> "
-                      f"{kind_folder}/{final_id}/[/bold cyan]")
+        console.print(f"\n[bold cyan]Adding a {_plain(manifest.kind.upper())} model definition -> "
+                      f"{_plain(kind_folder)}/{_plain(final_id)}/[/bold cyan]")
         # The catalog-derived values steer scoring behavior and cost monitoring
         # - confirm them consciously by default; --accept-defaults / --yes skip
         # the review (unknown token pricing is still asked/warned about).
         _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        _line(one_line(str(exc)), "red")
         raise typer.Exit(1)
 
     defs_name = kind_folder_name(manifest.kind)
     folder = ctx.defs_dir(manifest.kind) / final_id
     if folder.exists() and any(folder.iterdir()):
-        console.print(f"[red]{folder} already exists and is not empty - pick another id or use mdb import.[/red]")
+        console.print(f"[red]{_plain(folder)} already exists and is not empty - pick another id or use mdb import.[/red]")
         raise typer.Exit(2)
 
     fact_sheet = ctx.fact_sheet(manifest.kind)
-    console.print(f"\n[bold]Will create {defs_name}/{final_id}/[/bold] with:")
-    console.print(f"  {MANIFEST_FILENAME}  (the only file you edit)")
+    console.print(f"\n[bold]Will create {_plain(defs_name)}/{_plain(final_id)}/[/bold] with:")
+    console.print(f"  {_plain(MANIFEST_FILENAME)}  (the only file you edit)")
     for name in sorted(rendered):
-        console.print(f"  {name}")
-    console.print(f"  + a row in {fact_sheet.name} (pricing source: {manifest.generation.catalog_provenance})")
+        console.print(f"  {_plain(name)}")
+    console.print(f"  + a row in {_plain(fact_sheet.name)} (pricing source: {_plain(manifest.generation.catalog_provenance)})")
+    if manifest.provider.auth.mode == "env":
+        console.print(f"  Provider key: the container environment variable {_plain(manifest.provider.auth.env_var)} "
+                      "(auth.mode env) - options.json has no API_KEY; mdb deploy renders the Secret reference.")
     if not yes and not Confirm.ask("Write these files?", default=True):
         raise typer.Exit(0)
 
@@ -587,12 +807,35 @@ def add(
     drift.write_lock(folder, manifest_path.read_bytes(), rendered)
     facts.upsert_row(fact_sheet, manifest)
 
-    console.print(f"\n[green]Created {final_id} ({manifest.kind} definition, {len(rendered)} files + fact-sheet row).[/green]")
+    console.print(f"\n[green]Created {_plain(final_id)} ({_plain(manifest.kind)} definition, {len(rendered)} files + fact-sheet row).[/green]")
     console.print("Next steps:")
-    console.print(f"  1. mdb validate {final_id} --live     (smoke-test the provider before Viya)")
-    console.print(f"  2. mdb test {final_id}                (run the generated scoreModel() locally - what SCR will execute)")
-    console.print(f"  3. mdb register {final_id}            (register in SAS Model Manager)")
-    console.print(f"  4. mdb publish {final_id}             (publish to SCR - or mdb ship {final_id} for register + publish)")
+    console.print(f"  1. mdb validate {_plain(final_id)} --live     (smoke-test the provider before Viya)")
+    console.print(f"  2. mdb test {_plain(final_id)}                (run the generated scoreModel() locally - what SCR will execute)")
+    console.print(f"  3. mdb register {_plain(final_id)}            (register in SAS Model Manager)")
+    console.print(f"  4. mdb publish {_plain(final_id)}             (publish to SCR - or mdb ship {_plain(final_id)} for register + publish)")
+
+
+def _apply_auth(manifest: ModelManifest, adapter: ProviderAdapter, auth: str, key_env: Optional[str]) -> None:
+    """`mdb add --auth`: keep the API_KEY option (api_key) or read the key from
+    a container environment variable instead (env). Raises ValueError with
+    one line where the definition takes no key option, or where neither
+    --key-env nor the adapter names the variable. The sentence that names the
+    variable is not written into the description: every generate derives it
+    from auth (manifest.described), so it follows a later switch of mode or
+    variable."""
+    if manifest.provider.auth.mode == "none":
+        if manifest.runtime.template == AZURE_ENV_TEMPLATE:
+            raise ValueError(f"{adapter.display_name} {manifest.kind} definitions ({manifest.runtime.template}) "
+                             "read their key from the container environment variable AZURE_OPENAI_API_KEY "
+                             f"already - --auth {auth} does not apply.")
+        raise ValueError(f"{adapter.display_name} {manifest.kind} definitions ({manifest.runtime.template}) "
+                         f"take no provider key - --auth {auth} does not apply.")
+    if auth == "api_key":
+        return
+    env_var = key_env or adapter.env_key_var or default_key_env(adapter.id)
+    if not env_var:
+        raise ValueError(f"Provider '{adapter.id}' has no default key variable - pass --key-env NAME.")
+    manifest.provider.auth = AuthBlock(mode="env", env_var=env_var)
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +858,7 @@ def generate(
             manifest = load_manifest(folder)
             rendered = render_assets(manifest, ctx.core)
         except Exception as exc:
-            console.print(f"[red]{model_id}: {exc}[/red]")
+            _line(f"{model_id}: {one_line(str(exc))}", "red")
             failed = True
             continue
         classifications = drift.classify(folder, rendered)
@@ -624,9 +867,9 @@ def generate(
             if pending:
                 failed = True
                 for c in pending:
-                    console.print(f"[red]{model_id}/{c.filename}: {c.status.value}[/red]")
+                    console.print(f"[red]{_plain(model_id)}/{_plain(c.filename)}: {_plain(c.status.value)}[/red]")
             else:
-                console.print(f"[green]{model_id}: clean[/green]")
+                console.print(f"[green]{_plain(model_id)}: clean[/green]")
             continue
         blockers = [c for c in pending
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
@@ -634,21 +877,21 @@ def generate(
             failed = True
             for c in blockers:
                 console.print(
-                    f"[red]{model_id}/{c.filename} was edited by hand.[/red] Fold the change into "
+                    f"[red]{_plain(model_id)}/{_plain(c.filename)} was edited by hand.[/red] Fold the change into "
                     f"definition.yaml, add it to generation.overrides, or rerun with --force."
                 )
             continue
         for c in pending:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
-        console.print(f"[green]{model_id}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
+        console.print(f"[green]{_plain(model_id)}: {len(pending)} file(s) written, {len(classifications) - len(pending)} unchanged.[/green]")
         for option_name in list_custom_options(manifest, ctx.core):
-            console.print(
-                f"[yellow]{model_id}: option '{option_name}' is not in the standardized vocabulary - "
+            _line(
+                f"{model_id}: option '{one_line(option_name)}' is not in the standardized vocabulary - "
                 "it is sent to the provider as-is and shows up in UIs under its raw name with your "
                 "description (no standardized label, no cross-provider translation). "
-                "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.[/yellow]"
-            )
+                "Fine if intended; standardize it in definition-core/static/option-vocabulary.json otherwise.",
+                "yellow")
     if not check and not failed:
         console.print("Next: mdb sync --all   (keep the fact sheet in step)")
     raise typer.Exit(1 if failed else 0)
@@ -685,20 +928,20 @@ def validate(
             manifest = load_manifest(folder)
             adapter = adapters.get(manifest.provider.adapter)
             if adapter is None:
-                console.print(f"[yellow]{folder.name}: unknown adapter '{manifest.provider.adapter}' - skipped.[/yellow]")
+                console.print(f"[yellow]{_plain(folder.name)}: unknown adapter '{_plain(manifest.provider.adapter)}' - skipped.[/yellow]")
                 continue
-            result = adapter.smoke_test(manifest, _env_api_key(adapter), session)
+            result = adapter.smoke_test(manifest, _env_api_key(adapter, manifest), session)
             if result.skipped:
-                console.print(f"[dim]{folder.name}: {result.detail}[/dim]")
+                console.print(f"[dim]{_plain(folder.name)}: {_plain(result.detail)}[/dim]")
             elif result.ok:
-                console.print(f"[green]{folder.name}: {result.detail}[/green]")
+                console.print(f"[green]{_plain(folder.name)}: {_plain(result.detail)}[/green]")
             elif result.inconclusive:
                 # Transient upstream state (e.g. rate-limited): says nothing
                 # about the definition - warn without failing the validation.
-                console.print(f"[yellow]{folder.name}: smoke test inconclusive - {result.detail}[/yellow]")
+                console.print(f"[yellow]{_plain(folder.name)}: smoke test inconclusive - {_plain(result.detail)}[/yellow]")
             else:
                 has_error = True
-                console.print(f"[red]{folder.name}: smoke test failed - {result.detail}[/red]")
+                console.print(f"[red]{_plain(folder.name)}: smoke test failed - {_plain(result.detail)}[/red]")
     raise typer.Exit(1 if has_error else 0)
 
 
@@ -720,7 +963,7 @@ def _rebuild_sheets(ctx: Context, prune: bool = False) -> bool:
             message += f", kept {summary['legacy_kept']} legacy row(s)"
         if summary["legacy_dropped"]:
             message += f", dropped {summary['legacy_dropped']} legacy row(s)"
-        console.print(message)
+        console.print(_plain(message))
     return rebuilt_any
 
 
@@ -760,7 +1003,7 @@ def sync(
             continue
         manifest = load_manifest(folder)
         result = facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
-        console.print(f"{folder.name}: fact-sheet row {result}")
+        console.print(f"{_plain(folder.name)}: fact-sheet row {_plain(result)}")
 
 
 @app.command("load-facts")
@@ -788,7 +1031,10 @@ def load_facts(
     The Python equivalent of Load-Fact-Sheets.sas: each sheet is loaded with
     global scope (promoted) and saved to the caslib's data source on disk, so the
     SAS Visual Analytics monitoring report can bind to LLM_FACT_SHEET /
-    EMBEDDING_FACT_SHEET across sessions and restarts.
+    EMBEDDING_FACT_SHEET / DECISION_FACT_SHEET across sessions and restarts.
+    A kind without any definition is loaded as an empty table with its
+    sheet's columns: the LLM Usage Report reads the LLM and the embedding
+    table, and Start Here looks for all three.
     """
     from .viya.cas import load_fact_sheet, resolve_server
     ctx = Context()
@@ -799,45 +1045,79 @@ def load_facts(
         _rebuild_sheets(ctx, prune=prune)
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
-    with _viya_session() as session:
+    # What each kind loads: its sheet, or - for a kind the site has no
+    # definition of - an empty table with the sheet's columns, because the
+    # LLM Usage Report reads the LLM and the embedding table and fails on a
+    # missing one, and Start Here looks for all three. A
+    # kind that HAS definitions but no sheet is skipped as before: an empty
+    # table there would hide that the sheet was never generated.
+    sheets: dict = {}
+    for kind in KINDS:
+        sheet = ctx.fact_sheet(kind)
+        if sheet.is_file():
+            sheets[kind] = sheet
+        elif not _has_definitions(ctx, kind):
+            sheets[kind] = None
+        else:
+            console.print(f"  [yellow]{_plain(sheet.name)} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
+    if not any(sheets.values()):
+        console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
+        raise typer.Exit(1)
+    import tempfile
+    with _viya_session() as session, tempfile.TemporaryDirectory() as tmp:
         server_name = resolve_server(session, server_choice)
         console.print(
-            f"Loading fact sheets into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:"
+            f"Loading fact sheets into CAS library [bold]{_plain(caslib)}[/bold] on [bold]{_plain(server_name)}[/bold]:"
         )
-        loaded = 0
-        for kind in KINDS:
-            sheet = ctx.fact_sheet(kind)
-            if not sheet.is_file():
-                console.print(f"  [yellow]{sheet.name} not found - run 'mdb sync --rebuild' first, skipping.[/yellow]")
-                continue
+        for kind, sheet in sheets.items():
+            empty = sheet is None
+            if empty:
+                sheet = Path(tmp) / ctx.fact_sheet(kind).name
+                sheet.write_bytes(facts.empty_sheet(kind))
             try:
                 result = load_fact_sheet(session, sheet, kind, caslib, server_name)
             except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
+                console.print(f"  [red]{_plain(exc)}[/red]")
                 raise typer.Exit(1)
-            loaded += 1
             # "dropped" reflects the loaded copy; the save step replaces any saved one
             suffix = " (replaced a loaded copy)" if result["dropped"] else ""
-            console.print(f"  {result['table']}: uploaded, promoted (global) and saved to disk{suffix}")
-    if not loaded:
-        console.print("[red]No fact sheet was loaded - generate them first with 'mdb sync --rebuild'.[/red]")
-        raise typer.Exit(1)
+            if empty:
+                reader = "Start Here looks for it" if kind == "decision" else "the LLM Usage Report reads it"
+                console.print(f"  {_plain(result['table'])}: no {_plain(kind)} definitions - loaded an empty table "
+                              f"with the sheet's columns ({_plain(reader)}){_plain(suffix)}")
+            else:
+                console.print(f"  {_plain(result['table'])}: uploaded, promoted (global) and saved to disk{_plain(suffix)}")
     console.print("[green]Done. The tables are promoted and persisted; the monitoring report can bind to them.[/green]")
 
 
+def _has_definitions(ctx: "Context", kind: str) -> bool:
+    """Whether the definitions folder of `kind` holds any definition - managed
+    or a hand-maintained legacy folder (those have fact-sheet rows too)."""
+    folder = ctx.defs_dir(kind)
+    return folder.is_dir() and any(
+        child.is_dir() and not child.name.startswith(("_", ".")) for child in folder.iterdir())
+
+
 def _load_releases(session, ctx: "Context", caslib: str, server_name: str, table: str,
-                   changelog: Optional[Path] = None) -> dict:
+                   changelog: Optional[Path] = None, csv_data: Optional[bytes] = None) -> dict:
     """Parse CHANGELOG.md into the release table and load it (drop, upload,
-    promote, save). Shared by `mdb load-releases` and `mdb setup`."""
+    promote, save). Shared by `mdb load-releases`, `mdb setup` and `mdb
+    builders-import`. With `csv_data` - the Data/ACCELERATOR_RELEASES.csv a
+    package holds - that table is loaded as it is and no changelog is read."""
     import tempfile
-    from .core.releases import build_release_table
+    from .core.releases import build_release_table, rows_of_csv, summarise
     from .viya.cas import load_csv_table
-    source = changelog or (ctx.repo / "CHANGELOG.md")
-    if not source.is_file():
-        raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator clone")
     with tempfile.TemporaryDirectory() as tmp:
         csv_path = Path(tmp) / f"{table}.csv"
-        rows, summary = build_release_table(source, csv_path)
+        if csv_data is not None:
+            summary = summarise(rows_of_csv(csv_data))
+            csv_path.write_bytes(csv_data)
+        else:
+            source = changelog or (ctx.repo / "CHANGELOG.md")
+            if not source.is_file():
+                raise RuntimeError(f"no changelog at {source} - pass --changelog or set MDB_REPO to the accelerator "
+                                   "clone")
+            rows, summary = build_release_table(source, csv_path)
         result = load_csv_table(session, csv_path, table, caslib, server_name)
     summary["dropped"] = result["dropped"]
     return summary
@@ -848,9 +1128,14 @@ def _releases_table() -> str:
     return os.environ.get(TABLE_ENV) or DEFAULT_TABLE
 
 
-def _print_component_counts(summary: dict) -> None:
+def _print_release_counts(summary: dict) -> None:
     counts = ", ".join(f"{name} {n}" for name, n in summary["by_component"].items())
-    console.print(f"  rows per component: {counts}")
+    console.print(f"  rows per component: {_plain(counts)}")
+    # a Builder entry is one row per part it concerns, so the rows outnumber
+    # the entries and the parts add up to more than the Builder's entries
+    parts = ", ".join(f"{name} {n}" for name, n in summary["by_part"].items())
+    console.print(f"  rows per Builder part (builder_part): {_plain(parts)} - {_plain(summary['rows'])} rows "
+                  f"for {_plain(summary['entries'])} changelog entries")
 
 
 @app.command("load-releases")
@@ -881,13 +1166,15 @@ def load_releases(
 
     One row per release and one per change, with the release, the section
     (Added / Changed / Fixed / Removed), the component it concerns (Prompt
-    Builder, RAG Builder, Model Definition Builder, ...) and the change as a
-    headline plus detail. It is the table a report author assigns to the
-    Prompt Builder and RAG Builder objects in SAS Visual Analytics - a
-    Data-Driven Content object needs a data assignment before it renders - and
-    it says which release an environment runs. `mdb setup` loads it too.
+    Builder, RAG runtime, Model Definition Builder, ...) and the change as a
+    headline plus detail. A change to the Prompt Builder is one row per part
+    of it that it concerns - builder_part is Prompt, Decision or RAG - so a
+    button bar on that column shows it under each. It is the table a report
+    author assigns to the Prompt Builder object in SAS Visual Analytics - a
+    Data-Driven Content object needs a data assignment before it renders -
+    and it says which release an environment runs. `mdb setup` loads it too.
     """
-    from .core.releases import build_release_table
+    from .core.releases import build_release_table, current_words
     from .viya.cas import resolve_server
     ctx = Context()
     table_name = table or _releases_table()
@@ -896,28 +1183,28 @@ def load_releases(
         try:
             _, summary = build_release_table(source, csv_out)
         except (OSError, ValueError) as exc:
-            console.print(f"[red]{exc}[/red]")
+            _line(one_line(str(exc)), "red")
             raise typer.Exit(1)
-        console.print(f"Wrote {summary['rows']} rows for {summary['releases']} releases to {csv_out} "
-                      f"(current release: {summary['current'] or 'none dated'}).")
-        _print_component_counts(summary)
+        console.print(f"Wrote {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases to {_plain(csv_out)} "
+                      f"({_plain(current_words(summary))}).")
+        _print_release_counts(summary)
         return
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     server_choice = server or os.environ.get("SAS_CAS_SERVER")
     with _viya_session() as session:
         server_name = resolve_server(session, server_choice)
-        console.print(f"Loading the release table into CAS library [bold]{caslib}[/bold] on [bold]{server_name}[/bold]:")
+        console.print(f"Loading the release table into CAS library [bold]{_plain(caslib)}[/bold] on [bold]{_plain(server_name)}[/bold]:")
         try:
             summary = _load_releases(session, ctx, caslib, server_name, table_name, changelog)
         except (RuntimeError, ValueError) as exc:
-            console.print(f"  [red]{exc}[/red]")
+            console.print(f"  [red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
     suffix = " (replaced a loaded copy)" if summary["dropped"] else ""
-    console.print(f"  {table_name}: {summary['rows']} rows for {summary['releases']} releases, uploaded, "
-                  f"promoted (global) and saved to disk{suffix}")
-    _print_component_counts(summary)
-    console.print(f"[green]Done. Current release: {summary['current'] or 'none dated'}. Assign "
-                  f"{caslib}.{table_name} to the Prompt Builder and RAG Builder objects in SAS Visual Analytics.[/green]")
+    console.print(f"  {_plain(table_name)}: {_plain(summary['rows'])} rows for {_plain(summary['releases'])} releases, uploaded, "
+                  f"promoted (global) and saved to disk{_plain(suffix)}")
+    _print_release_counts(summary)
+    console.print(f"[green]Done. The table names the {_plain(current_words(summary))}. Assign "
+                  f"{_plain(caslib)}.{_plain(table_name)} to the Prompt Builder object in SAS Visual Analytics.[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -933,42 +1220,85 @@ def import_(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None:
-        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+        console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
-    if (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[yellow]{model_id} already has a definition.yaml - nothing imported.[/yellow]")
+    if (folder / MANIFEST_FILENAME).is_file() and (folder / drift.LOCK_FILENAME).is_file():
+        console.print(f"[yellow]{_plain(model_id)} already has a definition.yaml - nothing imported.[/yellow]")
         raise typer.Exit(0)
-    fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
-    result = import_folder(folder, fact_sheet)
-    # Render BEFORE writing the manifest: a folder must never be left
-    # half-adopted when e.g. an option cannot be resolved
-    try:
-        rendered = render_assets(result.manifest, ctx.core)
-    except GenerationError as exc:
-        console.print(f"[red]{model_id}: {exc}[/red]")
-        console.print("Nothing was written - the folder stays fully hand-maintained. "
-                      "Declare the option inline (type/description) in a definition.yaml "
-                      "or extend the vocabulary, then rerun mdb import.")
+    if not _import_definition(ctx, model_id, folder, apply):
         raise typer.Exit(1)
-    manifest_path = result.manifest.save(folder)
-    console.print(f"[green]Wrote {manifest_path}.[/green]")
-    for note in result.notes:
-        console.print(f"  [yellow]note:[/yellow] {note}")
+
+
+def _import_definition(ctx: Context, model_id: str, folder: Path, apply: bool, *, pulled: bool = False) -> bool:
+    """`mdb import` of one folder, and the import of `mdb pull --import`.
+    Returns False where it was refused; nothing is written then.
+
+    A folder without definition.yaml is reverse-engineered: definition.yaml
+    is written once the files it gives render, and with `apply` the folder
+    is converged onto them. A folder whose definition.yaml is not converged
+    yet - it has no .mdb-lock.json, as after `mdb import <id>` - is read from
+    that definition.yaml, as it was reviewed: the files it gives are listed,
+    and with `apply` the folder is converged onto them. So the two commands
+    the import prints, `mdb import <id>` and `mdb import <id> --apply`,
+    adopt a folder. `pulled` (`mdb pull --import`) reverse-engineers the
+    folder it pulled, whatever definition.yaml it holds."""
+    fact_sheet = ctx.fact_sheet(ctx.kind_of(folder))
+    reviewed = not pulled and (folder / MANIFEST_FILENAME).is_file()
+    notes: list[str] = []
+    try:
+        if reviewed:
+            try:
+                manifest = load_manifest(folder)
+            except Exception as exc:  # the schema of definition.yaml, as `mdb generate` prints it
+                raise GenerationError(one_line(str(exc))) from exc
+        else:
+            result = import_folder(folder, fact_sheet)
+            manifest, notes = result.manifest, result.notes
+        # Render BEFORE writing the manifest: a folder must never be left
+        # half-adopted when e.g. an option cannot be resolved
+        rendered = render_assets(manifest, ctx.core)
+    except GenerationError as exc:
+        _line(f"{model_id}: {one_line(str(exc))}", "red")
+        rerun = f"mdb import {model_id}{' --apply' if apply else ''}"
+        if reviewed:
+            _line(f"Nothing was written. Repair definition.yaml, then rerun {rerun}.")
+            return False
+        head = ("definition.yaml was not written - the pulled folder stays fully hand-maintained." if pulled
+                else "Nothing was written - the folder stays fully hand-maintained.")
+        again = f"then run mdb import {model_id}" if pulled else "then rerun mdb import"
+        if isinstance(exc, OptionRuleError):
+            _line(f"{head} Repair its options.json, {again}.")
+        elif isinstance(exc, OptionError):
+            _line(f"{head} Take the option out of its options.json or add it to the vocabulary, {again}. To keep "
+                  "it outside the vocabulary, declare it inline (type and description) in the definition.yaml "
+                  f"that mdb import then writes, and converge with mdb import {model_id} --apply.")
+        else:
+            _line(head)
+        return False
+    if reviewed:
+        manifest_path = folder / MANIFEST_FILENAME
+        _line(f"{model_id}: {MANIFEST_FILENAME} is not converged yet (no {drift.LOCK_FILENAME}) - read as it is.")
+    else:
+        manifest_path = manifest.save(folder)
+        console.print(f"[green]Wrote {_plain(manifest_path)}.[/green]", soft_wrap=True)
+    for note in notes:
+        console.print(f"  [yellow]note:[/yellow] {_plain(note)}", soft_wrap=True)
     changed = [c for c in drift.classify(folder, rendered) if c.status != drift.FileStatus.UNCHANGED]
     if changed:
         console.print("\nRegenerating would change these files (intended normalizations included):")
         for c in changed:
-            console.print(f"  {c.filename} ({c.status.value})")
+            console.print(f"  {_plain(c.filename)} ({_plain(c.status.value)})")
     if apply:
         for c in changed:
             (folder / c.filename).write_bytes(rendered[c.filename])
         drift.write_lock(folder, manifest_path.read_bytes(), rendered)
-        facts.upsert_row(fact_sheet, result.manifest)
-        console.print(f"[green]Converged {model_id} ({len(changed)} file(s) rewritten).[/green]")
-        console.print(f"Re-test before re-publishing: mdb validate {model_id} --live")
+        facts.upsert_row(fact_sheet, manifest)
+        console.print(f"[green]Converged {_plain(model_id)} ({len(changed)} file(s) rewritten).[/green]")
+        console.print(f"Re-test before re-publishing: mdb validate {_plain(model_id)} --live")
     else:
-        console.print(f"\nReview definition.yaml, then converge with: mdb import {model_id} --apply")
+        console.print(f"\nReview definition.yaml, then converge with: mdb import {_plain(model_id)} --apply")
         console.print("(or delete definition.yaml to leave the folder fully hand-maintained)")
+    return True
 
 
 @app.command()
@@ -986,7 +1316,7 @@ def test(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None:
-        console.print(f"[red]{model_id}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
+        console.print(f"[red]{_plain(model_id)}: no such folder in LLM-Definitions or Embedding-Definitions[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     adapters = load_adapters()
@@ -995,10 +1325,17 @@ def test(
     if manifest.provider.auth.mode == "api_key":
         key = _env_api_key(adapter) if adapter else None
         if not key:
-            console.print(f"[red]No API key found ({adapter.env_key_var if adapter else 'unknown env var'}) - "
+            console.print(f"[red]No API key found ({_plain(adapter.env_key_var) if adapter else 'unknown env var'}) - "
                           "set it in the environment or .env.[/red]")
             raise typer.Exit(2)
         options["API_KEY"] = key
+    elif manifest.provider.auth.mode == "env":
+        # The score code reads the key from this variable itself - as the SCR
+        # container does - so nothing travels in the options string.
+        if not (os.environ.get(manifest.provider.auth.env_var or "") or "").strip():
+            console.print(f"[red]No {_plain(manifest.provider.auth.env_var)} found - the score code reads the key "
+                          "from that environment variable (auth.mode env); set it in the environment or .env.[/red]")
+            raise typer.Exit(2)
     score_path = folder / effective_score_file(manifest)
     import importlib.util
     spec = importlib.util.spec_from_file_location(f"mdb_score_{model_id}", score_path)
@@ -1008,35 +1345,35 @@ def test(
     # in a one-element list, the MAS REST API passes the plain string (#26).
     wrap = (lambda value: value) if mas else (lambda value: [value])
     convention = "MAS REST (plain strings)" if mas else "SCR (one-element lists)"
-    console.print(f"[dim]Calling scoreModel() from {score_path.name} - {convention}...[/dim]")
+    console.print(f"[dim]Calling scoreModel() from {_plain(score_path.name)} - {_plain(convention)}...[/dim]")
     table = Table(show_header=False)
     if manifest.kind == "decision":
         state = DECISION_TEST_STATE if prompt == "Reply with the single word OK." else prompt
         answers, answer, confidence, run_time, prompt_length, output_length = module.scoreModel(
             wrap(state), wrap(json.dumps(DECISION_TEST_QUESTIONS)), wrap(json.dumps(options))
         )
-        table.add_row("state", state)
-        table.add_row("answers", json.dumps(json.loads(answers), indent=1))
-        table.add_row("answer", f"{answer} (confidence {float(confidence):.3f})")
+        table.add_row("state", _plain(state))
+        table.add_row("answers", _plain(json.dumps(json.loads(answers), indent=1)))
+        table.add_row("answer", f"{_plain(answer)} (confidence {float(confidence):.3f})")
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("prompt_length", str(prompt_length))
-        table.add_row("output_length", str(output_length))
+        table.add_row("prompt_length", _plain(prompt_length))
+        table.add_row("output_length", _plain(output_length))
     elif manifest.kind == "embedding":
         embedding, run_time, tokens = module.scoreModel(
             wrap(prompt), wrap("mdb-test"), wrap(json.dumps(options))
         )
         vector = json.loads(embedding)
-        table.add_row("embedding", f"{len(vector)}-dimension vector [{vector[0]:.5f}, {vector[1]:.5f}, ...]")
+        table.add_row("embedding", f"{len(vector)}-dimension vector \\[{vector[0]:.5f}, {vector[1]:.5f}, ...]")
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("tokens", str(tokens))
+        table.add_row("tokens", _plain(tokens))
     else:
         response, run_time, prompt_length, output_length = module.scoreModel(
             wrap(prompt), wrap(system), wrap(json.dumps(options))
         )
-        table.add_row("response", str(response))
+        table.add_row("response", _plain(response))
         table.add_row("run_time", f"{run_time:.2f}s")
-        table.add_row("prompt_length", str(prompt_length))
-        table.add_row("output_length", str(output_length))
+        table.add_row("prompt_length", _plain(prompt_length))
+        table.add_row("output_length", _plain(output_length))
     console.print(table)
 
 
@@ -1057,35 +1394,41 @@ def _viya_session():
     from .viya.session import ViyaConfigError, create_session
     try:
         session = create_session()
-        console.print(f"[dim]SAS Viya: {session.auth_summary}[/dim]")
+        console.print(f"[dim]SAS Viya: {_plain(session.auth_summary)}[/dim]")
         return session
     except ViyaConfigError as exc:
-        console.print(f"[red]{exc}[/red]")
+        # printed as it is, and as one line whatever the width of the terminal: the sentence of a refused
+        # sign-in holds what SAS Logon answered, and read as markup a `[/red]` in it ends the command with
+        # a traceback - and `cli[viya]` loses its bracket
+        console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
 
 
 @app.command()
 def setup(
-    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules and builder seed files"),
-    no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the seed files"),
+    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules file and the builder seed file"),
+    no_files: bool = typer.Option(False, "--no-files", help="Only create the repository/projects; skip the two files"),
     no_releases: bool = typer.Option(
         False, "--no-releases",
         help="Skip loading the ACCELERATOR_RELEASES table into CAS (see 'mdb load-releases')"),
 ):
     """Create the SAS Model Manager repository and the LLM/Embedding Model Projects if missing,
     load the release table into CAS, and write the authorization-group rules and
-    Prompt/RAG Builder seed files.
+    the Prompt Builder seed file.
 
     Idempotent: existing objects are left untouched. `mdb register` runs the
     repository/project check automatically for the kind it registers, so calling
     setup is optional - use it to bootstrap a fresh environment up front. It also
     writes sas-viya-cli-commands.txt (the LLM Consumers / Prompt Engineers groups
-    and folder/repository authorization rules) and the llm-prompt-builder.json /
-    rag-builder.json builder seeds."""
+    and folder/repository authorization rules) and llm-prompt-builder.json, the
+    Prompt Builder seed: the repository id, the LLM and embedding project ids,
+    the SCR endpoint and the deployment type, under their option names."""
+    from .core.options import BUILDER_REPORTS
     from .viya.registry import (
         authorization_rules_text, builder_seed, ensure_repository_and_project,
     )
     ctx = Context()
+    _not_empty("--out", out, "folder")
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
     deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
     scr_endpoint = _scr_endpoint()
@@ -1097,28 +1440,29 @@ def setup(
             try:
                 ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
             except Exception as exc:
-                console.print(f"[red]{kind}: {exc}[/red]")
+                _line(f"{kind}: {one_line(str(exc))}", "red")
                 raise typer.Exit(1)
             for created in ensured.created:
-                console.print(f"[green]created {created}.[/green]")
+                console.print(f"[green]created {_plain(created)}.[/green]")
                 created_any = True
             repo_id = repo_id or ensured.repository_id
             repo_folder = repo_folder or ensured.repository_folder_id
             project_ids[kind] = ensured.project_id
         if not no_releases:
-            # The table the Builder objects are assigned in SAS Visual Analytics;
+            # The table the Prompt Builder object is assigned in SAS Visual Analytics;
             # loading it here means a report import never lacks a data source.
             from .viya.cas import resolve_server
             caslib = os.environ.get("SAS_CAS_LIBRARY") or "Public"
             table_name = _releases_table()
             try:
                 server_name = resolve_server(session, os.environ.get("SAS_CAS_SERVER"))
+                from .core.releases import current_words
                 summary = _load_releases(session, ctx, caslib, server_name, table_name)
-                console.print(f"[green]loaded {caslib}.{table_name} ({summary['rows']} rows, current release "
-                              f"{summary['current'] or 'none dated'}) - assign it to the Builder objects in "
+                console.print(f"[green]loaded {_plain(caslib)}.{_plain(table_name)} ({_plain(summary['rows'])} rows, "
+                              f"{_plain(current_words(summary))}) - assign it to the Prompt Builder object in "
                               f"SAS Visual Analytics.[/green]")
             except (RuntimeError, ValueError) as exc:
-                console.print(f"[yellow]release table not loaded: {exc} - run 'mdb load-releases' later.[/yellow]")
+                console.print(f"[yellow]release table not loaded: {_plain(exc)} - run 'mdb load-releases' later.[/yellow]")
     if not created_any:
         console.print("[green]Repository and projects already exist.[/green]")
     if no_files:
@@ -1127,83 +1471,71 @@ def setup(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sas-viya-cli-commands.txt").write_text(
         authorization_rules_text(repo_id, repo_folder), encoding="utf-8")
+    # One seed for the one report: both of its seed kinds' project ids.
+    seed_kinds = [kind for kinds in BUILDER_REPORTS.values() for kind in kinds]
     (out_dir / "llm-prompt-builder.json").write_text(
-        json.dumps(builder_seed("llm", repo_id, project_ids.get("llm"), scr_endpoint, deployment_type), indent=4),
+        json.dumps(builder_seed(repo_id, {kind: project_ids.get(kind) for kind in seed_kinds},
+                                scr_endpoint, deployment_type), indent=4),
         encoding="utf-8")
-    (out_dir / "rag-builder.json").write_text(
-        json.dumps(builder_seed("embedding", repo_id, project_ids.get("embedding"), scr_endpoint, deployment_type), indent=4),
-        encoding="utf-8")
-    console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules), llm-prompt-builder.json "
-                  f"and rag-builder.json to {out_dir}/.[/green]")
+    console.print(f"[green]Wrote sas-viya-cli-commands.txt (authorization rules) and llm-prompt-builder.json "
+                  f"(the Prompt Builder seed, with the LLM and the embedding project id) to {_plain(out_dir)}/.[/green]")
     console.print("Review sas-viya-cli-commands.txt before running it - it creates access groups and rules.")
+
+
+#: The file `mdb options-save` writes and `mdb options-restore` reads unless --file names another.
+OPTIONS_FILE = "builder-options.json"
 
 
 @app.command("options-save")
 def options_save(
-    file: str = typer.Option("builder-options.json", "--file", "-f",
+    file: str = typer.Option(OPTIONS_FILE, "--file", "-f",
                              help="Where to write the options file"),
     reports_only: bool = typer.Option(
         False, "--reports-only",
         help="Capture only what the live reports hold; skip repository/project discovery"),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="The content folder the report sits in (default /SAS Agentic AI Accelerator): the report read is "
+             "<content root>/Prompt Builder/Prompt Builder, and the retired <content root>/RAG/RAG Builder."),
 ):
-    """Save this deployment's Prompt Builder / RAG Builder option values to a file.
+    """Save this deployment's Prompt Builder option values to a file.
 
-    Every option an admin sets on a builder object - repository and project
-    ids, the SCR endpoint, the credential domain, the content root, which
-    vector stores are offered - lives INSIDE the VA report. Importing a newer
-    report from a transfer package therefore replaces a site's configuration
-    with whatever the package was built against, and the report keeps working
-    while pointing at somebody else's environment.
+    Every option an admin sets on the Prompt Builder object - repository and
+    project ids, the SCR endpoint, the credential domain, the feature
+    switches, and for its RAG part the content root and which vector stores
+    are offered - lives INSIDE the VA report. Importing a newer report from a
+    transfer package therefore replaces a site's configuration with whatever
+    the package was built against, and the report keeps working while
+    pointing at somebody else's environment.
 
     Run this BEFORE importing a report package, and `mdb options-restore`
-    after.
+    after. `mdb builders-import` does both by itself when it is given no
+    options file: it reads the report before the import, keeps what it read
+    in a file of its own and writes it back. Saving first is for a file to
+    keep, to edit before the import, or to carry to another deployment.
 
-    The file supersedes the llm-prompt-builder.json / rag-builder.json seeds
-    that `mdb setup` writes: it starts from the same discovered values
-    (repository, projects, SCR endpoint) and overlays whatever the live
-    reports already hold, so a tuned deployment is captured as tuned.
+    A site upgrading from 2.2.x still has the retired report named "RAG
+    Builder". Its options are read too and folded into the Prompt Builder
+    section: the RAG settings keep their names, its `computeContext` becomes
+    `ragComputeContext`, and `enableRag` is set. Whatever the Prompt Builder
+    report already holds wins. Save BEFORE deleting that report.
+
+    The file supersedes the llm-prompt-builder.json seed that `mdb setup`
+    writes: it starts from the same discovered values (repository, projects,
+    SCR endpoint) and overlays whatever the live reports already hold, so a
+    tuned deployment is captured as tuned.
     """
     import json as _json
-    from .core.options import BUILDER_REPORTS, merge_seed, options_file, read_options
-    from .viya.registry import builder_seed, ensure_repository_and_project
-    from .viya.reports import find_report, get_content
+    from .core.options import options_file
 
     ctx = Context()
-    responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
-    deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
-    scr_endpoint = _scr_endpoint()
-    captured: dict = {}
+    content_root = _given_root(content_root)
+    if Path(_not_empty("--file", file, "file")).is_dir():
+        console.print(f"[red]{_plain(file)} is a folder; --file names the options file to write.[/red]")
+        raise typer.Exit(2)
     with _viya_session() as session:
-        seeds: dict = {}
-        if not reports_only:
-            for report_name, kind in BUILDER_REPORTS.items():
-                try:
-                    ensured = ensure_repository_and_project(
-                        session, kind, ctx.core, responsible_party)
-                    seeds[report_name] = builder_seed(
-                        kind, ensured.repository_id, ensured.project_id,
-                        scr_endpoint, deployment_type)
-                except Exception as exc:
-                    console.print(f"[yellow]{report_name}: could not discover "
-                                  f"repository/project ({exc}); capturing the report only.[/yellow]")
-        for report_name in BUILDER_REPORTS:
-            live = None
-            report = find_report(session, report_name)
-            if report:
-                try:
-                    content, _ = get_content(session, report["id"])
-                    live = read_options(content)
-                except Exception as exc:
-                    console.print(f"[yellow]{report_name}: content unreadable ({exc}).[/yellow]")
-            if live is None and report_name not in seeds:
-                console.print(f"[yellow]{report_name}: no live report and nothing "
-                              "discovered - skipped.[/yellow]")
-                continue
-            merged = merge_seed(seeds.get(report_name, {}), live)
-            captured[report_name] = merged
-            source = ("report + discovery" if (live and report_name in seeds)
-                      else ("report" if live else "discovery"))
-            console.print(f"[green]{report_name}: {len(merged)} options ({source}).[/green]")
+        seeds = {} if reports_only else _discovered_seeds(session, ctx, "capturing the report only")
+        captured = _capture_options(session, seeds, content_root=content_root or "")
     if not captured:
         console.print("[red]Nothing captured.[/red]")
         raise typer.Exit(1)
@@ -1213,35 +1545,137 @@ def options_save(
         out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(options_file(deployment, captured), indent=2) + "\n",
                    encoding="utf-8")
-    console.print(f"[green]Wrote {file}. Keep it with your deployment records and run "
-                  "`mdb options-restore` after importing a report package.[/green]")
+    restore = "mdb options-restore" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
+    console.print(f"[green]Wrote {_plain(file)}. Keep it with your deployment records and run "
+                  f"`{_plain(restore)}` after importing a report package.[/green]")
+
+
+class _ReportUnreadable(RuntimeError):
+    """A Builder report is on the site (or may be) and its options cannot be
+    read."""
+
+    def __init__(self, report: str, reason):
+        self.report = report
+        super().__init__(f"{report}: {reason}")
+
+
+def _capture_options(session, seeds: dict, strict: bool = False, content_root: str = "") -> dict:
+    """{report name: {option: value}} for the Builder report, as options-save
+    writes it: what `seeds` discovered, overlaid with what the live reports
+    hold.
+
+    A report is the one at its place below `content_root` (the content root
+    of the release unless named): `<root>/Prompt Builder/Prompt Builder`, and
+    the retired `<root>/RAG/RAG Builder` - not a report of that name anywhere
+    on the system.
+
+    A retired report that still exists is read as well and folded into the
+    merged one BEFORE the seed is applied, so the order of precedence is: the
+    merged report's own values, then the retired report's, then discovery. A
+    project id an admin once chose in the retired report beats the one this
+    run would derive.
+
+    A report whose content cannot be read, or that is read and holds no
+    option at all, is passed over with a line - unless `strict`: then it
+    raises _ReportUnreadable, and so does a lookup the service does not
+    answer. That is for the caller about to replace the report: options it
+    could not read are options it would lose.
+    """
+    from .core.options import (BUILDER_REPORTS, LEGACY_REPORTS, fold_legacy, merge_seed,
+                               read_options, report_folder)
+    from .viya.reports import find_report_at, get_content
+    live: dict = {}
+    for report_name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        folder = report_folder(content_root, report_name)
+        if strict:
+            try:
+                report = find_report_at(session, folder, report_name, strict=True)
+            except Exception as exc:
+                raise _ReportUnreadable(report_name, f"whether it is in {folder} could not be asked ({one_line(str(exc))})") \
+                    from exc
+        else:
+            report = find_report_at(session, folder, report_name)
+        if not report:
+            continue
+        try:
+            content, _ = get_content(session, report["id"])
+        except Exception as exc:
+            if strict:
+                raise _ReportUnreadable(report_name, f"it is in {folder} and its content cannot be read ({one_line(str(exc))})") \
+                    from exc
+            console.print(f"[yellow]{_plain(report_name)}: content unreadable ({_plain(one_line(str(exc)))}).[/yellow]")
+            continue
+        options = read_options(content)
+        if not options:
+            why = (f"it is in {folder} and holds no option at all - it is not the report of the Builder, or its "
+                   "content is not what mdb reads")
+            if strict:
+                raise _ReportUnreadable(report_name, why)
+            console.print(f"[yellow]{_plain(report_name)}: {_plain(why)} - passed over.[/yellow]")
+            continue
+        live[report_name] = options
+        if report_name in LEGACY_REPORTS:
+            console.print(f"[yellow]'{_plain(report_name)}': read from the retired report of that name "
+                          f"and folded into the {_plain(', '.join(BUILDER_REPORTS))} section.[/yellow]")
+    folded, messages = fold_legacy(live)
+    for message in messages:
+        console.print(f"[yellow]  {_plain(message)}[/yellow]")
+    captured: dict = {}
+    for report_name in BUILDER_REPORTS:
+        if report_name not in folded and report_name not in seeds:
+            console.print(f"[yellow]{_plain(report_name)}: no live report and nothing "
+                          "discovered - skipped.[/yellow]")
+            continue
+        merged = merge_seed(seeds.get(report_name, {}), folded.get(report_name))
+        captured[report_name] = merged
+        source = ("report + discovery" if (report_name in folded and report_name in seeds)
+                  else ("report" if report_name in folded else "discovery"))
+        console.print(f"[green]{_plain(report_name)}: {len(merged)} options ({_plain(source)}).[/green]")
+    return captured
 
 
 @app.command("options-restore")
 def options_restore(
-    file: str = typer.Option("builder-options.json", "--file", "-f",
+    file: str = typer.Option(OPTIONS_FILE, "--file", "-f",
                              help="The options file written by `mdb options-save`"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                  help="Report what would change without writing"),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="The content folder the report sits in (default /SAS Agentic AI Accelerator): the report written "
+             "is <content root>/Prompt Builder/Prompt Builder - a report of that name elsewhere is not touched."),
 ):
-    """Write saved option values back into the builder reports after an import.
+    """Write saved option values back into the Prompt Builder report after an import.
 
     Only the options named in the file are touched: a newly imported report
     keeps its new layout, data items and objects, and gets this deployment's
     configuration back. An option the report does not have is reported rather
     than inserted - that usually means it was renamed or dropped between
-    versions, which is worth knowing.
+    versions, which is worth knowing. When the report lacks an option this
+    release's report has, the report is an older one: everything else is
+    still written, and the command ends with exit code 1.
+
+    A file saved with 2.2.x holds a second section, "RAG Builder", for the
+    report of that name that is retired. It is folded into the Prompt Builder
+    section first, exactly as `mdb options-save` does it now, so its values
+    reach the report that replaced it. The retired report is not written to
+    and not deleted; when it still exists the command says so.
     """
     import json as _json
 
-    path = Path(file)
+    content_root = _given_root(content_root)
+    path = Path(_not_empty("--file", file, "file"))
+    if path.is_dir():
+        console.print(f"[red]{_plain(file)} is a folder, not an options file.[/red]")
+        raise typer.Exit(2)
     if not path.exists():
-        console.print(f"[red]{file} not found - run `mdb options-save` first.[/red]")
+        save = "mdb options-save" + _given_file("--file", file, OPTIONS_FILE) + _given("--content-root", content_root)
+        console.print(f"[red]{_plain(file)} not found - run `{_plain(save)}` first.[/red]")
         raise typer.Exit(1)
     document = _json.loads(path.read_text(encoding="utf-8"))
     saved = document.get("reports", {})
     if not saved:
-        console.print(f"[red]{file} names no reports.[/red]")
+        console.print(f"[red]{_plain(file)} names no reports.[/red]")
         raise typer.Exit(1)
     here = os.environ.get("SAS_VIYA_URL", "")
     if document.get("deployment") and document["deployment"] != here:
@@ -1249,10 +1683,12 @@ def options_restore(
         # deliberate act. It is worth saying out loud because doing it by
         # ACCIDENT is the failure this command exists to prevent.
         console.print(f"[yellow]Note: these options were saved from "
-                      f"{document['deployment']}, not {here}.[/yellow]")
+                      f"{_plain(document['deployment'])}, not {_plain(here)}.[/yellow]")
     with _viya_session() as session:
-        failures = _restore_options(session, saved, dry_run, _site_host())
+        failures = _restore_options(session, saved, dry_run, _site_host(), content_root=content_root or "")
     if failures:
+        console.print(f"[red]Not every option {'would be' if dry_run else 'was'} restored.[/red] {_plain(file)} "
+                      "still holds all of them: fix what is reported above and run the command again.")
         raise typer.Exit(1)
 
 
@@ -1268,27 +1704,112 @@ def _site_host() -> str:
     return url.split("://", 1)[-1].strip().rstrip("/")
 
 
-def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int:
+def _fold_saved(saved: dict) -> dict:
+    """Saved options with any retired report's section folded into the merged
+    one, saying what the fold did. Every path that restores goes through
+    this, so a retired report's name never becomes a restore target."""
+    from .core.options import fold_legacy
+    folded, messages = fold_legacy(saved)
+    for message in messages:
+        console.print(f"[yellow]  {_plain(message)}[/yellow]")
+    return folded
+
+
+def _warn_retired_reports(session, content_root: str = "") -> list[str]:
+    """Say so when a retired report still exists on the site, at its place
+    below the content root; returns the names found. Nothing is deleted: the
+    report may be the only place a setting was ever written down, and
+    removing content is an admin's call."""
+    from .core.options import LEGACY_REPORTS, MERGED_REPORT, report_folder
+    from .viya.reports import find_report_at
+    found = [name for name in sorted(LEGACY_REPORTS)
+             if find_report_at(session, report_folder(content_root, name), name)]
+    for name in found:
+        console.print(
+            f"[yellow]A report named '{_plain(name)}' still exists on this site. It is retired: the RAG Builder "
+            f"is part of the {_plain(MERGED_REPORT)} report since 2.3.0, and the old report keeps serving the old "
+            f"standalone UI with its own options. Once the {_plain(MERGED_REPORT)} report shows your RAG setups, "
+            f"delete the report '{_plain(name)}' and the job definition 'RAG-Builder-UI' next to it "
+            "(SAS Environment Manager > Content, or SAS Drive). Nothing was deleted.[/yellow]")
+    return found
+
+
+def _restore_options(session, saved: dict, dry_run: bool, host: str = "",
+                     arriving: Optional[dict] = None, content_root: str = "") -> int:
     """Write the saved option values back into the named reports and point
     every remaining placeholder host at `host`; returns the number of reports
-    that could not be written. Shared by options-restore and builders-import."""
-    from .core.options import rehost_content, write_options
-    from .viya.reports import find_report, get_content, put_content
+    that could not be written, or not in full. Shared by options-restore and
+    builders-import.
+
+    A label the report lacks is named and not written. When it is an option
+    of the merged report (MERGED_REPORT_LABELS) the report is an older one
+    than the values were saved for, and it counts as not written in full:
+    the command must not end with exit code 0 while a setting did not reach
+    the site. What can be written is still written. A label no version of
+    the report holds any more keeps its line and is no failure.
+
+    `arriving` maps a report name to the option labels of the report a
+    pending import brings ({name: set of labels}); builders-import passes it
+    in a dry run, where the live report is still the one from before the
+    import and lacks every option the new version adds. Those are summed up
+    in one line instead of being reported as unknown one by one.
+
+    A report is the one at its place below `content_root` - a copy of that
+    name somewhere else is not written to.
+    """
+    from .core.options import MERGED_REPORT_LABELS, REPORT_FOLDERS, rehost_content, report_folder, write_options
+    from .viya.reports import find_report_at, get_content, put_content
     failures = 0
-    for report_name, values in saved.items():
-        report = find_report(session, report_name)
+    arriving = arriving or {}
+    for report_name, values in _fold_saved(saved).items():
+        values = values or {}
+        folder = report_folder(content_root, report_name) if report_name in REPORT_FOLDERS else ""
+        report = find_report_at(session, folder, report_name) if folder else None
         if not report:
-            console.print(f"[yellow]{report_name}: no such report here - skipped.[/yellow]")
+            if report_name in arriving:
+                then = f", and the {len(values)} saved option(s) are written then" if values else ""
+                console.print(f"[cyan]{_plain(report_name)}: not on this site yet - it arrives with the import"
+                              f"{_plain(then)}.[/cyan]")
+            else:
+                console.print(f"[yellow]{_plain(report_name)}: no such report in {_plain(folder or 'the content folder')} - "
+                              "skipped.[/yellow]")
             continue
-        content, etag = get_content(session, report["id"])
-        updated, result = write_options(content, values or {})
+        try:
+            content, etag = get_content(session, report["id"])
+        except Exception as exc:
+            console.print(f"[red]{_plain(report_name)}: reading the report failed ({_plain(one_line(str(exc)))}) - its options were not "
+                          "written.[/red]", highlight=False)
+            failures += 1
+            continue
+        updated, result = write_options(content, values)
         updated, rehosted = rehost_content(updated, host) if host else (updated, 0)
+        with_import = [label for label in result.missing if label in arriving.get(report_name, ())]
+        if with_import:
+            console.print(f"[cyan]  {_plain(report_name)}: {len(with_import)} option(s) arrive with the imported "
+                          f"report and are written then: {_plain(', '.join(with_import))}[/cyan]")
         for label in result.missing:
-            console.print(f"[yellow]  {report_name}: '{label}' is not an option of "
+            if label in with_import:
+                continue
+            console.print(f"[yellow]  {_plain(report_name)}: '{_plain(label)}' is not an option of "
                           "this report version - not written.[/yellow]")
+        unwritten = [label for label in result.missing
+                     if label not in with_import and label in MERGED_REPORT_LABELS]
+        if unwritten:
+            console.print(f"[red]{_plain(report_name)}: {len(unwritten)} option(s) the Prompt Builder reads cannot "
+                          f"be written ({_plain(', '.join(unwritten))}) - the report "
+                          + ("the import brings" if report_name in arriving else "on this site")
+                          + " is from before 2.3.0, or was not saved with the merged UI. Import the "
+                          "package of this release (`mdb builders-import`), then restore again.[/red]")
+        for label, value in result.rejected.items():
+            console.print(f"[red]  {_plain(report_name)}: '{_plain(label)}' is a checkbox in this report and '{_plain(value)}' says "
+                          "neither on nor off - not written. Use true or false.[/red]")
+        if unwritten or result.rejected:
+            failures += 1
         if not result.changed and not rehosted:
-            console.print(f"[green]{report_name}: already matches "
-                          f"({len(result.unchanged)} options, no placeholder host).[/green]")
+            # "already matches" is only true of a report that took every value.
+            if values and not unwritten and not result.rejected:
+                console.print(f"[green]{_plain(report_name)}: already matches "
+                              f"({len(result.unchanged)} options, no placeholder host).[/green]")
             continue
         what = []
         if result.applied:
@@ -1296,345 +1817,1874 @@ def _restore_options(session, saved: dict, dry_run: bool, host: str = "") -> int
         if rehosted:
             what.append(f"placeholder host -> {host} ({rehosted} occurrence(s): the DDC URL and option defaults)")
         if dry_run:
-            console.print(f"[cyan]{report_name}: would restore " + "; ".join(what) + "[/cyan]")
+            console.print(f"[cyan]{_plain(report_name)}: would restore " + _plain("; ".join(what)) + "[/cyan]")
             continue
         try:
             put_content(session, report["id"], updated, etag)
         except Exception as exc:
-            console.print(f"[red]{report_name}: writing the report failed ({exc}).[/red]")
+            console.print(f"[red]{_plain(report_name)}: writing the report failed ({_plain(one_line(str(exc)))}).[/red]")
             failures += 1
             continue
-        console.print(f"[green]{report_name}: restored " + "; ".join(what) + "[/green]")
+        console.print(f"[green]{_plain(report_name)}: restored " + _plain("; ".join(what)) + "[/green]")
+    _warn_retired_reports(session, content_root)
     return failures
 
 
-def _discovered_options(session, ctx: "Context") -> dict:
-    """What `mdb options-save` would record on an environment with no tuned
-    report: repository and project ids, the SCR endpoint and deployment type,
-    per Builder report. The first-install values."""
-    from .core.options import BUILDER_REPORTS, merge_seed
+def _discovered_seeds(session, ctx: "Context", otherwise: str = "", kinds=None) -> dict:
+    """{report name: seed} from this environment: the repository id, the
+    project id of every seed kind the report needs, the SCR endpoint and the
+    deployment type.
+
+    The kinds are discovered one by one, and one that fails is left out of
+    the seed and named - with `otherwise` saying what happens instead: a
+    missing embedding project must not cost the report its LLM project.
+    A report for which no kind could be discovered gets no seed.
+    """
+    from .core.options import BUILDER_REPORTS
     from .viya.registry import builder_seed, ensure_repository_and_project
     responsible_party = os.environ.get("SAS_RESPONSIBLE_PARTY", "")
     deployment_type = os.environ.get("SAS_DEPLOYMENT_TYPE", "k8s")
     scr_endpoint = _scr_endpoint()
     seeds: dict = {}
-    for report_name, kind in BUILDER_REPORTS.items():
-        try:
-            ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
-        except Exception as exc:
-            console.print(f"[yellow]{report_name}: could not discover repository/project ({exc}).[/yellow]")
-            continue
-        seeds[report_name] = merge_seed(
-            builder_seed(kind, ensured.repository_id, ensured.project_id, scr_endpoint, deployment_type), None)
+    only = kinds
+    for report_name, kinds in BUILDER_REPORTS.items():
+        repository_id = None
+        project_ids: dict = {}
+        for kind in kinds:
+            if only is not None and kind not in only:
+                continue
+            try:
+                ensured = ensure_repository_and_project(session, kind, ctx.core, responsible_party)
+            except Exception as exc:
+                console.print(f"[yellow]{_plain(report_name)}: could not discover the {_plain(kind)} project ({_plain(one_line(str(exc)))})"
+                              + (f"; {_plain(otherwise)}" if otherwise else "") + ".[/yellow]")
+                continue
+            repository_id = repository_id or ensured.repository_id
+            project_ids[kind] = ensured.project_id
+        if project_ids:
+            seeds[report_name] = builder_seed(repository_id, project_ids, scr_endpoint, deployment_type)
     return seeds
 
 
-def _shipped_builder_packages(ctx: "Context") -> list[Path]:
-    folder = ctx.repo / "SAS-Viya-Integrations"
-    return sorted(folder.glob("SAS-Agentic-AI-Accelerator-*Builder.json"))
+def _discovered_options(session, ctx: "Context") -> dict:
+    """What `mdb options-save` would record on an environment with no tuned
+    report: repository and project ids, the SCR endpoint and deployment type
+    for the Builder report. The first-install values."""
+    from .core.options import merge_seed
+    return {name: merge_seed(seed, None) for name, seed in _discovered_seeds(session, ctx).items()}
+
+
+def _content_manifest(ctx: "Context", check_sources: bool = True):
+    """The content manifest of the checkout. A manifest that cannot be used
+    ends the command with exit code 2 and one line per defect: nothing is
+    deployed, exported or checked against a list that is wrong."""
+    from .core.content import ManifestError, load_manifest
+    try:
+        return load_manifest(ctx.repo, check_sources=check_sources)
+    except ManifestError as exc:
+        console.print(f"[red]The content manifest cannot be used[/red] ({_plain(exc.where)}):", highlight=False)
+        for problem in exc.problems:
+            console.print(f"  {problem}", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
 
 
 def _package_objects(package: dict) -> list[tuple[str, str]]:
     """(type, name) of every object a package carries."""
-    objects = []
-    for detail in package.get("transferDetails") or []:
-        summary = (detail.get("transferObject") or {}).get("summary") or {}
-        kind = summary.get("type") or "?"
-        if "/" in kind:  # content files carry their media type, e.g. application/vnd.sas.file+json
-            kind = kind.rsplit(".", 1)[-1].replace("+json", "")
-        objects.append((kind, summary.get("name") or "?"))
-    return objects
+    from .core.packages import package_objects
+    return package_objects(package)
+
+
+def _emit_outcome(outcome, indent: str = "  ") -> None:
+    """One line for one entry of a deploy or of an import: what happened,
+    the kind, the path and what there is to say about it."""
+    note = f"  ({outcome.note})" if outcome.note else ""
+    console.print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
+                  markup=False, highlight=False, soft_wrap=True)
+
+
+#: What content-deploy and builders-import say of a content root that is no folder below the root of SAS
+#: Content: a text without a slash in front, or `/` - which ends as an empty path once its slash is taken off.
+_ROOT_NOT_A_FOLDER = ("--content-root must name a SAS Content folder, starting with a slash - and not / itself, "
+                      "the root of SAS Content.")
+
+
+def _given_root(content_root: Optional[str]) -> Optional[str]:
+    """--content-root as it was given, for the five commands that take it. An
+    empty value is refused: read as not given it is the content root of the
+    release, so a command typed for a test folder with a variable that is
+    not set would read or write the folder a site works in."""
+    if content_root is not None and not content_root.strip():
+        console.print("--content-root is empty - what a variable of the shell that is not set gives. Nothing "
+                      "was done. Without --content-root the command takes the content root the manifest "
+                      "names.", style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return content_root
+
+
+def _no_manifest_path(path: str) -> None:
+    """The refusal of an --only of `mdb content-deploy` that names no path:
+    read as not given, such a value selects every entry of the manifest -
+    release.json with them."""
+    console.print(f'--only "{path}" names no path of the manifest: an empty value - what a variable of the shell '
+                  "that is not set gives - or nothing but slashes. Nothing was deployed. Without --only every entry "
+                  "is deployed.", style="red", markup=False, highlight=False, soft_wrap=True)
+    raise typer.Exit(2)
+
+
+def _deploy_settings(content_root_given: Optional[str], compute_context: Optional[str]) -> dict:
+    """The values a deploy or an import writes into every job definition that
+    has the parameter, by its name: the compute context where one was given,
+    and the content root the content goes to."""
+    from .core.content import CONTENT_ROOT_PARAMETER, CONTEXT_PARAMETER
+    settings: dict = {}
+    if compute_context and compute_context.strip():
+        settings[CONTEXT_PARAMETER] = compute_context.strip()
+    if content_root_given:
+        settings[CONTENT_ROOT_PARAMETER] = content_root_given.rstrip("/")
+    return settings
+
+
+@app.command("content-deploy")
+def content_deploy(
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder to bring to the state of the checkout (default: the content root the "
+             "manifest names, /SAS Agentic AI Accelerator). Named or not, that folder is written into the "
+             "parameter contentRoot of the job definitions that have one."),
+    only: Optional[list[str]] = typer.Option(
+        None, "--only",
+        help="Deploy only the entries at or below this path of the manifest (repeatable), e.g. --only RAG "
+             "for the RAG runtime. Default: every entry."),
+    to: Optional[str] = typer.Option(
+        None, "--to",
+        help="With one --only: where that part of the manifest goes instead of its place in the content root. "
+             "For a custom step, a file or a job definition: the object a site has somewhere else - its SAS "
+             "Content path, its id or its URI - which is updated in place and never created. For a folder of "
+             "the manifest: the SAS Content folder its entries are deployed into."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Write this compute context into the parameter _contextName of the job definitions that have "
+             "one. Without it a job definition on the site keeps the context it has."),
+    create: bool = typer.Option(
+        False, "--create",
+        help="Create the folder the content goes to (--content-root, or the folder form of --to) with every "
+             "folder above it, where it is not there. Without it only the content root the manifest names is "
+             "created; any other folder that is not there ends the command and nothing is written."),
+    force: bool = typer.Option(
+        False, "--force",
+        help="With --to for one object: update it although its name on the site is not the name of the entry."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would change; write nothing."),
+):
+    """Bring a SAS Content folder to the state of this checkout, from the
+    content manifest (SAS-Viya-Integrations/package-manifest.yaml).
+
+    Entry by entry, and in place: a folder is created when it is missing; a
+    file is uploaded when it is missing, and one whose bytes differ gets its
+    content replaced - the file stays the object it was; a custom step is
+    registered, and an existing one is updated so that it keeps its id and
+    the flows that use it keep working; a job definition is created, or
+    updated with its program, its form and its parameters. Two files are
+    written by mdb itself: the release table as CSV, exactly as `mdb
+    load-releases --csv` writes it, and release.json - the release, the commit
+    of the checkout and its date, and every entry with its kind and, for a
+    file, a custom step and a job definition, a hash of its content.
+
+    One line per entry says what happened: equal, updated, created - or
+    FAILED with the reason. Nothing is deleted, and nothing that is not in
+    the manifest is touched; what else sits in the folders of the manifest is
+    listed at the end. A report is not deployed: it reaches a site through
+    `mdb builders-import`, and its line says whether it is on the site. The
+    same holds for a decision - the one that carries the Call LLM node type
+    - whose only source is the package.
+
+    THE RUN STOPS at the first write that fails - a refusal, or no answer,
+    also for a folder that cannot be created - and says what was written
+    before it; every entry behind it is listed as not attempted. Where the
+    update of a file is refused, the file is left as it is. An entry that
+    fails before anything was sent (two objects of its name in the folder, a
+    reference of its name and kind, an object that cannot be read) is
+    reported and the run goes on. Either way the exit code is 1, and a second
+    run leaves what is equal by then as it is. release.json is written last,
+    only by a run that covers every entry of the manifest, and only when
+    every entry in front of it was written: after a run that did not get
+    there, the folder's release.json is the one an earlier run wrote, or
+    there is none. A run of a part that names it (`--only release.json`) is
+    refused with one line before the command signs in, and writes nothing.
+
+    ONE NAME, ONE OBJECT. Two objects of the name and kind of an entry in
+    its folder, or a reference of that name to an object of that kind
+    elsewhere - alone, or beside the object itself - fail the entry: each is
+    named on its line and none is written. A reference of that name to an
+    object of another kind fails nothing and is listed at the end.
+
+    SITE SETTINGS. A parameter the manifest marks `siteSetting` - the compute
+    context `_contextName`, the CAS library, the credential domain and the
+    other values of a site - gets its default in a new job definition and in
+    one that has no such parameter, and keeps the value a job definition on
+    the site holds. --compute-context writes the context it is given.
+    `contentRoot` is always written with the content root the content goes
+    to: a job reads the content root it sits in. With `--only <folder> --to
+    <target>` that is the target without the folder's path at its end
+    (`--only Data --to "/Team/Tables/Data"` writes /Team/Tables); where a job
+    definition of the folder reads the content root and the target does not
+    end with that path, the command ends before it signs in and says what to
+    give. One object named with --to is the site's own in this too: it keeps
+    the contentRoot it has, and gets the manifest's where it has none.
+
+    A FOLDER THAT IS NOT THERE. The content root the manifest names is
+    created on a first install. Any other folder - a --content-root, the
+    folder of `--only <folder> --to` - is created only with --create;
+    without it the command says so and writes nothing. Where the folder the
+    content goes into is created, it gets a line of its own, in a dry run
+    too; it is no entry and is not counted with them.
+
+    PARTS. With --only a part of the folder is deployed and the rest is not
+    looked at: `--only RAG` is the RAG runtime. With --to that part goes
+    somewhere else: `--only RAG --to "/Team/Retrieval"` deploys the RAG
+    runtime into a RAG content root of any name (what the deploy-rag-content
+    scripts run), and `--only "Logging and Monitoring/LLM - Log Parser.step"
+    --to "/Custom Steps/LLM - Log Parser.step"` updates, in place, the step a
+    site registered in a folder of its own - the step its flows reference.
+    The line says which object that is: its name on the site and its folder.
+    An object whose name is not the entry's is not written without --force.
+    """
+    from .core.content import CheckoutSource, part_of, reads_content_root, root_of_part
+    from .viya.content import (CREATED, EQUAL, FAILED, NOT_ATTEMPTED, NOT_DEPLOYED, RECORD_NEEDS_ALL, UPDATED,
+                               DeployError, deploy, deploy_to, record_in_part, selected)
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        console.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    for path in only or []:
+        if not path.strip().strip("/"):
+            _no_manifest_path(path)
+    only = [path.strip("/") for path in only or []]
+    for path in only:
+        if not selected(manifest, [path])[1] and manifest.find(path, "folder") is None:
+            console.print(f"--only {path}: the manifest lists nothing at or below that path.", style="red",
+                          markup=False, highlight=False)
+            raise typer.Exit(2)
+    # the content root a job reads is the one it is deployed into; one object
+    # a site has somewhere else (--to) keeps its own, and for a folder of the
+    # manifest somewhere else it is worked out below
+    settings = _deploy_settings(root if to is None else None, compute_context)
+    source = CheckoutSource(manifest)
+
+    # --to: one part of the manifest, somewhere else
+    target_entry = None
+    if to is not None:
+        to = to.strip()
+        if len(only) != 1:
+            console.print("[red]--to goes with exactly one --only: the entry, or the folder of the manifest, that "
+                          "is deployed there.[/red]")
+            raise typer.Exit(2)
+        if content_root:
+            console.print("[red]--to names the place itself; --content-root does not go with it.[/red]")
+            raise typer.Exit(2)
+        listed = [entry for entry in manifest.objects() if entry.path == only[0]]
+        if listed and listed[0].kind in ("report", "decision"):
+            console.print(f"A {listed[0].kind} is not deployed: it reaches a site through `mdb builders-import`.",
+                          style="red", markup=False, highlight=False)
+            raise typer.Exit(2)
+        if listed:
+            target_entry = listed[0]
+        elif not to.startswith("/"):
+            console.print(f"--only {only[0]} is a folder of the manifest, so --to has to be the SAS Content folder "
+                          "its entries go into, starting with a slash.", style="red", markup=False, highlight=False)
+            raise typer.Exit(2)
+        else:
+            # a folder of the manifest somewhere else: the content root its jobs read is the one the target
+            # is that folder of - never the default of the manifest
+            part_root = root_of_part(to, only[0])
+            readers = [entry.path for entry in selected(manifest, only)[1] if reads_content_root(entry)]
+            if readers and not part_root:
+                console.print(f"--only {only[0]} --to {to}: the job definition {readers[0]} reads the content root "
+                              f"it sits in (its parameter contentRoot), and {to} is not the folder {only[0]} of a "
+                              f"content root - a path that ends with /{only[0]}, with the content root in front of "
+                              f"it. Nothing was written. Give the folder as <content root>/{only[0]}, or run `mdb "
+                              f"content-deploy --content-root \"<content root>\" --only {_shell_word(only[0])}`.",
+                              style="red", markup=False, highlight=False, soft_wrap=True)
+                raise typer.Exit(2)
+            settings = _deploy_settings(part_root or None, compute_context)
+
+    if record_in_part(manifest, only):
+        # asked of the manifest alone, so before the sign-in: one line, and nothing is sent
+        console.print(RECORD_NEEDS_ALL, style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(1)
+    with _viya_session() as session:
+        if target_entry is not None:
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Updating'} "
+                          f"{to} from {target_entry.path}:", markup=False, highlight=False)
+            outcome = deploy_to(session, manifest, target_entry, to, dry_run, source, settings, force)
+            _emit_outcome(outcome)
+            if outcome.status == FAILED:
+                console.print("[red]Nothing was updated.[/red]")
+                raise typer.Exit(1)
+            console.print("Nothing was written." if dry_run else "[green]Done.[/green]")
+            return
+        if to is not None:
+            deployed, root, only_shown = part_of(manifest, only[0], to), to.rstrip("/"), []
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
+                          f"{root} (the entries below {only[0]} of the manifest):", markup=False, highlight=False)
+        else:
+            deployed, only_shown = manifest, only
+            console.print(f"{'Dry run - nothing is written. What a run would do to' if dry_run else 'Deploying to'} "
+                          f"{root}" + (f" (only {', '.join(only)})" if only else "") + ":",
+                          markup=False, highlight=False)
+        try:
+            result = deploy(session, deployed, root, dry_run, _emit_outcome, only=only_shown, source=source,
+                            settings=settings,
+                            create_root=create or (to is None and root == manifest.content_root))
+        except DeployError as exc:
+            # one line, whatever the width of the terminal
+            console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(1)
+    if result.unlisted:
+        console.print(f"\nNot in the manifest and left alone ({len(result.unlisted)}) - not deployed, and "
+                      "`mdb package-export` leaves them out:", highlight=False)
+        for line in result.unlisted:
+            console.print(f"  {line}", markup=False, highlight=False, soft_wrap=True)
+    counts = ", ".join(f"{result.count(status)} {status}"
+                       for status in (EQUAL, UPDATED, CREATED, NOT_DEPLOYED, NOT_ATTEMPTED) if result.count(status))
+    console.print(f"\n{len(result.outcomes)} entries: {_plain(counts or 'nothing done')}"
+                  + (f", {len(result.failed)} FAILED" if result.failed else "") + ".", highlight=False)
+    if result.stopped_at is not None:
+        console.print(result.stop_line(), style="red", markup=False, highlight=False, soft_wrap=True)
+    if result.failed:
+        console.print("[red]Not every entry reached the folder.[/red] Fix what is reported above and run the "
+                      "command again: what is equal by then is left as it is.")
+        raise typer.Exit(1)
+    if dry_run:
+        console.print("Nothing was written.")
+    else:
+        console.print("[green]Done.[/green]")
 
 
 @app.command("package-export")
 def package_export(
-    folder: str = typer.Option(
-        "/SAS Agentic AI Accelerator/Prompt Builder", "--folder",
-        help="SAS Content folder to export (the Prompt Builder or RAG Builder folder)."),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder to export (default: the content root the manifest names, "
+             "/SAS Agentic AI Accelerator). Any other folder needs --out."),
     name: Optional[str] = typer.Option(None, "--name", help="Package name (default: the folder's name)."),
-    out: Optional[Path] = typer.Option(
+    out: Optional[str] = typer.Option(
         None, "--out", "-o",
-        help="Where to write the package (default: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator-<Folder-Name>.json)."),
-    keep: bool = typer.Option(False, "--keep", help="Leave the exported package on the server too."),
-    exclude: Optional[list[str]] = typer.Option(
-        None, "--exclude", "-x",
-        help="Object name to leave out of the package (repeatable) - a demo report or scratch job that lives in the folder but must not ship."),
+        help="Where to write the package (default: the file the manifest names, "
+             "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
+    keep: bool = typer.Option(False, "--keep", help="Leave the exported package and the record of the export job "
+                                                    "on the server too."),
+    allow_differences: bool = typer.Option(
+        False, "--allow-differences",
+        help="Write the package although it differs from the checkout or lacks an entry of the manifest - "
+             "for a test folder that holds no report. Needs --out; the release file is never written that way."),
+    keep_user_ids: bool = typer.Option(
+        False, "--keep-user-ids",
+        help="Leave createdBy / modifiedBy / userName as the export wrote them (the user ids of the exporting "
+             "system). Needs --out: the release file names no user."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for the export job."),
 ):
-    """Export a SAS Content folder to a transfer package and write it into the
-    repository with the exporting environment's hostname removed.
+    """Export the content folder to the one transfer package of the release.
 
-    Replaces the three manual steps - export in SAS Environment Manager or
-    with `sas-viya transfer export`, copy the file over the shipped one, run
-    `mdb package-check --fix`. The export includes dependencies and
-    authorization rules, as the shipped packages do; the hostname rewrite
-    reaches into the compressed report content, and the result is checked
-    before it is written. Re-export after every change to a Builder's report,
-    job definition or options.
+    The folder is exported with its dependencies, and then reduced to what the
+    content manifest lists: every other object is dropped with its entries in
+    the package - a generated artifact, a report somebody parked in the
+    folder, a dependency from outside it - and so is every authorization rule
+    and share. In the Prompt Builder report the option defaults are reset to
+    the neutral values in every copy of the report, the per-user states are
+    removed, and the exporting environment's hostname becomes the placeholder,
+    also inside the compressed report content.
+
+    What would be written is then compared with the checkout
+    (`mdb package-check --release` asks the same): every entry of the manifest
+    is there and equals its source, and nothing else is. The command writes nothing and
+    ends with exit code 1 - the file from before stays as it is - when a
+    difference is left, when the package still names a host, or when an object
+    sits on a path that never ships (Showcases, Example, a folder named
+    generated, a name starting with ZZ_VERIFY), listed or not. Bring the
+    folder to the checkout with `mdb content-deploy` first; a report that lacks
+    an option of the current UI has to be saved once with that UI in SAS Visual
+    Analytics. In a folder other than the content root of the release,
+    `mdb content-deploy` writes that folder into the contentRoot of the job
+    definitions and brings no report: an export of such a folder is written
+    with --allow-differences.
+
+    Of the files a report brings along, those stay that are children of the
+    report and that its manifest entry lists; a picture the report shows from
+    a folder of its own is left out, and the report is then a difference.
+    The decision `Decisions/Call LLM Node` brings the Call LLM node type
+    along as its dependency: it stays where its id is the one the entry of
+    the decision lists under nodeTypes (f9efcbb7-f57b-4a62-b56d-1a89595e2039),
+    and the authorization rule on it is dropped like every other.
+
+    What the export leaves on the server - the package and the record of the
+    export job - is deleted unless --keep. A delete that is refused or gets
+    no answer does not cost the file: it is still written and checked, a line
+    names what is left with its id and how to delete it, and the command
+    ends with exit code 3 (1 stays "nothing was written").
+
+    The export names people: `createdBy` / `modifiedBy` of the package, of
+    every object and inside the bodies (also inside the compressed report
+    content), and `userName` in the body of a folder. They are replaced
+    with the text 'sas-agentic-ai-accelerator',
+    and nothing else of the package changes; `mdb package-check` fails a
+    package that names a user id in one of these fields. --keep-user-ids
+    leaves them (with --out only). `contentSourceLocation` is left as it is:
+    it is the path of the folder an object was exported from, and mdb reads
+    it to tell a package of a folder below others (`mdb builders-import`
+    refuses to hand such a package to the transfer service). For the content
+    root of the release it is `/SAS Agentic AI Accelerator/...`, which names
+    no one; the export of a folder below `/Users/<user id>` carries that id
+    in these paths and in the `contentRoot` of its job definitions, which is
+    why the release file is written from the content root of the release
+    only.
     """
-    import re as _re
-    from .core.packages import ALLOWED_HOSTS, check_package, sanitise_package
-    from .viya.transfer import (delete_package, download_package, folder_by_path, job_messages,
-                                start_export, wait_for_job)
+    from .core.content import content_root_problem
+    from .core.packages import (ALLOWED_HOSTS, NEUTRAL_USER, USER_FIELDS_TEXT, check_text, describe_findings,
+                                filter_package, named_users, neutralise_users, package_differences,
+                                reset_report_defaults, sanitise_text, strip_report_states)
+    from .viya.transfer import (delete_job, delete_package, download_package, folder_by_path, job_messages,
+                                leftover_line, start_export, wait_for_job)
     ctx = Context()
-    exclude = [n for n in (exclude or []) if n and n.strip()]
-    package_name = name or folder.rstrip("/").rsplit("/", 1)[-1]
-    target = out or (ctx.repo / "SAS-Viya-Integrations" /
-                     f"SAS-Agentic-AI-Accelerator-{_re.sub(r'[^A-Za-z0-9]+', '-', package_name).strip('-')}.json")
+    manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
+    # a text, so that an empty --out can be told from `.`; typer makes a path of both
+    out = Path(out) if _not_empty("--out", out, "file") is not None else None
+    root = (content_root or manifest.content_root).rstrip("/")
+    target = out or manifest.package_path
+    if root != manifest.content_root and (out is None or target.resolve() == manifest.package_path.resolve()):
+        console.print(f"[red]{_plain(root)} is not the content root of the release ({_plain(manifest.content_root)}): an export "
+                      f"of it is not written to {_plain(manifest.package)}. "
+                      + ("Pass --out to write it somewhere else." if out is None else "Name another file with --out.")
+                      + " Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    if allow_differences and (out is None or target.resolve() == manifest.package_path.resolve()):
+        console.print(f"[red]--allow-differences needs --out, and not {_plain(manifest.package)}: the release file is "
+                      "only written when it equals the checkout. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    if keep_user_ids and (out is None or target.resolve() == manifest.package_path.resolve()):
+        console.print(f"[red]--keep-user-ids needs --out, and not {_plain(manifest.package)}: the release file names no "
+                      "user. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    if content_root_problem(root):
+        console.print(f"[red]{_plain(root)}: {_plain(content_root_problem(root))}. Nothing was exported.[/red]", highlight=False)
+        raise typer.Exit(2)
+    package_name = name or root.rsplit("/", 1)[-1]
     with _viya_session() as session:
         try:
-            folder_obj = folder_by_path(session, folder)
-            console.print(f"Exporting [bold]{folder}[/bold] as package [bold]{package_name}[/bold] ...")
+            folder_obj = folder_by_path(session, root)
+            console.print(f"Exporting [bold]{_plain(root)}[/bold] as package [bold]{_plain(package_name)}[/bold] ...",
+                          highlight=False)
             job = start_export(session, package_name, [f"/folders/folders/{folder_obj['id']}"])
             job = wait_for_job(session, next(l["href"] for l in job["links"] if l["rel"] == "self"), timeout=timeout)
         except RuntimeError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(1)
         if str(job.get("state", "")).lower() != "completed":
-            console.print(f"[red]The export job ended {job.get('state')} ({job.get('errorCount', 0)} error(s)).[/red]")
+            console.print(f"[red]The export job ended {_plain(job.get('state'))} ({_plain(job.get('errorCount', 0))} error(s)).[/red]")
             for line in job_messages(session, job):
-                console.print(f"  {line}")
+                console.print(f"  {_plain(line)}")
             raise typer.Exit(1)
         package_uri = job["packageUri"]
-        text = download_package(session, package_uri)
+        try:
+            text = download_package(session, package_uri)
+        except RuntimeError as exc:
+            text = None
+            console.print(f"{exc}", style="red", markup=False, highlight=False, soft_wrap=True)
+        # What the export left on the server is deleted - the package and the
+        # record of the export job. A delete that fails does not cost the
+        # file: it is still written and checked, and the line names what is
+        # left and how to delete it.
+        leftovers = []
         if not keep:
-            delete_package(session, package_uri)
-    if exclude:
-        from .core.packages import drop_objects
-        parsed = json.loads(text)
-        dropped = drop_objects(parsed, exclude)
-        missing = sorted({n for n in exclude if n.strip().lower() not in {d.split(" ", 1)[1].lower() for d in dropped}})
-        for name in dropped:
-            console.print(f"  left out: {name}")
-        if missing:
-            console.print(f"[red]--exclude names nothing in the export: {', '.join(missing)}[/red]")
-            raise typer.Exit(1)
-        text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
+            export_job = next((link.get("href") for link in job.get("links") or [] if link.get("rel") == "self"),
+                              None) or f"/transfer/exportJobs/{job.get('id')}"
+            for uri, what, delete in ((package_uri, "package", delete_package),
+                                      (export_job, "export job record", delete_job)):
+                try:
+                    delete(session, uri)
+                except RuntimeError as exc:
+                    leftovers.append(f"{leftover_line(uri, what)} ({exc})")
+    for line in leftovers:
+        console.print(f"  {line}.", style="yellow", markup=False, highlight=False, soft_wrap=True)
+    if text is None:
+        console.print("[red]Nothing was written: the package could not be downloaded.[/red]")
+        raise typer.Exit(1)
+    parsed = json.loads(text)
+    filtered = filter_package(parsed, manifest, f"/folders/folders/{folder_obj['id']}")
+    for line in filtered.dropped:
+        console.print(f"  left out: {line}", markup=False, highlight=False, soft_wrap=True)
+    exporters = named_users(parsed)
+    neutralised = 0 if keep_user_ids else neutralise_users(parsed)
+    text = json.dumps(parsed, indent=2, ensure_ascii=False) + chr(10)
+    try:
+        text, reset = reset_report_defaults(text)
+        text, states = strip_report_states(text)
+        text, fixed = sanitise_text(text, target.name, ALLOWED_HOSTS)
+    except ValueError as exc:
+        console.print(f"[red]{_plain(exc)}[/red]")
+        raise typer.Exit(1)
+    for copy_name, labels in reset.items():
+        console.print(f"  reset {len(labels)} option default(s) of {_plain(copy_name)} to the neutral values: "
+                      f"{_plain(', '.join(labels))}", highlight=False)
+    for report_name, n in states.items():
+        console.print(f"  removed {_plain(n)} per-user report state(s) from report '{_plain(report_name)}'")
+    for host, n in fixed.items():
+        console.print(f"  replaced {_plain(host)} with the placeholder ({_plain(n)} occurrence(s))")
+    # Everything below is asked of the text, before there is a file: the
+    # target is the package `mdb builders-import` reads when none is named,
+    # and a package that is written and then found unfit is imported by the
+    # next run from this checkout, whatever the exit code said. What is
+    # judged is what would be written.
+    package = json.loads(text)
+    unfit = False
+    for line in filtered.refused:
+        console.print(f"  never ships, although the manifest lists it: {line}", style="red", markup=False,
+                      highlight=False, soft_wrap=True)
+        unfit = True
+    result = check_text(text, target.name, ALLOWED_HOSTS)
+    if not result.ok:
+        console.print(f"[red]The export still names a host after the rewrite: {_plain(describe_findings(result))}[/red]")
+        unfit = True
+    differences = [] if not result.ok else package_differences(package, manifest, target.name)
+    for line in differences:
+        console.print(f"  {line}", style="yellow" if allow_differences else "red", markup=False, highlight=False,
+                      soft_wrap=True)
+    if differences and allow_differences:
+        console.print(f"[yellow]{len(differences)} difference(s) to the checkout - written all the same "
+                      "(--allow-differences): this is not a package of the release.[/yellow]")
+    elif differences:
+        deploy_it = "mdb content-deploy" + _given("--content-root", root, manifest.content_root)
+        console.print(f"[red]{len(differences)} difference(s) between the export and the checkout.[/red] Run "
+                      f"`{_plain(deploy_it)}` to bring the folder to the checkout, and for a report open it in "
+                      "SAS Visual Analytics with the current UI and save it; then export again."
+                      # a folder other than the release's: content-deploy writes the folder into contentRoot and
+                      # brings no report, so these two differences stay whatever it runs (live-22a)
+                      + ("" if root == manifest.content_root else
+                         f" In a folder other than {_plain(manifest.content_root)} that command writes the folder "
+                         "into the contentRoot of the job definitions and brings no report, so a difference in "
+                         "either stays: --allow-differences writes the file all the same."))
+        unfit = True
+    if unfit:
+        console.print("[red]Nothing was written: " + (
+            f"{_plain(target.name)} is as it was before the export." if target.exists() else
+            f"there is no {_plain(target.name)}.") + "[/red]", highlight=False)
+        raise typer.Exit(1)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
-    sanitised, fixed = sanitise_package(target, ALLOWED_HOSTS)
-    if fixed:
-        target.write_text(sanitised, encoding="utf-8", newline="\n")
-        for host, n in fixed.items():
-            console.print(f"  replaced {host} with the placeholder ({n} occurrence(s))")
-    result = check_package(target, ALLOWED_HOSTS)
-    if not result.ok:
-        console.print(f"[red]{target.name} still names a host: {result.where()}[/red]")
-        raise typer.Exit(1)
-    package = json.loads(target.read_text(encoding="utf-8"))
-    kinds = ", ".join(f"{kind} {name}" for kind, name in _package_objects(package))
-    console.print(f"[green]Wrote {target} ({package.get('transferObjectCount', '?')} objects: {kinds}).[/green]")
-    console.print("Review the diff, then commit it with the CHANGELOG entry that explains the change.")
+    counts: dict = {}
+    for kind, _name in _package_objects(package):
+        counts[kind] = counts.get(kind, 0) + 1
+    console.print(f"[green]Wrote {_plain(target)}[/green] ({_plain(package.get('transferObjectCount', '?'))} objects: "
+                  + _plain(", ".join(f"{n} {kind}" for kind, n in counts.items())) + f"; {len(filtered.dropped)} left out).",
+                  highlight=False)
+    # Each line says what was done: with --keep-user-ids the ids are left,
+    # without it they were replaced - and one that is still named after the
+    # replacement is a difference, printed above by the gate.
+    users = {user: n for user, n in named_users(package).items() if user != NEUTRAL_USER}
+    if keep_user_ids and users:
+        console.print(f"  The file names the user id(s) {', '.join(sorted(users))} in {USER_FIELDS_TEXT} "
+                      f"({sum(users.values())} place(s): the package, its objects and their bodies) - left as the "
+                      "export wrote them (--keep-user-ids) - and the exported folder in contentSourceLocation; the "
+                      "contentRoot of the job definitions is left as it is too.",
+                      markup=False, highlight=False, soft_wrap=True)
+    elif neutralised:
+        others = {user for user in exporters if user != NEUTRAL_USER}
+        console.print(f"  Replaced the user id(s) {', '.join(sorted(others))} in {USER_FIELDS_TEXT} with "
+                      f"'{NEUTRAL_USER}' ({neutralised} place(s)); contentSourceLocation, the path of the folder "
+                      f"each object was exported from, is left as it is ({root}), and so is the contentRoot of the job "
+                      "definitions.",
+                      markup=False, highlight=False, soft_wrap=True)
+    # What to do with the file depends on what it is: only the release file,
+    # written without a difference, is something to commit.
+    if target.resolve() == manifest.package_path.resolve():
+        # The changelog is finished before the deploy: release.json and the
+        # release table were made from this checkout, and a changelog edit
+        # after the export makes `mdb package-check --release` fail.
+        from .core.packages import earlier_packages_present
+        earlier = earlier_packages_present(ctx.repo, manifest.package_path)
+        console.print("Run `mdb package-check --release`, then commit this file in a commit that changes neither "
+                      "the changelog nor a source the manifest names: they stay as they were at the deploy "
+                      "(release.json names that commit, and the release table was made from that changelog). "
+                      + ("That commit also removes the package files of earlier releases - "
+                         f"{', '.join(path.name for path in earlier)} beside this file, and every other transfer "
+                         f"package below {manifest.package_path.parent.name}/ - and takes --allow-missing out of the "
+                         "workflow. " if earlier else "")
+                      + "The tag goes on the commit of main that holds this file - after a squash merge the commit "
+                      "the merge made on main, not the commit of the branch - and the commit release.json names "
+                      "has to be in the history of that commit: a commit of a branch that is squash-merged later "
+                      "is not.", markup=False, highlight=False, soft_wrap=True)
+    elif differences:
+        # for a test folder: nothing but the folder is written - as the command comes, it would load the
+        # release table of the site and write the commands file of the content folder as well. --create,
+        # because a test folder is commonly not there yet: without it the command ends at such a folder.
+        # --no-reports and --no-decisions: the transfer service brings neither into another folder
+        into_a_test_folder = _import_command([target], None, None, None, None, True, IMPORT_TIMEOUT,
+                                             content_root="<folder>", no_reports=True, create=True, no_files=True,
+                                             no_decisions=True)
+        console.print(f"Keep this file out of the repository. `{into_a_test_folder}` brings what it holds into a "
+                      "test folder, which it creates where it is not there, and nothing else: no report, no "
+                      "decision, no release table, no commands file.", markup=False, highlight=False, soft_wrap=True)
+    else:
+        console.print(f"The file equals the checkout and is not the release file ({manifest.package}): there is "
+                      "nothing to commit.", markup=False, highlight=False, soft_wrap=True)
+    if leftovers:
+        console.print(f"[yellow]{_plain(target.name)} was written and checked; {len(leftovers)} object(s) of the export are "
+                      "left on the server (named above). Exit code 3.[/yellow]", highlight=False)
+        raise typer.Exit(3)
+
+
+#: Seconds `mdb builders-import` waits for one import job unless told otherwise.
+IMPORT_TIMEOUT = 600
+
+
+#: An argument no shell reads anything into, and what double quotes do not
+#: keep as it is: PowerShell and bash expand `$` and read a backtick, bash
+#: reads `\` and (at a prompt) `!`, and neither spells a `"` the other's way.
+_BARE_WORD = re.compile(r"[A-Za-z0-9_./:-]+")
+_NOT_KEPT_IN_DOUBLE_QUOTES = frozenset('"$`!\\')
+
+
+def _shell_word(value, windows: bool = os.name == "nt") -> str:
+    """A command-line argument as it can be pasted into PowerShell or bash,
+    whichever the admin is in: bare when it holds nothing a shell reads, else
+    in double quotes (cmd reads those too), in single quotes when it holds a
+    character double quotes do not keep. A path is spelled with forward
+    slashes, which Windows reads as well and bash does not eat.
+
+    One case has no spelling both shells read: a value with a single quote
+    and one of those characters. It is quoted for the platform's own shell
+    (PowerShell on Windows), so Git Bash on Windows does not read it back. A
+    single-quoted word is not a quoted word in cmd at all.
+    """
+    text = value.as_posix() if isinstance(value, PurePath) else str(value)
+    if _BARE_WORD.fullmatch(text):
+        return text
+    if not _NOT_KEPT_IN_DOUBLE_QUOTES.intersection(text):
+        return f'"{text}"'
+    return "'" + text.replace("'", "''" if windows else "'\\''") + "'"
+
+
+def _given(option: str, value, default=None) -> str:
+    """` <option> <value>` for a command a line names, the value as a shell
+    takes it - where the run was given one that is not the default; ""
+    otherwise. Named without it, the command reads another file or folder
+    than the run did: the default one."""
+    if value is None or not str(value) or str(value) == str(default):
+        return ""
+    return f" {option} {_shell_word(value)}"
+
+
+def _given_file(option: str, value, default: str) -> str:
+    """`_given` for a file a run was given as a text: spelled as a path, with
+    forward slashes, which PowerShell and bash both read."""
+    return _given(option, Path(value) if value else None, default)
+
+
+def _import_command(packages, options, caslib, table, server, no_releases: bool, timeout: int,
+                    report_caslib=None, content_root=None, compute_context=None, no_reports: bool = False,
+                    no_capture: bool = False, create: bool = False, out: str = ".", no_files: bool = False,
+                    no_decisions: bool = False) -> str:
+    """`mdb builders-import` with the arguments a run was given, for the line
+    that tells an admin to run it again - every option of the command but
+    --dry-run, after which no such line is printed. An argument that was not
+    given is left out, so the repeat reads the same environment the first
+    run did - and so is an --out that names the current directory, which is
+    its default. An empty value never gets this far: the command refuses it
+    (`_refuse_empty_values`)."""
+    words = ["mdb", "builders-import", *(_shell_word(path) for path in packages or [])]
+    if options is not None:
+        words += ["--options", _shell_word(options)]
+    for flag, value in (("--caslib", caslib), ("--report-caslib", report_caslib), ("--table", table),
+                        ("--server", server), ("--content-root", content_root),
+                        ("--compute-context", compute_context)):
+        if value:
+            words += [flag, _shell_word(value)]
+    if no_releases:
+        words.append("--no-releases")
+    if no_reports:
+        words.append("--no-reports")
+    if no_decisions:
+        words.append("--no-decisions")
+    if no_capture and options is None:
+        words.append("--no-options-capture")
+    if create:
+        words.append("--create")
+    if out and str(out) != ".":
+        words += ["--out", _shell_word(Path(out))]
+    if no_files:
+        words.append("--no-files")
+    if timeout != IMPORT_TIMEOUT:
+        words += ["--timeout", str(timeout)]
+    return " ".join(words)
+
+
+def _repeat_parts(packages: list, refused: list, holder, no_releases: bool) -> list:
+    """[(packages, --no-reports, --no-releases)] of the two commands a
+    failed import names where the reports of some packages went to the
+    transfer service and those of others (`refused`) were refused for the
+    content root: first the others, as the run was given, then the refused
+    ones with --no-reports. Each ends well once what the run reported is
+    fixed; the one command for all of them is refused the same reports
+    every time.
+
+    The run loaded the release table from one source - the first package
+    that holds one (`holder`), else the changelog. Only the line with that
+    package loads it again (the first line where no package holds one); the
+    other gets --no-releases, so that neither line replaces the table with
+    one from another source."""
+    others = [path for path in packages if path not in refused]
+    first_loads = holder is None or holder in others
+    return [(others, False, no_releases or not first_loads), (refused, True, no_releases or first_loads)]
+
+
+def _live_options(session, content_root: str = "") -> dict:
+    """{report name: {option: value}} as the Builder report at its place
+    below `content_root` holds them now - a retired report folded in, as
+    `mdb options-save --reports-only` records them. Empty when the site has
+    neither report there: then there is nothing an import could overwrite.
+
+    Raises _ReportUnreadable when a report is there and cannot be read or
+    holds no option, or when the service does not say whether it is there:
+    an import behind that would replace a report whose options nobody
+    holds."""
+    from .core.options import BUILDER_REPORTS, LEGACY_REPORTS, report_folder
+    from .viya.reports import find_report_at
+    on_site = False
+    for name in (*BUILDER_REPORTS, *sorted(LEGACY_REPORTS)):
+        folder = report_folder(content_root, name)
+        try:
+            on_site = bool(find_report_at(session, folder, name, strict=True)) or on_site
+        except Exception as exc:
+            raise _ReportUnreadable(name, f"whether it is in {folder} could not be asked ({one_line(str(exc))})") from exc
+    return _capture_options(session, {}, strict=True, content_root=content_root) if on_site else {}
+
+
+def _keep_captured(captured: dict) -> Path:
+    """Write options captured before an import to a file of their own in the
+    current directory and return its path.
+
+    The import replaces the report, so from that moment the captured values
+    exist only in this process. A run that stops between the import and the
+    write-back would leave a site on the package's defaults with nothing to
+    restore from - and a second run would capture those defaults. The file is
+    what `mdb options-restore --file` and `mdb builders-import --options`
+    read. Its name carries the time, so no run overwrites another's.
+    """
+    import datetime as _datetime
+    from .core.options import options_file
+    stamp = _datetime.datetime.now(_datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = Path(f"builder-options-captured-{stamp}.json")
+    counter = 1
+    while path.exists():
+        counter += 1
+        path = Path(f"builder-options-captured-{stamp}-{counter}.json")
+    path.write_text(json.dumps(options_file(os.environ.get("SAS_VIYA_URL", ""), captured), indent=2) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+def _transfer_refusal(package_root: Optional[str], target_root: str, kind: str = "report") -> Optional[str]:
+    """Why the reports (or, with `kind` "decision", the decisions) of a
+    package are NOT handed to the transfer service for this content root, or
+    None when they are.
+
+    The transfer service places an object by the folders the package holds,
+    and takes no target folder. Measured on 2026-10-12: a package whose root
+    folder was not at the root of SAS Content landed in a NEW folder of that
+    name at the root, and the folder it was meant for stayed empty. The one
+    mapping known to work is the one every release up to 2.2.x used: a root
+    folder at the root of SAS Content, imported into the folder of the same
+    path. Anything else is not guessed."""
+    if package_root is None:
+        return "the package does not say which folder it was exported from"
+    if package_root.count("/") != 1:
+        return (f"the package was exported from {package_root}, a folder that is not at the root of SAS Content: "
+                "the transfer service puts such a package into a new folder at the root of SAS Content "
+                f"(measured), not into {target_root}")
+    if package_root != target_root:
+        return (f"the package was exported from {package_root} and its content goes to {target_root}: the "
+                f"transfer service imports a {kind} into the folder it was exported from, and no mapping to "
+                "another folder is known to work")
+    return None
+
+
+def _missing_ids(captured: dict) -> list:
+    """The repository and project id options the captured Prompt Builder
+    section holds no value for, in the order of the report."""
+    from .core.options import MERGED_REPORT, SEED_PROJECT_LABELS
+    section = captured.get(MERGED_REPORT) or {}
+    labels = ["modelRepositoryID", *SEED_PROJECT_LABELS.values()]
+    return [label for label in labels if not str(section.get(label) or "").strip()]
+
+
+def _discover_missing(session, ctx: "Context", captured: dict, missing: list) -> dict:
+    """Fill the ids `missing` names into the captured section from discovery -
+    the kinds whose project id is missing, and the repository with them. A
+    value the report holds is never replaced. Returns {label: value} of what
+    was filled."""
+    from .core.options import BUILDER_REPORTS, MERGED_REPORT, SEED_PROJECT_LABELS
+    kinds = [kind for kind, label in SEED_PROJECT_LABELS.items() if label in missing] \
+        or list(BUILDER_REPORTS[MERGED_REPORT][:1])
+    seed = _discovered_seeds(session, ctx, "the option stays as the imported report has it",
+                             kinds=kinds).get(MERGED_REPORT, {})
+    section = captured.setdefault(MERGED_REPORT, {})
+    filled = {label: seed[label] for label in missing if str(seed.get(label) or "").strip()}
+    section.update(filled)
+    return filled
+
+
+#: Which job definitions get the compute context the options name
+#: (core/content.py, settle_parameters). ONE sentence: the line `mdb
+#: builders-import` prints, its help and SAS-Viya-Integrations/README.md
+#: carry it word for word, and a test holds them to it.
+CONTEXT_RULE = ("given to a job definition the import creates and to one on the site that has no _contextName; a "
+                "_contextName a job definition on the site holds is kept")
+
+
+def _known_context(saved: Optional[dict]) -> str:
+    """The compute context a site's options name for jobs that run as the
+    user who starts them: the option `ragComputeContext` of the Prompt
+    Builder report (with what a retired report held folded in). Empty when
+    the options name none.
+
+    Not `computeContext`: that is the context of the optimization job, which
+    a site commonly points at the SAS Job Execution compute context - a
+    context that runs under a service account, in which Start Here was
+    measured to check nothing."""
+    from .core.options import MERGED_REPORT, fold_legacy
+    if not saved:
+        return ""
+    folded, _messages = fold_legacy(json.loads(json.dumps(saved)))
+    return str((folded.get(MERGED_REPORT) or {}).get("ragComputeContext") or "").strip()
+
+
+def _import_decisions(session, path: Path, package: dict, source, root: str, no_decisions: bool, dry_run: bool,
+                      timeout: int) -> tuple:
+    """The decisions of one package and the custom node types they carry,
+    through the transfer service in an import job of their own - after the
+    site was asked whether it takes the node types. Returns (failed,
+    brought): whether that counts as a failure of the run, and whether the
+    decisions were imported (in a dry run: would be) - where they are not,
+    the in-place part creates no folder for them either.
+
+    A node type travels with its id. Where the site has that id, the import
+    overwrites the node type in place - its code and its terms included.
+    Where the site has a node type of that NAME under another id, the import
+    fails for the node type (a name is unique) and SKIPS the decisions of the
+    package while the job ends completed (measured on 2026-10-20): then
+    nothing of this part is imported, the command names `mdb
+    decision-node-migrate`, and the run fails unless --no-decisions leaves
+    the decisions out. A site without SAS Intelligent Decisioning gets a line
+    and no failure."""
+    from .core.packages import decisions_package
+    from .viya import decision_nodes as nodes
+    from .viya.decision_nodes import NodeError
+    from .viya.transfer import (delete_package, get_mapping, job_messages, job_tasks, job_uri, leftover_line,
+                                start_import, task_problems, upload_package_bytes, wait_for_job)
+
+    def say(text: str, style: Optional[str] = None) -> None:
+        console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
+
+    names = ", ".join(item.path for item in source.decisions)
+    if no_decisions:
+        say(f"  Decisions ({names}): left out (--no-decisions), and the node types they carry with them.")
+        return False, False
+    refusal = _transfer_refusal(source.root_path, root, "decision")
+    if refusal is not None:
+        say(f"  Decisions ({names}): NOT imported - {refusal}.", "red")
+        say("    Import the package into the folder it was exported from, or pass --no-decisions to bring everything "
+            "but the decisions.")
+        return True, False
+    reduced, held, carried = decisions_package(package, source.root_uri)
+    say(f"  Decisions, through the transfer service ({len(held)} object(s)): {names}")
+    try:
+        verdicts = nodes.site_check(session, carried, warn=lambda text: say(f"    {text}", "yellow"))
+    except NodeError as exc:
+        say(f"    {one_line(str(exc))}", "red")
+        return True, False
+    clashes = []
+    for name, node_id, verdict, found in verdicts:
+        shown = f"    node type '{name}' ({node_id}):"
+        if verdict == nodes.NO_DECISIONING:
+            say(f"{shown} SAS Intelligent Decisioning does not answer on this site (GET /decisions/decisionNodeTypes: "
+                "404) - the decisions are not imported.", "yellow")
+        elif verdict == nodes.CLASH:
+            clashes.append((name, node_id))
+            say(f"{shown} this site has a node type '{name}' under the id {found.get('id')}.", "red")
+        elif verdict == nodes.OVERWRITE:
+            called = "" if found.get("name") == name else f" (named '{found.get('name')}' there)"
+            say(f"{shown} on this site{called} - the import overwrites it in place with the package's: local edits "
+                "of its code and its terms are replaced.")
+        else:
+            say(f"{shown} not on this site - the import creates it under this id.")
+    if any(verdict == nodes.NO_DECISIONING for _name, _id, verdict, _found in verdicts):
+        return False, False
+    if clashes:
+        name, node_id = clashes[0]
+        say("    The decisions and their node types are NOT imported: the transfer service would refuse the node type - "
+            "a name is unique - and skip the decisions of the package without a failed task. Give this site's node "
+            f"type the id of the package first: `{_migrate_command(name, node_id)}` says what it would do, "
+            f"`{_migrate_command(name, node_id, apply=True)}` does it - it moves every decision that uses the node "
+            "type, locked versions included. Then run this import again; or pass --no-decisions to import without "
+            "the decisions.", "red")
+        return True, False
+    if dry_run:
+        return False, True
+    uploaded = None
+    failed = False
+    # the part of the package that is uploaded carries a name of its own
+    reduced["name"] = f"{package.get('name') or path.stem} - decisions"
+    try:
+        uploaded = upload_package_bytes(session, f"decisions-{path.name}",
+                                        (json.dumps(reduced, ensure_ascii=False) + "\n").encode("utf-8"))
+        mapping = get_mapping(session, uploaded["id"])
+        job = start_import(session, reduced["name"], f"/transfer/packages/{uploaded['id']}", mapping)
+        job = wait_for_job(session, job_uri(job), timeout=timeout)
+        if str(job.get("state", "")).lower() != "completed" or job.get("errorCount"):
+            say(f"    import ended {job.get('state')} with {job.get('errorCount', 0)} error(s):", "red")
+            for line in job_messages(session, job):
+                say(f"      {line}")
+            failed = True
+        else:
+            tasks = job_tasks(session, job)
+            unfinished = task_problems(tasks)
+            skipped = nodes.missing_tasks(tasks, [("decision", item.name) for item in source.decisions]
+                                          + [("decisionNodeType", name) for name, _id in carried])
+            for line in unfinished:
+                say(f"      {line}", "red")
+            for kind, name in skipped:
+                say(f"      {kind} '{name}': no completed task - the job did not import it", "red")
+            if unfinished or skipped:
+                say(f"    the import job ended completed, and {len(unfinished) + len(skipped)} of its objects did "
+                    "not arrive (above).", "red")
+                failed = True
+            else:
+                say(f"    imported {len(held)} object(s) through the transfer service.", "green")
+    except RuntimeError as exc:
+        say(f"    {one_line(str(exc))}", "red")
+        failed = True
+    if uploaded and uploaded.get("id"):
+        package_uri = f"/transfer/packages/{uploaded['id']}"
+        try:
+            delete_package(session, package_uri)
+        except RuntimeError as exc:
+            say(f"    {leftover_line(package_uri)} ({one_line(str(exc))}).", "yellow")
+    return failed, not failed
 
 
 @app.command("builders-import")
 def builders_import(
     packages: Optional[list[Path]] = typer.Argument(
-        None, help="Transfer package files (default: the two Builder packages this repository ships)."),
+        None, help="Transfer package files (default: the one package this repository ships, "
+                   "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json)."),
     options: Optional[Path] = typer.Option(
         None, "--options",
-        help="A builder-options.json from `mdb options-save` to write back after the import."),
+        help="A builder-options.json from `mdb options-save` to write back after the import. Without it the "
+             "options of the Prompt Builder report on the site are captured before the import and written back."),
     caslib: Optional[str] = typer.Option(None, "--caslib", "-l", help="CAS library of the release table (env: SAS_CAS_LIBRARY)."),
+    report_caslib: Optional[str] = typer.Option(
+        None, "--report-caslib",
+        help="CAS library of the other tables the reports read (LLM_LOGS, the fact sheets, PROMPT_EXPERIMENTS), "
+             "where a site does not keep them in the library the package names. Default: left as exported."),
     table: Optional[str] = typer.Option(None, "--table", "-t", help="Release table name (env: SAS_RELEASES_TABLE)."),
     server: Optional[str] = typer.Option(None, "--server", help="CAS server (env: SAS_CAS_SERVER)."),
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder the files, custom steps and job definitions of the package are brought into "
+             "(default: the content root the manifest names). The reports and the decisions are imported only "
+             "into the folder the package was exported from, at the root of SAS Content."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Compute context written into the parameter _contextName of every job definition that has one. "
+             f"Without it the ingestion compute context of the options that are written back is {CONTEXT_RULE} "
+             "(where the options name none, the package's takes its place)."),
+    create: bool = typer.Option(
+        False, "--create",
+        help="Create the --content-root folder (with every folder above it) where it is not there. Without it "
+             "only the content root the manifest names is created."),
     no_releases: bool = typer.Option(False, "--no-releases", help="Do not (re)load the release table first."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show the objects and the import mapping; import nothing."),
-    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each import job."),
+    no_reports: bool = typer.Option(
+        False, "--no-reports",
+        help="Leave the reports of the package out: the transfer service is not called for them."),
+    no_decisions: bool = typer.Option(
+        False, "--no-decisions",
+        help="Leave the decisions of the package out, and with them the Call LLM node type they carry. Without "
+             "it a site whose Call LLM node has another id ends the command with exit code 1 and the command "
+             "that moves it (mdb decision-node-migrate)."),
+    no_options_capture: bool = typer.Option(
+        False, "--no-options-capture",
+        help="Do not read the options of the Prompt Builder report on the site before the import. The report "
+             "the package brings is then configured from this deployment, and what an administrator set is gone."),
+    out: str = typer.Option(".", "--out", help="Directory for the authorization-rules file of the content folder."),
+    no_files: bool = typer.Option(False, "--no-files", help="Do not write the authorization-rules file."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Say what a run would do; every request but the sign-in is a GET."),
+    timeout: int = typer.Option(IMPORT_TIMEOUT, "--timeout", help="Seconds to wait for each import job."),
 ):
-    """Import the Prompt Builder / RAG Builder transfer packages into this
-    deployment: load the release table, import each package with its report
-    bound to that table and its Data-Driven Content URL pointing at this
-    server, then write back saved builder options.
+    """Bring the accelerator's content folder into this deployment from the
+    one transfer package: load the release table, import the reports and the
+    decisions, bring the files, custom steps and job definitions in place,
+    write the Prompt
+    Builder options back, and write the authorization commands for the folder.
 
-    What `sas-viya transfer upload` + `import` do, plus the two things an
-    import otherwise needs by hand afterwards: the report's data source is
-    retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the shipped packages
-    bind Public.ACCELERATOR_RELEASES) and the placeholder host in the DDC URL
-    becomes SAS_VIYA_URL - both through the transfer service's import mapping,
-    so nothing is edited after the fact. Afterwards the reports are
-    configured: with --options the site's saved values are written back;
-    without it the values `mdb setup` discovers (repository, projects, SCR
-    endpoint, deployment type) are, and either way every remaining
-    placeholder host in a report - the DDC URL and the option defaults -
-    becomes this deployment's host. A first install needs no hand edits.
+    THE RELEASE TABLE is the package's Data/ACCELERATOR_RELEASES.csv where
+    the package holds it - the table then says what was imported - else it
+    is made from the changelog of this checkout. What the command still needs
+    the accelerator clone for: mdb finds its repository first (every command
+    does), the manifest gives the default package file and content root and
+    says which parameters of a listed job definition are site settings, a
+    site without the Prompt Builder report is configured by discovery from
+    the model definitions, and a package without the release table takes it
+    from the changelog.
+
+    TWO WAYS IN, by kind of object. The REPORTS, with the files that are
+    children of a report (its pictures) and the folders they sit in, go
+    through the transfer service: the Prompt Builder report's data source is
+    retargeted at SAS_CAS_LIBRARY.SAS_RELEASES_TABLE (the package binds
+    Public.ACCELERATOR_RELEASES), with --report-caslib the other tables the
+    reports read are pointed at the tables of the same name in that library,
+    and the placeholder host in the DDC URL becomes SAS_VIYA_URL - all through
+    the import mapping. EVERY FILE, CUSTOM STEP AND JOB DEFINITION of the
+    package is brought IN PLACE, by the requests `mdb content-deploy` sends,
+    with the package as the source and no checkout needed for the content: an
+    object that exists at its path is updated under the id it has on this
+    site, whatever id the package carries, and a missing one is created. One
+    line per entry says equal, updated, created or FAILED. That is not left
+    to the transfer service because it was measured to leave a file alone
+    that exists in the folder under the same name with another id, to write
+    the package's file into no folder, and to report its job as completed.
+
+    THE DECISIONS - the decision `Decisions/Call LLM Node`, which carries the
+    Call LLM node type under the id f9efcbb7-f57b-4a62-b56d-1a89595e2039 -
+    go through the transfer service as well, in an import job of their own,
+    with the node types they use. The site is asked first. A node type whose
+    id the site has is overwritten in place - local edits of its code and its
+    terms are replaced, and the line says so; one the site does not have is
+    created under that id. Where the site has a node type of that NAME under
+    another id (a Call LLM node created with the SAS program), the transfer
+    service would refuse the node type and skip the decision without a
+    failed task: nothing of this part is imported, the command names `mdb
+    decision-node-migrate`, which moves the site's decisions to the id of
+    the package, and the run ends with exit code 1 unless --no-decisions
+    leaves the decisions out. A site without SAS Intelligent Decisioning
+    gets a line and no failure. The tasks of the job are read, and an object
+    without a completed task counts.
+
+    WHERE. --content-root names the folder for the files, custom steps and
+    job definitions. A report and a decision are imported only into the
+    folder the package was exported from, and only when that folder is at
+    the root of SAS Content - the one mapping known to work. Otherwise they
+    are not imported and the command says so, and ends with exit code 1
+    unless --no-reports and --no-decisions say that is meant - --no-reports
+    alone does not: the transfer service takes no target folder, and a
+    package from a folder below others was measured to land in a new folder
+    at the root.
+
+    WHAT A SITE SEES whose objects were registered under other ids - a step
+    its flows use, a file, a job definition: `updated ... (id <its own id>
+    kept)` where the content differs, `equal ... (id <its own id>)` where it
+    does not, and no second object of the name. A file keeps its id as well:
+    its content is replaced, the file is not deleted. Two objects of one name
+    in a folder are both named and neither is written - and a reference of
+    that name to an object of that kind elsewhere counts as one of them,
+    alone or beside the object itself: it is named on the line of the entry,
+    never followed, and the entry is FAILED until the reference is removed.
+
+    THE OPTIONS of the Prompt Builder report are kept across the import. With
+    --options the values of that file are written back. Without it, and when
+    the report (or the retired report "RAG Builder") is at its place in the
+    content root - <root>/Prompt Builder/Prompt Builder, <root>/RAG/RAG
+    Builder; a report of that name elsewhere is not read and not written -
+    its options are read before the import, kept in a file
+    builder-options-captured-<time>.json in the current directory, and
+    written back afterwards - so an upgrade is this one command. When such a
+    report is there and cannot be read, or is read and holds no option at
+    all, the command stops BEFORE anything is imported: name the options with
+    --options <file>, or pass --no-options-capture to import without them. On a site without the report
+    the values `mdb setup` discovers are written, and either way every
+    remaining placeholder host in the report becomes this deployment's host.
+    A package that brings no Prompt Builder report leaves the report on the
+    site as it is.
+
+    THE COMPUTE CONTEXT. Start Here and Load-Accelerator-Tables have to run
+    as the user who opens them, so their job definitions carry _contextName.
+    A context a site set in a job definition - in these two or in
+    SAS-LLM-Prompt-Builder-UI - survives the import. The ingestion compute
+    context (ragComputeContext) of the options the import writes back is
+    given to a job definition the import creates and to one on the site that
+    has no _contextName; a _contextName a job definition on the site holds
+    is kept. Where the options name none, the package's takes its place.
+    --compute-context writes the context it names into every job definition
+    that has the parameter. contentRoot is written with the folder the
+    content goes to.
+
+    A RETIRED REPORT. The import removes nothing: the report "RAG Builder"
+    and the job definition RAG-Builder-UI of a 2.2.x site stay where they
+    are, the options of the report are folded into the Prompt Builder's, and
+    the command says that the report is still there until someone deletes it.
+
+    A DRY RUN writes nothing and uploads nothing. The requests it can make,
+    all of them GET (the sign-in aside): /casManagement/servers;
+    /folders/folders/@item and /folders/folders/{id}/members (also to find
+    a report as a member of its folder); /reports/reports/{id}/content;
+    /files/files/{id}/content; /dataFlows/steps/{id};
+    /jobDefinitions/definitions/{id}; /decisions/decisionNodeTypes and
+    /decisions/decisionNodeTypes/{id}. The transfer
+    service is not called, so the mapping lines of a dry run are what the
+    package itself says about its tables and substitutions. Without options
+    it discovers nothing, because discovery creates a missing repository or
+    project.
+
+    The package carries no authorization rule. Like `mdb setup` for the model
+    repository, the command writes the rules for the content folder as
+    commands to review - sas-viya-cli-content-commands.txt in --out - and runs
+    none of them.
+
+    A run that did not do everything ends with exit code 1 and the command to
+    go on with: `mdb builders-import` with the options of the run - and with
+    --no-reports / --no-decisions added where the reports / the decisions
+    were refused for the content root and nothing of any package went to the
+    transfer service; two commands where something of one package went
+    there and the reports or decisions of another were refused, the second
+    for that package without what was refused of it - or `mdb
+    options-restore` where only options are left to write. The tasks of the
+    import job are read to the end: one that ended
+    with a warning or an error is printed and counts. The in-place part stops
+    at the first write that fails and lists what it did not attempt.
     """
-    from .core.releases import DEFAULT_TABLE
+    from .core.content import CONTEXT_PARAMETER
+    from .core.options import BUILDER_REPORTS
+    from .core.packages import (PackageSource, legacy_objects, mapping_preview, report_labels,
+                                reports_package)
+    from .core.packages import RELEASE_TABLE_PATH
+    from .core.releases import DEFAULT_TABLE, current_words
     from .viya.cas import resolve_server
-    from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_uri,
-                                rehost_mapping, start_import, table_spec, upload_package,
-                                wait_for_job)
+    from .viya.content import CREATED, EQUAL, NOT_ATTEMPTED, UPDATED, DeployError, deploy
+    from .viya.transfer import (delete_package, get_mapping, host_of, job_messages, job_tasks, job_uri,
+                                leftover_line, rehost_mapping, start_import, table_spec, task_problems,
+                                upload_package_bytes, wait_for_job)
     ctx = Context()
-    files = [Path(p) for p in packages] if packages else _shipped_builder_packages(ctx)
-    if not files:
-        console.print("[red]No package given and none shipped under SAS-Viya-Integrations/.[/red]")
-        raise typer.Exit(2)
+    manifest = _content_manifest(ctx, check_sources=False)
+    content_root = _given_root(content_root)
+    _not_empty("--out", out, "folder")
+    files = [Path(p) for p in packages] if packages else [manifest.package_path]
     for path in files:
         if not path.is_file():
-            console.print(f"[red]{path} not found.[/red]")
+            if packages:
+                console.print(f"[red]{_plain(path)} not found.[/red]", highlight=False)
+            else:
+                console.print(f"[red]This checkout holds no {_plain(manifest.package)} - the transfer package of the "
+                              "release. Name a package file, or use a checkout that has it.[/red]", highlight=False)
             raise typer.Exit(2)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        console.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
     saved = None
     if options is not None:
+        if options.is_dir():
+            console.print(f"[red]{_plain(options)} is a folder, not an options file.[/red]")
+            raise typer.Exit(2)
         if not options.is_file():
-            console.print(f"[red]{options} not found - run `mdb options-save` first.[/red]")
+            save = "mdb options-save" + _given("--file", options, OPTIONS_FILE) \
+                + _given("--content-root", content_root)
+            console.print(f"[red]{_plain(options)} not found - run `{_plain(save)}` first.[/red]")
             raise typer.Exit(2)
         saved = json.loads(options.read_text(encoding="utf-8")).get("reports") or {}
+
+    def command(options_file) -> str:
+        """The command line as it was given, for the line that says how to
+        go on - with the options file a run kept, once there is one, and
+        with --no-reports / --no-decisions where the same command would be
+        refused its reports / its decisions again (`repeat_without_reports`,
+        `repeat_without_decisions`, below). Two lines where something of one
+        package went to the transfer service and the reports or decisions of
+        another were refused (`_repeat_parts`): the same command ends with
+        exit code 1 every time it is run."""
+        def line(paths, without_reports: bool, without_releases: bool, without_decisions: bool) -> str:
+            return _import_command(paths, options_file, caslib_given, table, server, without_releases, timeout,
+                                   report_caslib, content_root, compute_context, without_reports,
+                                   no_options_capture, create, out, no_files, without_decisions)
+        if not repeat_in_two:
+            return line(packages, repeat_without_reports, no_releases, repeat_without_decisions)
+        holder = next((path for path, _package, source, _refusal in plans if source.release_table() is not None),
+                      None)
+        # the line of the refused packages leaves out what was refused of them
+        return "\n".join(
+            line(paths, no_reports or (refused and any(path in reports_refused for path in paths)), without_releases,
+                 no_decisions or (refused and any(path in decisions_refused for path in paths)))
+            for paths, refused, without_releases in _repeat_parts(files, refused_paths, holder, no_releases))
+
+    caslib_given = caslib
     caslib = caslib or os.environ.get("SAS_CAS_LIBRARY") or "Public"
     table_name = table or _releases_table()
     failures = 0
+    # What each package's reports hold, and which reports sat in a package
+    # that did not import: the restore below is decided per report, not per run.
+    arriving: dict = {}
+    failed_reports: set = set()
+    not_imported: list = []
+    imported_any = False
+    captured_file: Optional[Path] = None
+    # Per package: what it holds, and whether its reports go to the transfer
+    # service (`refusal` says why not).
+    plans = []
+    for path in files:
+        package = json.loads(path.read_text(encoding="utf-8"))
+        source = PackageSource(package, manifest)
+        refusal = None
+        if source.reports:
+            refusal = "left out (--no-reports)" if no_reports else _transfer_refusal(source.root_path, root)
+        plans.append((path, package, source, refusal))
+    # The command a failed run names must not fail for the reason this one
+    # did. Reports - and decisions - that are refused for this content root
+    # are refused by the same command again: where nothing of any package
+    # goes to the transfer service, the repeat leaves out what was refused
+    # (--no-reports, --no-decisions); where something does, the repeat is
+    # two commands - the packages that are not refused as the run was given,
+    # and the refused ones without what was refused of them.
+    reports_refused = [path for path, _package, source, refusal in plans
+                       if source.reports and refusal is not None and not no_reports]
+    decisions_refused = [path for path, _package, source, _refusal in plans
+                         if source.decisions and not no_decisions
+                         and _transfer_refusal(source.root_path, root, "decision") is not None]
+    refused_paths = [path for path in files if path in reports_refused or path in decisions_refused]
+    refused_for_root = [path.name for path in refused_paths]
+    through = any((source.reports and refusal is None)
+                  or (source.decisions and not no_decisions
+                      and _transfer_refusal(source.root_path, root, "decision") is None)
+                  for path, _package, source, refusal in plans if path not in refused_paths)
+    repeat_without_reports = no_reports or (bool(reports_refused) and not through)
+    repeat_without_decisions = no_decisions or (bool(decisions_refused) and not through)
+    repeat_in_two = bool(refused_paths) and through
+    given = command(options)
     with _viya_session() as session:
         host = host_of(os.environ.get("SAS_VIYA_URL") or getattr(session, "hostname", "") or "")
         server_name = resolve_server(session, server or os.environ.get("SAS_CAS_SERVER"))
         releases_to = table_spec(server_name, caslib, table_name)
+        # The site's options, read while the report that holds them is still
+        # the site's own: the import replaces it. Only when a package brings a
+        # Builder report through the transfer service - anything else
+        # overwrites no report.
+        brings_report = any(name in BUILDER_REPORTS for _path, package, source, refusal in plans
+                            if source.reports and refusal is None for name in report_labels(package))
+        if saved is None and brings_report and no_options_capture:
+            console.print("Options: not read from the report on this site (--no-options-capture). The report the "
+                          "import brings is configured from this deployment.")
+        elif saved is None and brings_report:
+            try:
+                live = _live_options(session, root)
+            except _ReportUnreadable as exc:
+                console.print(f"[red]{_plain(exc)}.[/red]", highlight=False)
+                console.print("[red]Nothing was imported.[/red] The import replaces this report, and options that "
+                              "cannot be read now are lost with it. Run the command again when the report can be "
+                              "read - or name the options yourself with --options <file> (`mdb options-save` "
+                              "writes one), or pass --no-options-capture to import without keeping them.")
+                raise typer.Exit(1)
+            if live:
+                saved = live
+                # a project id the report holds no value for (a 2.2.x site
+                # without the retired report has no embedding project in its
+                # Prompt Builder report): written back empty, it would empty
+                # the imported report's value. It is discovered instead.
+                missing = _missing_ids(live)
+                if missing and dry_run:
+                    console.print(f"Options: the report holds no value for {_plain(', '.join(missing))} - a run discovers "
+                                  "it from this deployment (which creates a missing project).", highlight=False)
+                elif missing:
+                    found = _discover_missing(session, ctx, live, missing)
+                    console.print(f"Options: the report holds no value for {_plain(', '.join(missing))} - discovered from "
+                                  "this deployment: " + (_plain(", ".join(f"{k} {v}" for k, v in found.items()) or "nothing"))
+                                  + ".", highlight=False)
+                if dry_run:
+                    console.print("Options: read from the report on this site; a run keeps them in a file and "
+                                  "writes them back after the import.")
+                else:
+                    captured_file = _keep_captured(live)
+                    given = command(captured_file)
+                    console.print(f"Options: read from the report on this site and kept in {_plain(captured_file)}; "
+                                  "they are written back after the import.", highlight=False)
+        # The compute context for the job definitions: what was given goes
+        # into every one that has the parameter; what the options that are
+        # written back name goes only into one this run creates, or one that
+        # has no _contextName (CONTEXT_RULE) - a context a site set survives
+        # the import. The content root is the folder the content goes to.
+        given_context = (compute_context or "").strip()
+        known = "" if given_context else _known_context(saved)
+        settings = _deploy_settings(root, given_context)
+        new_values = {CONTEXT_PARAMETER: known} if known else {}
+        if given_context:
+            console.print(f"Compute context: {given_context} (--compute-context) - written into _contextName of "
+                          "every job definition that has it.", markup=False, highlight=False)
+        elif known:
+            console.print(f"Compute context: {known} (the ingestion compute context of the options) - "
+                          f"{CONTEXT_RULE}.", markup=False, highlight=False)
+        # The release table is the one the package holds, where it holds one:
+        # the table then says what was imported, not what this checkout's
+        # changelog says now.
+        table_csv, table_from = None, "the changelog of this checkout"
+        for path, _package, source, _refusal in plans:
+            table_csv = source.release_table()
+            if table_csv is not None:
+                table_from = f"{RELEASE_TABLE_PATH} of {path.name}"
+                break
         if no_releases:
-            console.print(f"Release table: not reloaded (--no-releases); reports bind to {releases_to}.")
+            console.print(f"Release table: not reloaded (--no-releases); reports bind to {_plain(releases_to)}.")
         elif dry_run:
-            console.print(f"Release table: would load {caslib}.{table_name} on {server_name}.")
+            console.print(f"Release table: would load {_plain(caslib)}.{_plain(table_name)} on {_plain(server_name)} from {_plain(table_from)}.",
+                          highlight=False)
         else:
             try:
-                summary = _load_releases(session, ctx, caslib, server_name, table_name)
-                console.print(f"Release table: {caslib}.{table_name} loaded ({summary['rows']} rows, "
-                              f"current release {summary['current'] or 'none dated'}).")
-            except (RuntimeError, ValueError) as exc:
-                console.print(f"[red]Release table not loaded: {exc}[/red]")
+                summary = _load_releases(session, ctx, caslib, server_name, table_name, csv_data=table_csv)
+                console.print(f"Release table: {_plain(caslib)}.{_plain(table_name)} loaded from {_plain(table_from)} ({_plain(summary['rows'])} "
+                              f"rows, {_plain(current_words(summary))}).", highlight=False)
+            except (RuntimeError, ValueError, UnicodeDecodeError) as exc:
+                console.print(f"[red]Release table not loaded: {_plain(exc)}[/red]")
                 raise typer.Exit(1)
-        for path in files:
-            package = json.loads(path.read_text(encoding="utf-8"))
+        for path, package, source, refusal in plans:
             objects = _package_objects(package)
-            console.print(f"\n[bold]{path.name}[/bold] - {package.get('name')}: "
-                          + ", ".join(f"{kind} '{name}'" for kind, name in objects))
-            try:
-                uploaded = upload_package(session, path)
-                mapping = get_mapping(session, uploaded["id"])
-            except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
-                failures += 1
-                continue
-            mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to)
-            for change in changes:
-                console.print(f"  mapping: {change}")
-            package_uri = f"/transfer/packages/{uploaded['id']}"
-            if dry_run:
-                delete_package(session, package_uri)
-                console.print("  [cyan]dry run - nothing imported.[/cyan]")
-                continue
-            try:
-                job = start_import(session, package.get("name") or path.stem, package_uri, mapping)
-                job = wait_for_job(session, job_uri(job), timeout=timeout)
-            except RuntimeError as exc:
-                console.print(f"  [red]{exc}[/red]")
-                failures += 1
-                continue
-            state = str(job.get("state", "")).lower()
-            if state != "completed" or job.get("errorCount"):
-                console.print(f"  [red]import ended {job.get('state')} with {job.get('errorCount', 0)} error(s):[/red]")
-                for line in job_messages(session, job):
-                    console.print(f"    {line}")
-                failures += 1
-                continue
-            console.print(f"  [green]imported {len(objects)} object(s).[/green]")
-        if not failures:
-            if saved is None:
-                console.print("\nConfiguring the imported reports from this deployment (repository, projects, "
-                              "SCR endpoint, deployment type) and the site host:")
-                values = _discovered_options(session, ctx)
+            counts: dict = {}
+            for kind, _name in objects:
+                counts[kind] = counts.get(kind, 0) + 1
+            console.print(f"\n[bold]{_plain(path.name)}[/bold] - {_plain(package.get('name'))}: "
+                          + _plain(", ".join(f"{n} {kind}" for kind, n in counts.items())), highlight=False)
+            retired = legacy_objects(package)
+            if retired:
+                console.print(f"  [yellow]This package predates 2.3.0: it carries {_plain(', '.join(retired))} - the "
+                              "standalone RAG UI, which is part of the Prompt Builder now. Importing it brings "
+                              "that UI back, and mdb does not configure its report. Use the package of a "
+                              "2.3.0 checkout.[/yellow]")
+            for line in source.left_out:
+                console.print(f"  not imported: {line}", markup=False, highlight=False, soft_wrap=True)
+            for line in source.notes:
+                console.print(f"  note: {line}", style="yellow", markup=False, highlight=False, soft_wrap=True)
+            package_failed = False
+            if not source.reports and not source.decisions and not source.has_content:
+                console.print("  Nothing of this package can be imported: no report, decision, file, custom step or "
+                              "job definition of it sits below a root folder.", style="red", markup=False,
+                              highlight=False)
+                package_failed = True
+
+            # ---- the reports: through the transfer service, or not at all ----
+            names = ", ".join(item.path for item in source.reports)
+            carried = report_labels(package) if source.reports and refusal is None else {}
+            arriving.update(carried)
+            if not source.reports:
+                pass
+            elif refusal is not None:
+                console.print(f"  Reports ({names}): NOT imported - {refusal}.",
+                              style=None if no_reports else "red", markup=False, highlight=False, soft_wrap=True)
+                if not no_reports:
+                    console.print("    Import the package into the folder it was exported from, or pass "
+                                  "--no-reports to bring everything but the reports.", markup=False,
+                                  highlight=False)
+                    package_failed = True
             else:
-                console.print(f"\nRestoring builder options from {options}:")
-                values = saved
+                reduced, held = reports_package(package, source.root_uri)
+                kinds: dict = {}
+                for line in held:
+                    kinds[line.split(" ", 1)[0]] = kinds.get(line.split(" ", 1)[0], 0) + 1
+                holds = ", ".join(f"{n} {kind}" for kind, n in kinds.items())
+                console.print(f"  Reports, through the transfer service ({holds}): {names}", markup=False,
+                              highlight=False, soft_wrap=True)
+                if dry_run:
+                    _mapping, changes = rehost_mapping(mapping_preview(reduced), host, DEFAULT_TABLE, releases_to,
+                                                       library=report_caslib or None, server=server_name)
+                    for change in changes:
+                        console.print(f"    mapping: {_plain(change)}")
+                else:
+                    uploaded = None
+                    try:
+                        uploaded = upload_package_bytes(
+                            session, path.name, (json.dumps(reduced, ensure_ascii=False) + "\n").encode("utf-8"))
+                        mapping = get_mapping(session, uploaded["id"])
+                        mapping, changes = rehost_mapping(mapping, host, DEFAULT_TABLE, releases_to,
+                                                          library=report_caslib or None, server=server_name)
+                        for change in changes:
+                            console.print(f"    mapping: {_plain(change)}")
+                        job = start_import(session, package.get("name") or path.stem,
+                                           f"/transfer/packages/{uploaded['id']}", mapping)
+                        job = wait_for_job(session, job_uri(job), timeout=timeout)
+                        state = str(job.get("state", "")).lower()
+                        if state != "completed" or job.get("errorCount"):
+                            console.print(f"    [red]import ended {_plain(job.get('state'))} with "
+                                          f"{_plain(job.get('errorCount', 0))} error(s):[/red]")
+                            for line in job_messages(session, job):
+                                console.print(f"      {line}", markup=False, highlight=False, soft_wrap=True)
+                            package_failed = True
+                        else:
+                            # the job says it ran; its tasks say what became of each object
+                            unfinished = task_problems(job_tasks(session, job))
+                            if unfinished:
+                                console.print(f"    [red]the import job ended completed, and {len(unfinished)} of "
+                                              "its tasks did not:[/red]")
+                                for line in unfinished:
+                                    console.print(f"      {line}", markup=False, highlight=False, soft_wrap=True)
+                                package_failed = True
+                            else:
+                                console.print(f"    [green]imported {len(held)} object(s) through the transfer "
+                                              "service.[/green]")
+                    except RuntimeError as exc:
+                        console.print(f"    [red]{_plain(exc)}[/red]", highlight=False)
+                        package_failed = True
+                    if uploaded and uploaded.get("id"):
+                        # the uploaded part of the package is not left on the
+                        # server; the import job keeps its own record
+                        package_uri = f"/transfer/packages/{uploaded['id']}"
+                        try:
+                            delete_package(session, package_uri)
+                        except RuntimeError as exc:
+                            console.print(f"    {leftover_line(package_uri)} ({exc}).", style="yellow",
+                                          markup=False, highlight=False, soft_wrap=True)
+                    if package_failed:
+                        failed_reports.update(carried)
+
+            # ---- the decisions and their node types: through the transfer service, in a job of their own ----
+            decisions_brought = False
+            if source.decisions:
+                decisions_failed, decisions_brought = _import_decisions(session, path, package, source, root,
+                                                                        no_decisions, dry_run, timeout)
+                package_failed = package_failed or decisions_failed
+
+            # ---- everything else: in place, with the package as the source ----
+            if source.has_content:
+                console.print(f"  Files, custom steps and job definitions, in place in {root}:", markup=False,
+                              highlight=False)
+                try:
+                    # decisions that are not imported get no folder in place either
+                    result = deploy(session, source.manifest(root, decisions=decisions_brought), root, dry_run,
+                                    lambda outcome: _emit_outcome(outcome, "    "), source=source,
+                                    settings=settings, reports=False, new_values=new_values,
+                                    create_root=create or root == manifest.content_root)
+                except DeployError as exc:
+                    console.print(f"    {exc}", style="red", markup=False, highlight=False, soft_wrap=True)
+                    package_failed = True
+                else:
+                    tally = ", ".join(f"{result.count(status)} {status}"
+                                      for status in (EQUAL, UPDATED, CREATED, NOT_ATTEMPTED) if result.count(status))
+                    console.print(f"    {len(result.outcomes)} entries: {_plain(tally or 'nothing done')}"
+                                  + (f", {len(result.failed)} FAILED" if result.failed else "") + ".",
+                                  highlight=False)
+                    if result.stopped_at is not None:
+                        console.print(f"    {result.stop_line()}", style="red", markup=False, highlight=False,
+                                      soft_wrap=True)
+                    if result.unlisted:
+                        console.print(f"    Not in the package and left alone ({len(result.unlisted)}): "
+                                      + "; ".join(result.unlisted), markup=False, highlight=False, soft_wrap=True)
+                    if result.failed:
+                        package_failed = True
             if dry_run:
-                console.print("  [cyan](dry run: the reports are not imported, so this shows the live "
-                              "reports' state)[/cyan]")
-            failures += _restore_options(session, values, dry_run, host)
+                console.print("  [cyan]dry run - nothing imported.[/cyan]")
+            if package_failed:
+                failures += 1
+                not_imported.append(path.name)
+            elif not dry_run:
+                imported_any = True
+        # The Builder reports this run brings (in a dry run: would bring).
+        # Discovery configures those and no other: a report that was not
+        # imported is the site's own, with values an admin may have tuned,
+        # and a package without the report must not rewrite it.
+        targets = [name for name in BUILDER_REPORTS if name in arriving and name not in failed_reports]
+        if saved is not None and options is None and dry_run:
+            # Read from the report itself a moment ago: comparing the report
+            # with its own values would say "already matches" about nothing.
+            values = {}
+        elif saved is not None:
+            if options is not None:
+                console.print(f"\nRestoring builder options from {_plain(options)}:", highlight=False)
+            else:
+                console.print("\nWriting back the options the report held before the import"
+                              + (f" ({_plain(captured_file)}):" if captured_file else ":"), highlight=False)
+            values = _fold_saved(saved)
+        elif not targets:
+            # Nothing arrived that discovery could configure, so nothing is
+            # discovered either: discovery creates a missing project.
+            values = {}
+            console.print(f"\nNo Builder report {'would be' if dry_run else 'was'} imported - the options of "
+                          "a report on this site are left as they are.")
+        elif dry_run:
+            # Discovery writes: it creates a missing repository or project.
+            # A dry run says what would be configured and looks nothing up.
+            console.print("\nWould configure the imported report from this deployment (repository, projects, "
+                          "SCR endpoint, deployment type) and the site host.")
+            values = {name: {} for name in targets}
+        else:
+            console.print("\nConfiguring the imported report from this deployment (repository, projects, "
+                          "SCR endpoint, deployment type) and the site host:")
+            # A report nothing was discovered for still gets the site host.
+            discovered = _discovered_options(session, ctx)
+            values = {name: discovered.get(name, {}) for name in targets}
+        if dry_run:
+            if arriving:
+                console.print("  [cyan](dry run: nothing is imported, so this compares with the reports as they "
+                              "are on the site now)[/cyan]")
+            failures += _restore_options(session, values, dry_run, host, arriving, content_root=root)
+        else:
+            # A report whose package did not import is left alone: what is on
+            # the site is the report from before, and it has its values.
+            for report_name in values:
+                if report_name in failed_reports:
+                    console.print(f"[yellow]{_plain(report_name)}: its package did not import - options not "
+                                  "restored.[/yellow]")
+            failures += _restore_options(
+                session, {name: v for name, v in values.items() if name not in failed_reports}, dry_run, host,
+                content_root=root)
+        if imported_any and not no_files:
+            _write_content_rules(session, root, Path(out))
+    kept = options if options is not None else captured_file
     if failures:
+        if not dry_run:
+            # The command that finishes the job. `mdb options-restore` writes
+            # options and imports nothing, so it is only the answer when every
+            # package imported and the options were not all written.
+            # what was refused for this content root, and the options that leave it out
+            refused_what = " and ".join(word for word, refused in (("the reports", reports_refused),
+                                                                  ("the decisions", decisions_refused)) if refused)
+            refused_flags = " and ".join(flag for flag, refused in (("--no-reports", reports_refused),
+                                                                   ("--no-decisions", decisions_refused)) if refused)
+            if not refused_for_root:
+                reports_note = ""
+            elif not repeat_in_two:
+                reports_note = (f"; {refused_flags} {'is' if ' and ' not in refused_flags else 'are'} added here, "
+                                f"because {refused_what} are not imported into {root} - the line above says why")
+            else:
+                names = ", ".join(refused_for_root)
+                reports_note = (f"; two lines, because {refused_what} of {names} are not imported into {root} - the "
+                                f"line above says why: the first is the run without {names}, the second brings "
+                                f"{names} with {refused_flags}")
+            if saved is None and not arriving:
+                # no Builder report was imported, so the repeat imports and configures none either
+                again = given
+                does = ("it brings again what did not arrive in place; "
+                        + ("with --no-reports no report is imported or configured" if repeat_without_reports else
+                           "the reports are imported only where the line above allows it" if refused_for_root else
+                           "no report is imported or configured by it") + reports_note)
+            elif saved is None:
+                again, does = given, "it imports again and configures the report from this deployment" + reports_note
+            elif not_imported:
+                again = given
+                does = (f"{', '.join(not_imported)} did not import in full - this imports again and writes the "
+                        "options back; what is equal by then is left as it is, and `mdb options-restore` "
+                        "imports nothing" + reports_note)
+            else:
+                again = f"mdb options-restore --file {_shell_word(kept)}"
+                does = "every package imported - only the options are left to write"
+            console.print("\n[red]Not everything was imported and configured.[/red] Fix what is reported "
+                          "above, then run:")
+            # The command is selected and pasted, so it is one line whatever
+            # the width of the terminal, and printed as it is: wrapped, its
+            # first line is `mdb builders-import` without the options file,
+            # and read as markup a directory named `[old]` is gone from it.
+            console.print(again, markup=False, highlight=False, soft_wrap=True)
+            console.print(f"({does})", markup=False, highlight=False)
         raise typer.Exit(1)
     if dry_run:
         return
+    if captured_file is not None and captured_file.is_file():
+        # every option it holds is back in the report; a run that did not get
+        # there keeps it, and its repeat line names it
+        captured_file.unlink()
+        console.print(f"Removed {_plain(captured_file)}: every option it held is back in the report.", highlight=False)
     console.print("\n[green]Done.[/green] Next: the Content Security Policy settings are described in the "
                   "administration guide, 'Deploying the Builder UIs', step 4."
-                  + ("" if saved is not None else
-                     " Optional settings (credential domain, judge model, content root, vector stores) keep "
-                     "the package's defaults - set them in the Properties panel, or run `mdb options-restore` "
-                     "with a file saved from a tuned deployment."))
+                  + ("" if saved is not None or not targets else
+                     " Optional settings (credential domain, judge model, the decision, optimization and RAG "
+                     "switches and what they reveal) keep the package's defaults, so RAG is off until it is "
+                     "enabled - set them in the Options pane, or run `mdb options-restore` with a file saved "
+                     "from a tuned deployment."))
+
+
+def _migrate_command(name: str, node_id: str, apply: bool = False, from_id: Optional[str] = None) -> str:
+    """`mdb decision-node-migrate` for a node type of a package: an option
+    only where the node type is not the Call LLM node of the accelerator."""
+    from .viya.decision_nodes import CALL_LLM_NODE_ID, CALL_LLM_NODE_NAME
+    return ("mdb decision-node-migrate" + _given("--node-name", name, CALL_LLM_NODE_NAME)
+            + _given("--target-id", node_id, CALL_LLM_NODE_ID) + _given("--from-id", from_id)
+            + (" --apply" if apply else ""))
+
+
+@app.command("decision-node-migrate")
+def decision_node_migrate(
+    node_name: str = typer.Option(
+        "Call LLM", "--node-name", help="Name of the custom node type to move (default: Call LLM)."),
+    target_id: str = typer.Option(
+        "f9efcbb7-f57b-4a62-b56d-1a89595e2039", "--target-id",
+        help="The id the node type is to have: the id the package of the accelerator gives the Call LLM node "
+             "(default). Another one only for a test on a node type of your own."),
+    from_id: Optional[str] = typer.Option(
+        None, "--from-id",
+        help="Where the node type of --target-id is there already: move the decisions that call this node type "
+             "(its id) to it - a node type renamed by hand, or a copy. Nothing is created or renamed. The run "
+             "without it lists the node types it takes for such copies and the decisions that call them."),
+    apply: bool = typer.Option(False, "--apply", help="Do it. Without it the command only says what it would do."),
+    delete_old: bool = typer.Option(
+        False, "--delete-old",
+        help="With --apply: delete the old node type at the end - only when no version of any decision calls it "
+             "any more, and not a --from-id node type that is no copy."),
+    timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each transfer job."),
+):
+    """Give the site's Call LLM node type the id the package of the
+    accelerator gives it, and move every decision that uses it - before the
+    first `mdb builders-import` that brings the decision `Decisions/Call LLM
+    Node` to a site that created its Call LLM node with the SAS program.
+
+    WHY. The package carries the Call LLM node under one id. A site whose node
+    has another id cannot take it: a node type name is unique, so the import
+    fails for the node type and skips the decision of the package while the
+    job ends completed. A node type cannot be given another id, and a step of
+    a decision names its node type by its address only. The administration
+    guide has it in Deployment of Decisions, "The Call LLM node and its id"
+    (Deployment-of-Decisions#call-llm-node-uuid).
+
+    WHAT IT DOES. It finds the node type by its name (--node-name), stops
+    where it has the id (--target-id) already, refuses where another node type
+    has that id, and lists every decision with a version that calls the node
+    type - every version of every decision is read, the locked ones too. That
+    is a dry run, and the default. With --apply it then renames the node type
+    to "<name> (before <first 8 characters of the id>)", creates the node
+    type under the id with its name, its settings, its code and its terms,
+    and moves each decision: it is exported, and imported over itself with a
+    mapping from the old node type to the new one - which rewrites every
+    version, locked ones included, keeps the version ids and touches no
+    published module. The tasks of each import job are read, and every
+    version is read back. The old node type is kept; --delete-old deletes it
+    at the end, and only when no version of any decision calls it - a node
+    type that is deleted empties the node of every version that calls it,
+    for good.
+
+    NODE TYPES LIKE IT. Every run reads every decision and lists every
+    version that calls a node type like the one of the id: a copy - its
+    code is the code of the node type of the id (or the code a run gives
+    it) - or a node type whose name alone starts with --node-name, in any
+    case, while its code is another. Decisions left on a copy make a run
+    with --apply end with exit code 1; a name alone is a warning, since
+    another node type may be named like it. Where the node type of the id is
+    there already - the package or the Create program brought it, after the
+    old node type was renamed by hand to free its name - --from-id <its id>
+    moves the decisions of one of them to it, with a warning where that node
+    type is no copy. --delete-old then deletes a copy once no version calls
+    it, and keeps a node type that is no copy: delete that one in SAS
+    Intelligent Decisioning once you are sure.
+
+    Versions whose node lost its address - a node type deleted earlier -
+    are listed as a warning: they cannot run, and no mapping can move them.
+
+    One line per step; exit code 1 when something was refused or failed,
+    or when a run with --apply leaves decisions on a copy of the node type
+    of the id. Run it again after a failure: what was done is found done
+    (the renamed node type says how far a run got). A site without SAS
+    Intelligent Decisioning gets one line and exit code 0.
+    """
+    from .viya.decision_nodes import UUID, NodeError, migrate
+    node_name = node_name.strip()
+    target_id = target_id.strip()
+    from_id = from_id.strip() if from_id is not None else None
+    if not node_name:
+        console.print("--node-name is empty. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if not UUID.fullmatch(target_id):
+        console.print(f"--target-id {target_id!r} is no node type id: a UUID in lower case, as SAS Intelligent "
+                      "Decisioning writes one. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if from_id is not None and not UUID.fullmatch(from_id):
+        console.print(f"--from-id {from_id!r} is no node type id: a UUID in lower case, as SAS Intelligent "
+                      "Decisioning writes one. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if from_id == target_id:
+        console.print("--from-id names the node type of --target-id: the decisions are moved from another node type "
+                      "to that one. Nothing was done.", style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if delete_old and not apply:
+        console.print("--delete-old goes with --apply: a dry run deletes nothing - it says below whether a run "
+                      "would delete the old node type.", style="yellow", markup=False, highlight=False)
+
+    def say(text: str, style: Optional[str] = None) -> None:
+        console.print(text, style=style, markup=False, highlight=False, soft_wrap=True)
+
+    with _viya_session() as session:
+        try:
+            code = migrate(session, node_name, target_id, apply, delete_old, say, timeout, from_id=from_id,
+                           command=lambda node_id: _migrate_command(node_name, target_id, apply=True,
+                                                                    from_id=node_id))
+        except (NodeError, RuntimeError) as exc:
+            say(one_line(str(exc)), "red")
+            say("Stopped. Run the command again once the site answers: what was done is found done.", "red")
+            raise typer.Exit(1)
+    if code:
+        raise typer.Exit(code)
+
+
+#: The file `mdb builders-import` writes the content folder's rules to.
+CONTENT_RULES_FILE = "sas-viya-cli-content-commands.txt"
+
+
+def _write_content_rules(session, content_root: str, out_dir: Path) -> None:
+    """Write the authorization commands for the content folder, with the
+    folder's id filled in when the folder is found. Nothing is run."""
+    from .viya.content import DeployError, find_folder
+    from .viya.registry import content_rules_text
+    try:
+        folder = find_folder(session, content_root)
+    except DeployError:
+        folder = None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / CONTENT_RULES_FILE).write_text(
+        content_rules_text(content_root, (folder or {}).get("id")), encoding="utf-8")
+    console.print(f"Wrote {_plain(CONTENT_RULES_FILE)} to {_plain(out_dir)}/ - the package carries no authorization rule, "
+                  f"and these commands give the LLM Consumers group Read on {_plain(content_root)}. Review the file "
+                  "before running it.", highlight=False)
 
 
 @app.command("package-check")
 def package_check(
     files: Optional[list[str]] = typer.Argument(
-        None, help="Transfer packages to check (default: the ones this repo ships)"),
+        None, help="Transfer packages to check (default: the one this repository ships)"),
     fix: bool = typer.Option(
         False, "--fix",
-        help="Rewrite any host found to the placeholder instead of only reporting it"),
+        help="Before the check, rewrite what can be rewritten in the file: hosts to the placeholder, "
+             "per-user report states removed, the Prompt Builder option defaults to the neutral values, user "
+             "ids in createdBy / modifiedBy / userName to a neutral text"),
+    allow_missing: bool = typer.Option(
+        False, "--allow-missing",
+        help="End with exit code 0 when the package of the release is not in the checkout (not with --release) - "
+             "only while the checkout still holds a package file of an earlier release, i.e. before the commit "
+             "that adds the package"),
+    release: bool = typer.Option(
+        False, "--release",
+        help="The gate of a release: every difference is an error, also a difference in content against the "
+             "checkout. What the release procedure and the workflow of a tag run."),
 ):
-    """Check exported transfer packages do not name the environment that built them.
+    """Check the transfer package against this checkout - the gate a package
+    passes before it ships.
 
-    A VA report keeps its options inside its own content, so an export always
-    carries the exporting deployment's hostname - in `viyaHost`, in
-    `SCREndpoint`, and in the Data-Driven Content URL. Re-exporting brings all
-    of it back, however carefully the last copy was cleaned.
+    Against the content manifest (SAS-Viya-Integrations/package-manifest.yaml):
+    every entry is in the package at its path, once, and equals its source - a
+    file its repository file, a generated file what mdb generates now
+    (release.json: its kind, the release, its commit and its entries), a
+    custom step the .step file in `templates`, `ui` and `flowMetadata`, a job
+    definition its program, its form and its parameters; no object is in the
+    package that the manifest does not list; and there is no authorization
+    rule and no share.
 
-    It keeps getting through because the export stores report content as
-    `TRUE###<base64 zlib>`. Exactly one occurrence, the DDC URL lifted into
-    the substitution map, is plain text; the rest are inside the compressed
-    blob where no grep and no base64 scan will find them. A package can look
-    clean in review and still name an internal host seven times.
+    A report has no source in the repository, so it is checked by what its
+    entry names - the option labels of the current UI with their neutral
+    defaults in every copy, the CAS tables it binds, the files that are its
+    children with their hashes - and, every report, for two things an export
+    brings along: a host other than the documented placeholder or a known
+    public address, also inside the compressed report content where no search
+    finds it, and per-user report states, each a full copy of the report with
+    a user id. A decision has no source in the repository either: it has to
+    use exactly the custom node types its entry lists, each in the package
+    under the id listed there (the Call LLM node:
+    f9efcbb7-f57b-4a62-b56d-1a89595e2039), with its name and its code, and
+    every step of every version has to name its node type.
 
-    So this asks the question backwards: every host a report names must be the
-    documented placeholder or a known public address. Anything else fails,
-    whoever exported it - which is what lets this run in CI, on a machine that
-    has no .env and no idea which deployment produced the file.
+    STRICT FOR A RELEASE, LENIENT BETWEEN RELEASES. The package is exported
+    from a system and so is always the content of some earlier commit: a
+    changelog entry, a fact sheet row or a fix to a program makes it differ
+    from the checkout until someone exports again. Without --release such a
+    difference in CONTENT - a file, a custom step, a job definition, one of
+    the two generated files - is a line that starts with `drift:` and does
+    not fail. What the package must never be still fails: an object outside
+    the manifest or twice at one path, a rule, a share, a host, a per-user
+    state, a report default that is not neutral, a missing entry, a path that
+    never ships, a property or a field nothing in the checkout gives it. With
+    --release every difference is an error: that is what the release
+    procedure runs after the export, and the workflow on a tag. There the
+    commit release.json names has to be HEAD or an ancestor of it: a commit
+    the clone holds elsewhere, one it does not hold (the commit of a branch
+    that was squash-merged and deleted, which the tag's fresh clone does not
+    fetch), and one git cannot place each fail with their own sentence; a
+    text that is no commit id in full (40 hexadecimal digits, 64 in a
+    SHA-256 repository - an abbreviation is none), and a date that is not
+    the commit's, fail in both forms. So the folder of a release is deployed
+    and exported from a commit that stays in the history of what is tagged.
 
-    Run it before committing a re-exported package; `--fix` does the rewrite.
+    One line per difference, and exit code 1 when one of them fails. `--fix`
+    rewrites the hosts, the states, the option defaults and the user ids
+    (`createdBy`, `modifiedBy`, `userName`) in the file; a
+    difference in content is fixed in the folder (`mdb content-deploy`) and by
+    exporting again. While the checkout holds no package of the release the
+    command says so and ends with exit code 1, or 0 with --allow-missing.
     """
-    from .core.packages import (ALLOWED_HOSTS, PLACEHOLDER_HOST, check_package,
-                                default_packages, sanitise_package)
+    from .core.packages import (NEUTRAL_USER, PLACEHOLDER_HOST, USER_FIELDS_TEXT, named_users, neutralise_users,
+                                package_findings, reset_report_defaults, sanitise_text, strip_report_states)
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    if files:
+        targets = [Path(f) for f in files]
+    else:
+        targets = [manifest.package_path]
+        if not targets[0].is_file():
+            from .core.packages import earlier_packages_present
+            # --allow-missing is for the time before the export commit, which
+            # adds the package and removes the earlier package files: once
+            # they are gone, a missing package is a missing package
+            earlier = earlier_packages_present(ctx.repo, manifest.package_path)
+            allowed = allow_missing and not release and bool(earlier)
+            console.print(f"[{'yellow' if allowed else 'red'}]There is no {_plain(manifest.package)} in this "
+                          f"checkout: nothing was checked.[/{'yellow' if allowed else 'red'}]",
+                          highlight=False)
+            if allow_missing and not release and not earlier:
+                console.print("[red]--allow-missing is not honoured: the package files of the earlier releases are "
+                              "gone from this checkout, so the commit that adds the package of the release is in it "
+                              "- and the package has to be here.[/red]", highlight=False)
+            raise typer.Exit(0 if allowed else 1)
 
-    targets = [Path(f) for f in files] if files else default_packages(find_repo_root())
-    if not targets:
-        console.print("[yellow]No transfer packages found to check.[/yellow]")
-        raise typer.Exit(0)
-
-    findings: list = []
-    checked = reports = 0
+    total = drifted = 0
     for path in targets:
         if not path.is_file():
-            console.print(f"[red]{path}: not a file[/red]")
+            console.print(f"[red]{_plain(path)}: not a file[/red]", highlight=False)
             raise typer.Exit(2)
-        result = check_package(path)
-        checked += result.packages_checked
-        reports += result.reports_checked
-        findings.extend(result.findings)
-
-    if not findings:
-        console.print(f"[green]{checked} package(s), {reports} report(s): "
-                      f"no host named beyond the placeholder.[/green]")
-        raise typer.Exit(0)
-
-    table = Table(title="Hosts named by a transfer package")
-    for column in ("Package", "Report", "Host", "Count", "Where"):
-        table.add_column(column)
-    for f in findings:
-        table.add_row(f.package, f.report, f.host, str(f.occurrences), f.where)
-    console.print(table)
-
-    if not fix:
-        console.print(
-            f"\n[red]{len(findings)} host(s) would ship with these packages.[/red] "
-            f"Re-run with --fix to rewrite them to '{PLACEHOLDER_HOST}', or add a "
-            "genuinely public address to ALLOWED_HOSTS in mdb.core.packages.")
+        text = path.read_text(encoding="utf-8")
+        if fix:
+            before = text
+            text, reset = reset_report_defaults(text)
+            text, removed = strip_report_states(text)
+            text, fixed = sanitise_text(text, path.name)
+            for copy_name, labels in reset.items():
+                console.print(f"  {_plain(path.name)}: reset {len(labels)} option default(s) of {_plain(copy_name)}: "
+                              f"{_plain(', '.join(labels))}", highlight=False)
+            for report_name, n in sorted(removed.items()):
+                console.print(f"  {_plain(path.name)}: removed {_plain(n)} per-user report state(s) from report '{_plain(report_name)}'",
+                              highlight=False)
+            for host, n in sorted(fixed.items()):
+                console.print(f"  {_plain(path.name)}: {_plain(host)} -> {_plain(PLACEHOLDER_HOST)} ({_plain(n)})", highlight=False)
+            parsed = json.loads(text)
+            users = sorted(user for user in named_users(parsed) if user != NEUTRAL_USER)
+            neutralised = neutralise_users(parsed)
+            if neutralised:
+                # written the way `mdb package-export` writes a package
+                text = json.dumps(parsed, indent=2, ensure_ascii=False) + "\n"
+                console.print(f"  {_plain(path.name)}: user id(s) {_plain(', '.join(users))} in {_plain(USER_FIELDS_TEXT)} -> "
+                              f"{_plain(NEUTRAL_USER)} ({_plain(neutralised)})", highlight=False)
+            if text != before:
+                path.write_text(text, encoding="utf-8", newline="")
+        for difference in package_findings(json.loads(text), manifest, path.name):
+            if difference.drift and not release:
+                drifted += 1
+                console.print(f"drift: {path.name}: {difference.text}", markup=False, highlight=False,
+                              soft_wrap=True)
+            else:
+                total += 1
+                console.print(f"{path.name}: {difference.text}", markup=False, highlight=False, soft_wrap=True)
+    if total:
+        console.print(f"[red]{_plain(total)} difference(s) between the package and the checkout.[/red] A host, a "
+                      "per-user state, an option default or a user id is rewritten by --fix; anything else is put "
+                      "right in the content folder (`mdb content-deploy`) and by `mdb package-export`."
+                      + (f" ({_plain(drifted)} more line(s) are drift and do not fail.)" if drifted else ""))
         raise typer.Exit(1)
-
-    for path in targets:
-        text, fixed = sanitise_package(path)
-        if not fixed:
-            continue
-        path.write_text(text, encoding="utf-8", newline="")
-        for host, n in sorted(fixed.items()):
-            console.print(f"  {path.name}: {host} -> {PLACEHOLDER_HOST} ({n})")
-
-    after = [f for path in targets for f in check_package(path).findings]
-    if after:
-        console.print("[red]Still named after the rewrite - not fixed.[/red]")
-        raise typer.Exit(1)
-    console.print("[green]Rewritten, and re-checked clean.[/green]")
+    if drifted:
+        console.print(f"[yellow]{len(targets)} package(s): {_plain(drifted)} difference(s) in content to the checkout - "
+                      "drift, which does not fail between releases.[/yellow] The package holds the content of an "
+                      "earlier commit; everything else about it is as it has to be. For a release the folder "
+                      "is deployed and exported again, and `mdb package-check --release` has to pass.")
+        return
+    console.print(f"[green]{len(targets)} package(s): every entry of the manifest is in the package and equals "
+                  "the checkout, and nothing else is in it.[/green]")
 
 
 @app.command()
@@ -1658,31 +3708,36 @@ def register(
     if not all_ and ids:
         for folder in all_targets:
             if not (folder / MANIFEST_FILENAME).is_file():
-                console.print(f"[yellow]{folder.name}: no {MANIFEST_FILENAME} - adopt it with "
+                console.print(f"[yellow]{_plain(folder.name)}: no {_plain(MANIFEST_FILENAME)} - adopt it with "
                               "'mdb import' first, or it stays hand-maintained. Skipped.[/yellow]")
                 failed = True
     with _viya_session() as session:
         for folder in targets:
             try:
                 manifest = load_manifest(folder)
+                # Before anything is written: the options of the manifest and
+                # the options.json this uploads keep check_options_json.
+                _render_options_json(manifest, ctx.core)
+                if (folder / "options.json").is_file():
+                    check_options_file(folder / "options.json")
                 if manifest.kind not in ensured_kinds:
                     ensured = ensure_repository_and_project(session, manifest.kind, ctx.core, responsible_party)
                     for created in ensured.created:
-                        console.print(f"[green]setup: created {created}.[/green]")
+                        console.print(f"[green]setup: created {_plain(created)}.[/green]")
                     ensured_kinds.add(manifest.kind)
                 row = facts.read_row(ctx.fact_sheet(manifest.kind), manifest.model_id)
                 if row is None:
-                    console.print(f"[yellow]{manifest.model_id}: no fact-sheet row - run mdb sync first "
+                    console.print(f"[yellow]{_plain(manifest.model_id)}: no fact-sheet row - run mdb sync first "
                                   "(cost monitoring metadata will be incomplete).[/yellow]")
                 result = register_model(session, manifest, folder, row, scr, update=update)
             except Exception as exc:
-                console.print(f"[red]{folder.name}: {exc}[/red]")
+                _line(f"{folder.name}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             color = {"created": "green", "updated": "green", "skipped": "yellow"}[result.action]
             hint = "" if result.action != "skipped" else "  (already registered - use --update to replace)"
-            console.print(f"[{color}]{result.model_id}: {result.action}{hint}[/{color}] "
-                          f"{os.environ.get('SAS_VIYA_URL', '')}{result.url}")
+            console.print(f"[{color}]{_plain(result.model_id)}: {_plain(result.action)}{_plain(hint)}[/{color}] "
+                          f"{_plain(os.environ.get('SAS_VIYA_URL', ''))}{_plain(result.url)}")
     if not failed:
         console.print("Next: mdb publish <id> --wait")
     raise typer.Exit(1 if failed else 0)
@@ -1700,22 +3755,22 @@ def unregister(
     with _viya_session() as session:
         for model_id in ids:
             if not yes and not Confirm.ask(
-                f"Delete registered model '{model_id}' from SAS Model Manager?", default=False
+                f"Delete registered model '{_plain(model_id)}' from SAS Model Manager?", default=False
             ):
-                console.print(f"[yellow]{model_id}: skipped.[/yellow]")
+                console.print(f"[yellow]{_plain(model_id)}: skipped.[/yellow]")
                 continue
             try:
                 result = unregister_model(session, model_id)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             if result == "deleted":
-                console.print(f"[green]{model_id}: deleted from SAS Model Manager.[/green]")
+                console.print(f"[green]{_plain(model_id)}: deleted from SAS Model Manager.[/green]")
                 console.print("[dim]  Note: a container already published to an SCR destination is not "
                               "removed by this - delete it at the publishing destination if needed.[/dim]")
             else:
-                console.print(f"[yellow]{model_id}: not registered - nothing to delete.[/yellow]")
+                console.print(f"[yellow]{_plain(model_id)}: not registered - nothing to delete.[/yellow]")
     raise typer.Exit(1 if failed else 0)
 
 
@@ -1738,33 +3793,31 @@ def pull(
             try:
                 result = pull_model(session, model_id, ctx.defs_dir, force=force)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             defs_name = "LLM-Definitions" if result.kind == "llm" else "Embedding-Definitions"
             source = ("its stored definition.yaml" if result.had_definition
                       else "rebuilt modelConfiguration.json from the model's attributes"
                            if result.reconstructed_config else "its stored files")
-            console.print(f"[green]{model_id}: pulled to {defs_name}/{model_id}/[/green] "
-                          f"({len(result.files)} file(s); {source})")
+            console.print(f"[green]{_plain(model_id)}: pulled to {_plain(defs_name)}/{_plain(model_id)}/[/green] "
+                          f"({len(result.files)} file(s); {_plain(source)})")
             if adopt and not result.had_definition:
+                # As `mdb import` takes the folder: a refusal names the option
+                # and the repair on lines of their own, and ends with exit 1.
                 folder = ctx.defs_dir(result.kind) / model_id
-                fact_sheet = ctx.fact_sheet(result.kind)
                 try:
-                    imported = import_folder(folder, fact_sheet)
-                    imported.manifest.save(folder)
-                    for note in imported.notes:
-                        console.print(f"  [yellow]note:[/yellow] {note}")
-                    console.print(f"[green]{model_id}: wrote definition.yaml - review it, then converge with "
-                                  f"'mdb import {model_id} --apply'.[/green]")
+                    if not _import_definition(ctx, model_id, folder, apply=False, pulled=True):
+                        failed = True
                 except Exception as exc:
-                    console.print(f"[yellow]{model_id}: pulled, but could not reverse-engineer "
-                                  f"definition.yaml ({exc}) - the folder stays hand-maintained.[/yellow]")
+                    _line(f"{model_id}: pulled, but could not reverse-engineer definition.yaml "
+                          f"({one_line(str(exc))}) - the folder stays hand-maintained.", "red")
+                    failed = True
             elif result.had_definition:
                 console.print(f"  Already mdb-managed (definition.yaml pulled). Regenerate with "
-                              f"'mdb generate {model_id}'.")
+                              f"'mdb generate {_plain(model_id)}'.")
             else:
-                console.print(f"  Legacy folder. Adopt it with 'mdb import {model_id}' (or re-run with --import).")
+                console.print(f"  Legacy folder. Adopt it with 'mdb import {_plain(model_id)}' (or re-run with --import).")
     raise typer.Exit(1 if failed else 0)
 
 
@@ -1778,7 +3831,7 @@ def list_(
     from .viya.registry import list_registered_models
     kinds = (kind,) if kind in KINDS else KINDS
     if kind is not None and kind not in KINDS:
-        console.print(f"[red]--kind must be one of {', '.join(KINDS)}.[/red]")
+        console.print(f"[red]--kind must be one of {_plain(', '.join(KINDS))}.[/red]")
         raise typer.Exit(2)
     rows: list[dict] = []
     with _viya_session() as session:
@@ -1793,15 +3846,15 @@ def list_(
         return
     table = Table()
     for col in ("model_id", "kind", "provider", "type", "version", "status", "approval", "endpoint"):
-        table.add_column(col)
+        table.add_column(_plain(col))
     status_color = {"deployed": "green", "ready for validation": "yellow", "retired": "red"}
     for r in rows:
         status = r["modelStatus"] or "-"
         color = status_color.get(status, "dim")
         table.add_row(
-            r["model_id"], r["kind"], r["provider"] or "-", r["llmModelType"] or "-",
-            r["deploymentId"] or "-", f"[{color}]{status}[/{color}]",
-            r["approvalState"] or "-", r["endPoint"] or "-",
+            _plain(r["model_id"]), _plain(r["kind"]), _plain(r["provider"] or "-"), _plain(r["llmModelType"] or "-"),
+            _plain(r["deploymentId"] or "-"), f"[{color}]{_plain(status)}[/{color}]",
+            _plain(r["approvalState"] or "-"), _plain(r["endPoint"] or "-"),
         )
     console.print(table)
 
@@ -1828,20 +3881,20 @@ def publish(
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:
-                console.print(f"[red]{model_id}: {exc}[/red]")
+                _line(f"{model_id}: {one_line(str(exc))}", "red")
                 failed = True
                 continue
             if state in ("requested", "completed"):
-                console.print(f"[green]{model_id}: publish {state} on {dest}[/green]")
+                console.print(f"[green]{_plain(model_id)}: publish {_plain(state)} on {_plain(dest)}[/green]")
                 # A published model is deployed and approved; advance the lifecycle
                 # attributes if they are not already there (non-fatal).
                 try:
                     if ensure_model_lifecycle(session, model_id, "deployed", "approved"):
-                        console.print(f"[dim]{model_id}: modelStatus=deployed, approvalState=approved[/dim]")
+                        console.print(f"[dim]{_plain(model_id)}: modelStatus=deployed, approvalState=approved[/dim]")
                 except Exception as exc:
-                    console.print(f"[yellow]{model_id}: could not update lifecycle attributes ({exc}).[/yellow]")
+                    console.print(f"[yellow]{_plain(model_id)}: could not update lifecycle attributes ({_plain(one_line(str(exc)))}).[/yellow]")
             else:
-                console.print(f"[red]{model_id}: publish {state} on {dest}[/red]")
+                console.print(f"[red]{_plain(model_id)}: publish {_plain(state)} on {_plain(dest)}[/red]")
                 failed = True
     raise typer.Exit(1 if failed else 0)
 
@@ -1856,7 +3909,7 @@ def ship(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None or not (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        console.print(f"[red]{_plain(model_id)}: no managed definition found.[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     issues = validate_folder(folder, ctx.core, ctx.fact_sheet(manifest.kind))
@@ -1866,13 +3919,13 @@ def ship(
     adapters = load_adapters()
     adapter = adapters.get(manifest.provider.adapter)
     if adapter is not None:
-        result = adapter.smoke_test(manifest, _env_api_key(adapter), make_session(verify_ssl))
+        result = adapter.smoke_test(manifest, _env_api_key(adapter, manifest), make_session(verify_ssl))
         if result.skipped:
-            console.print(f"[dim]smoke test: {result.detail}[/dim]")
+            console.print(f"[dim]smoke test: {_plain(result.detail)}[/dim]")
         elif result.ok:
-            console.print(f"[green]smoke test: {result.detail}[/green]")
+            console.print(f"[green]smoke test: {_plain(result.detail)}[/green]")
         else:
-            console.print(f"[red]smoke test failed: {result.detail}[/red]")
+            console.print(f"[red]smoke test failed: {_plain(result.detail)}[/red]")
             raise typer.Exit(1)
     for stage in (
         lambda: register(ids=[model_id], all_=False, update=True),
@@ -1883,7 +3936,7 @@ def ship(
         except typer.Exit as exit_info:
             if exit_info.exit_code:
                 raise
-    console.print(f"[green]{model_id}: shipped.[/green]")
+    console.print(f"[green]{_plain(model_id)}: shipped.[/green]")
 
 
 @app.command()
@@ -1909,8 +3962,28 @@ def endpoints(
     table.add_column("kind")
     table.add_column("SCR endpoint")
     for entry in entries:
-        table.add_row(entry["model_id"], entry["kind"], entry["endpoint"])
+        table.add_row(_plain(entry["model_id"]), _plain(entry["kind"]), _plain(entry["endpoint"]))
     console.print(table)
+
+
+#: What `mdb deploy` writes unless told otherwise - the names the templates in
+#: SCR-LLM-Deployment-YAML carry.
+DEFAULT_NAMESPACE = "llm"
+DEFAULT_TLS_SECRET = "llm-tls-certs"
+DEFAULT_KEY_SECRET = "llm-api-keys"
+#: A namespace (DNS label) and a Secret (DNS subdomain) as Kubernetes takes them.
+K8S_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+#: A label value (the workload.sas.com/class of a node) and a resource
+#: quantity (100m, 384Mi, 1.5Gi, 2) as Kubernetes takes them.
+K8S_LABEL_VALUE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+K8S_QUANTITY = re.compile(r"^(\d+(\.\d+)?|\.\d+)(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$")
+INGRESS_KINDS = ("nginx", "contour")
+PULL_POLICIES = ("Always", "IfNotPresent", "Never")
+#: The cluster DNS (kube-dns) Service address of AKS - the router's resolver.
+DEFAULT_DNS = "10.0.0.10"
+ROUTER_TEMPLATE = "llm-router-contour-template.yaml"
+ROUTER_FILE = "llm-router.yaml"
 
 
 @app.command()
@@ -1921,10 +3994,84 @@ def deploy(
     host: Optional[str] = typer.Option(None, "--host", help="Ingress host (default: host of SAS_SCR_ENDPOINT)"),
     pv: bool = typer.Option(False, "--pv", help="Force the persistent-volume template variant"),
     out: str = typer.Option("deploy-yaml", "--out", help="Output directory for the rendered YAML"),
+    namespace: str = typer.Option(DEFAULT_NAMESPACE, "--namespace", help="Kubernetes namespace of the Deployment, Service and Ingress"),
+    tls_secret: str = typer.Option(DEFAULT_TLS_SECRET, "--tls-secret", help="TLS secret the Ingress serves its host with"),
+    key_secret: str = typer.Option(
+        DEFAULT_KEY_SECRET, "--key-secret",
+        help="Kubernetes Secret an auth.mode env definition reads its key from (one entry per variable name)"),
+    ingress: str = typer.Option(
+        "nginx", "--ingress",
+        help="Ingress controller of the cluster: nginx (a rewriting Ingress per model) or contour (one Ingress /llm "
+             "and an NGINX router, written to llm-router.yaml)"),
+    node: Optional[str] = typer.Option(None, "--node", help="Pin the pods to this node (nodeSelector "
+                                       "kubernetes.io/hostname)"),
+    node_class: Optional[str] = typer.Option(
+        None, "--node-class",
+        help="Tolerate the SAS node taint workload.sas.com/class=CLASS:NoSchedule instead of the app=llm "
+             "node affinity and tolerations"),
+    requests: Optional[str] = typer.Option(None, "--requests", help="CPU,MEMORY the model container requests "
+                                           "(e.g. 100m,384Mi) instead of 1000m,4000Mi"),
+    limit_memory: Optional[str] = typer.Option(None, "--limit-memory", help="Memory limit of the model container "
+                                               "(e.g. 1Gi)"),
+    pull_policy: Optional[str] = typer.Option(None, "--pull-policy", help="imagePullPolicy of the model container: "
+                                              "Always, IfNotPresent or Never"),
+    dns: Optional[str] = typer.Option(None, "--dns", help=f"Cluster DNS address the contour router resolves "
+                                      f"Services with (default {DEFAULT_DNS}, the kube-dns of AKS)"),
 ):
-    """Render ready-to-apply SCR deployment YAML (fills all template placeholders)."""
+    """Render ready-to-apply SCR deployment YAML (fills all template placeholders).
+
+    A definition with `auth.mode: env` gets its key variable from a Kubernetes
+    Secret (secretKeyRef, the key named like the variable); the command prints
+    the `kubectl create secret` line to create it - names only, never values.
+
+    With --ingress contour the deploy-<model_id>.yaml files carry no Ingress;
+    llm-router.yaml routes /llm/<model_id>/<model_id> of every model rendered
+    in the same run, so render them all (--all)."""
+    import ipaddress
     import re
     from urllib.parse import urlparse
+
+    import yaml
+    for option, value, what in (("--namespace", namespace, "namespace"), ("--tls-secret", tls_secret, "Secret"),
+                                ("--key-secret", key_secret, "Secret")):
+        pattern = K8S_LABEL if what == "namespace" else K8S_NAME
+        if not pattern.fullmatch(value) or len(value) > (63 if what == "namespace" else 253):
+            allowed = "digits and '-'" if what == "namespace" else "digits, '-' and '.'"
+            console.print(f"[red]{_plain(option)} '{_plain(value)}' is not a Kubernetes {_plain(what)} name "
+                          f"(lower-case letters, {_plain(allowed)}).[/red]")
+            raise typer.Exit(2)
+    placement_errors = []
+    if ingress not in INGRESS_KINDS:
+        placement_errors.append(f"--ingress '{ingress}' is not one of {', '.join(INGRESS_KINDS)}.")
+    if node is not None and (not K8S_NAME.fullmatch(node) or len(node) > 253):
+        placement_errors.append(f"--node '{node}' is not a Kubernetes node name (lower-case letters, digits, '-' "
+                                "and '.').")
+    if node_class is not None and (not K8S_LABEL_VALUE.fullmatch(node_class) or len(node_class) > 63):
+        placement_errors.append(f"--node-class '{node_class}' is not a Kubernetes label value (letters, digits, '-', "
+                                "'_' and '.', at most 63).")
+    request_values = None
+    if requests is not None:
+        request_values = [part.strip() for part in requests.split(",")]
+        if len(request_values) != 2 or not all(K8S_QUANTITY.fullmatch(part) for part in request_values):
+            placement_errors.append(f"--requests '{requests}' is not CPU,MEMORY as Kubernetes quantities "
+                                    "(e.g. 100m,384Mi).")
+    if limit_memory is not None and not K8S_QUANTITY.fullmatch(limit_memory):
+        placement_errors.append(f"--limit-memory '{limit_memory}' is not a Kubernetes quantity (e.g. 1Gi).")
+    if pull_policy is not None and pull_policy not in PULL_POLICIES:
+        placement_errors.append(f"--pull-policy '{pull_policy}' is not one of {', '.join(PULL_POLICIES)}.")
+    if dns is not None:
+        try:
+            ipaddress.ip_address(dns)
+        except ValueError:
+            if not K8S_NAME.fullmatch(dns) or len(dns) > 253:
+                placement_errors.append(f"--dns '{dns}' is neither an IP address nor a host name.")
+    for error in placement_errors:
+        console.print(f"[red]{_plain(error)}[/red]")
+    if placement_errors:
+        raise typer.Exit(2)
+    placement = {"node": node, "node_class": node_class, "requests": request_values, "limit_memory": limit_memory,
+                 "pull_policy": pull_policy}
+    contour = ingress == "contour"
     ctx = Context()
     registry = registry or os.environ.get("SAS_CONTAINER_REGISTRY")
     if not registry:
@@ -1938,8 +4085,11 @@ def deploy(
         console.print("[red]No ingress host - pass --host or set SAS_SCR_ENDPOINT.[/red]")
         raise typer.Exit(2)
     template_dir = ctx.repo / "SCR-LLM-Deployment-YAML"
-    out_dir = Path(out)
+    out_dir = Path(_not_empty("--out", out, "folder"))
     out_dir.mkdir(parents=True, exist_ok=True)
+    key_vars: list[str] = []  # the variables the Secret has to hold, in order
+    pv_rendered = False  # a manifest of the PV variant was written
+    routes: list[tuple] = []  # --ingress contour: (model_id, Service, port) per rendered model
     for folder in ctx.resolve_targets(ids or [], all_):
         if not (folder / MANIFEST_FILENAME).is_file():
             continue
@@ -1965,7 +4115,7 @@ def deploy(
         committed = (params.get("resource", "") if params.get("commit_resource") else "").strip()
         azure_resource = os.environ.get("AZURE_OPENAI_RESOURCE", "").strip() or committed
         if is_azure and not azure_resource:
-            console.print(f"[yellow]{manifest.model_id}: AZURE_OPENAI_RESOURCE is not set - the "
+            console.print(f"[yellow]{_plain(manifest.model_id)}: AZURE_OPENAI_RESOURCE is not set - the "
                           "rendered YAML keeps the placeholder; fill it in before applying.[/yellow]")
         lines = []
         for line in template.read_text(encoding="utf-8").splitlines():
@@ -1981,16 +4131,235 @@ def deploy(
                 # rendered manifest states the model the pod will actually serve.
                 line = line.replace("{{ AZURE-DEPLOYMENT-NAME }}", manifest.provider.model_version)
             line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
+            line = re.sub(r"^(\s*namespace:\s*)llm\s*$", lambda found: found.group(1) + namespace, line)
+            line = re.sub(r"^(\s*secretName:\s*)llm-tls-certs\s*$", lambda found: found.group(1) + tls_secret, line)
             lines.append(line)
+        env_var = manifest.provider.auth.env_var if manifest.provider.auth.mode == "env" else None
+        if env_var:
+            try:
+                lines = _with_key_secret(lines, env_var, key_secret)
+            except ValueError as exc:
+                console.print(f"[red]{_plain(manifest.model_id)}: {_plain(exc)}[/red]")
+                raise typer.Exit(1)
+            if env_var not in key_vars:
+                key_vars.append(env_var)
+        try:
+            lines = _with_placement(lines, **placement)
+        except ValueError as exc:
+            console.print(f"[red]{_plain(manifest.model_id)}: {_plain(exc)}[/red]")
+            raise typer.Exit(1)
+        if contour:
+            lines = _without_ingress(lines)
+            service = next((doc for doc in yaml.safe_load_all("\n".join(lines))
+                            if isinstance(doc, dict) and doc.get("kind") == "Service"), None)
+            if service is None:
+                console.print(f"[red]{_plain(manifest.model_id)}: the template {_plain(template.name)} has no Service "
+                              "for the router to forward to.[/red]")
+                raise typer.Exit(1)
+            routes.append((manifest.model_id, service["metadata"]["name"], service["spec"]["ports"][0]["port"]))
         target = out_dir / f"deploy-{manifest.model_id}.yaml"
         target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         variant = " (PV variant)" if use_pv and not is_azure else ""
+        pv_rendered = pv_rendered or bool(variant)
         if is_env_configured:
             variant = " (environment-configured variant)"
         elif is_azure:
             variant = " (Azure variant - connection from the container environment)"
-        console.print(f"[green]{manifest.model_id}: {target}[/green]" + variant)
-    console.print(f"Apply with: kubectl apply -f {out_dir}/deploy-<model_id>.yaml -n <namespace>")
+        if env_var:
+            variant += f" - key from Secret {key_secret}/{env_var}"
+        console.print(f"[green]{_plain(manifest.model_id)}: {_plain(target)}[/green]" + _plain(variant))
+    router = None
+    if contour and routes:
+        router = out_dir / ROUTER_FILE
+        router_lines = _router_lines((template_dir / ROUTER_TEMPLATE).read_text(encoding="utf-8"), routes,
+                                     host=host, namespace=namespace, tls_secret=tls_secret, dns=dns or DEFAULT_DNS)
+        router_lines = _with_placement(router_lines, node=node, node_class=node_class)
+        router.write_text("\n".join(router_lines) + "\n", encoding="utf-8", newline="")
+        console.print(f"[green]llm-router: {_plain(router)}[/green] (Contour Ingress /llm and the NGINX router - "
+                      f"{len(routes)} route(s))", soft_wrap=True)
+        if not all_:
+            console.print(f"[yellow]{_plain(ROUTER_FILE)} routes only the {len(routes)} model(s) rendered here "
+                          f"({_plain(', '.join(model_id for model_id, _, _ in routes))}): applying it removes the "
+                          "route of every other model the router serves. Render all models with --all.[/yellow]",
+                          soft_wrap=True)
+        if dns is None:
+            # A wrong resolver fails no apply: the router starts, and every
+            # request answers 502 once NGINX cannot look the Service up.
+            console.print(f"The router resolves the model Services with {_plain(DEFAULT_DNS)}, the kube-dns address of AKS. "
+                          "On another cluster pass --dns with its cluster DNS address: kubectl get service kube-dns "
+                          "-n kube-system -o jsonpath='{.spec.clusterIP}'", soft_wrap=True)
+    if dns is not None and not contour:
+        console.print("[yellow]--dns is the resolver of the contour router - it does not apply to --ingress "
+                      "nginx.[/yellow]")
+    if node is not None and node_class is None:
+        console.print(f"[yellow]--node pins the pods to {_plain(node)}, and the app=llm node affinity of the "
+                      "template still applies: pass --node-class <class> when that node carries no label app=llm "
+                      "(a SAS node is tainted workload.sas.com/class=<class>).[/yellow]", soft_wrap=True)
+    if key_vars:
+        # Names only: the shell fills each value from its own environment
+        # (e.g. after `set -a; . ./.env; set +a`), so no key is ever printed.
+        literals = " ".join(f'--from-literal={name}="${name}"' for name in key_vars)
+        console.print(f"Create the key Secret once per namespace - it holds {_plain(', '.join(key_vars))}, each value "
+                      "filled in by the shell from its own environment (e.g. after set -a; . ./.env; set +a):")
+        # One line however long, so it can be copied as it is.
+        console.print(f"  kubectl create secret generic {_plain(key_secret)} {_plain(literals)} -n {_plain(namespace)}",
+                      soft_wrap=True)
+        # Where the Secret exists: a merge patch adds or replaces these keys
+        # and leaves every other one. `create --dry-run=client -o yaml |
+        # kubectl apply -f -` would not: apply drops each key of its last run
+        # that this run does not list - a single-model deploy names only its own.
+        # Each value leaves the single-quoted JSON for a double-quoted "$NAME"
+        # the shell expands: "NAME":"'"$NAME"'"
+        patch = ",".join('"' + name + '":"\'"$' + name + '"\'"' for name in key_vars)
+        console.print("  Where the Secret exists already, add or replace these keys - every other key it holds stays:")
+        console.print(f"  kubectl patch secret {_plain(key_secret)} -n {_plain(namespace)} --type merge "
+                      f"-p '{{\"stringData\":{{{_plain(patch)}}}}}'", soft_wrap=True)
+    if tls_secret != DEFAULT_TLS_SECRET:
+        console.print(f"The Ingress reads the TLS Secret {_plain(tls_secret)} from the namespace {_plain(namespace)} - an "
+                      "Ingress takes no Secret of another namespace, so copy one there first (the certificate Secret "
+                      "of the SAS Viya ingress lives in the namespace of SAS Viya).", soft_wrap=True)
+    if pv_rendered and namespace != DEFAULT_NAMESPACE:
+        console.print(f"The PV variant mounts the claim llm-weights in {_plain(namespace)}: llm-weights-pvc-template.yaml "
+                      f"and stage-weights-job-template.yaml name the namespace {_plain(DEFAULT_NAMESPACE)} - change their "
+                      f"namespace: lines to {_plain(namespace)} before applying them.", soft_wrap=True)
+    console.print(f"Apply with: kubectl apply -f {_plain(out_dir)}/deploy-<model_id>.yaml -n {_plain(namespace)}",
+                  soft_wrap=True)
+    if router is not None:
+        console.print(f"and the router with: kubectl apply -f {_plain(router)} - then https://{_plain(host)}/llm/healthz "
+                      "answers ok. An NGINX Ingress of an earlier deploy stays until deleted: kubectl delete ingress "
+                      f"<model-name> -n {_plain(namespace)}.", soft_wrap=True)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    """The index after the YAML block that the key at `start` opens - its more
+    deeply indented lines and the list items written at its own indentation."""
+    depth = _indent(lines[start])
+    end = start + 1
+    while end < len(lines) and lines[end].strip() and (
+            _indent(lines[end]) > depth or (_indent(lines[end]) == depth and lines[end].lstrip().startswith("- "))):
+        end += 1
+    return end
+
+
+def _with_placement(lines: list[str], node: Optional[str] = None, node_class: Optional[str] = None,
+                    requests: Optional[list[str]] = None, limit_memory: Optional[str] = None,
+                    pull_policy: Optional[str] = None) -> list[str]:
+    """The rendered Deployment placed and sized: `node` a nodeSelector on
+    kubernetes.io/hostname; `node_class` one toleration of the SAS taint
+    workload.sas.com/class in place of the template's affinity and
+    tolerations; `requests` [cpu, memory] and `limit_memory` the container's
+    resources; `pull_policy` its imagePullPolicy. Without any of them the lines
+    come back as they are."""
+    if not any((node, node_class, requests, limit_memory, pull_policy)):
+        return lines
+    lines = list(lines)
+
+    def find(key: str) -> int:
+        found = [i for i, line in enumerate(lines) if line.strip() == key or line.strip().startswith(key + " ")]
+        if not found:
+            raise ValueError(f"the deployment template has no '{key}' line to place the pods with")
+        return found[0]
+
+    if pull_policy:
+        at = find("image:")
+        lines.insert(at + 1, " " * _indent(lines[at]) + f"imagePullPolicy: {pull_policy}")
+    if requests or limit_memory:
+        start = find("requests:")
+        end = _block_end(lines, start)
+        if requests:
+            cpu, memory = requests
+            for i in range(start + 1, end):
+                key = lines[i].strip().split(":", 1)[0]
+                if key in ("cpu", "memory"):
+                    lines[i] = lines[i][:_indent(lines[i])] + f'{key}: "{cpu if key == "cpu" else memory}"'
+        if limit_memory:
+            pad = " " * _indent(lines[start])
+            lines[end:end] = [f"{pad}limits:", f'{pad}  memory: "{limit_memory}"']
+    if node or node_class:
+        at = find("affinity:")
+        pad = " " * _indent(lines[at])
+        added = []
+        if node:
+            added += [f"{pad}nodeSelector:", f"{pad}  kubernetes.io/hostname: {node}"]
+        if node_class:
+            # The SAS node pools carry this taint; the app=llm affinity of the
+            # template would keep the pods off every one of them.
+            del lines[at:_block_end(lines, at)]
+            tolerations = find("tolerations:")
+            del lines[tolerations:_block_end(lines, tolerations)]
+            added += [f"{pad}tolerations:", f"{pad}- key: workload.sas.com/class", f"{pad}  operator: Equal",
+                      f"{pad}  value: {node_class}", f"{pad}  effect: NoSchedule"]
+        lines[at:at] = added
+    return lines
+
+
+def _without_ingress(lines: list[str]) -> list[str]:
+    """The rendered documents without the per-model Ingress (--ingress contour:
+    the router's single Ingress serves every model)."""
+    documents: list[list[str]] = [[]]
+    for line in lines:
+        if line.strip() == "---":
+            documents.append([])
+        documents[-1].append(line)
+    kept = [document for document in documents if not any(line.startswith("kind: Ingress") for line in document)]
+    return [line for document in kept for line in document]
+
+
+def _router_lines(template: str, routes: list[tuple], *, host: str, namespace: str, tls_secret: str,
+                  dns: str) -> list[str]:
+    """llm-router.yaml from its template: one `location` per (model_id,
+    Service, port) of `routes`, the cluster DNS as nginx's resolver."""
+    lines = []
+    for line in template.splitlines():
+        if "location = /llm/model_name/model_name" in line:
+            for model_id, service, port in routes:
+                lines.append(line.replace("model_name", model_id).replace("llmname", service)
+                             .replace(".llm.svc.", f".{namespace}.svc.").replace(":443/", f":{port}/"))
+            continue
+        line = line.replace("kubeDnsIp", dns)
+        line = line.replace("routedModelIds", ",".join(model_id for model_id, _, _ in routes))
+        line = re.sub(r"host$", host, line)  # 'host' value slots only, never the 'hosts:' key
+        line = re.sub(r"^(\s*namespace:\s*)llm\s*$", lambda found: found.group(1) + namespace, line)
+        line = re.sub(r"^(\s*secretName:\s*)llm-tls-certs\s*$", lambda found: found.group(1) + tls_secret, line)
+        lines.append(line)
+    return lines
+
+
+def _with_key_secret(lines: list[str], env_var: str, secret: str) -> list[str]:
+    """The Deployment's env list with `env_var` read from `secret` (key = the
+    variable's name). An entry of that name the template already declares
+    (AZURE_OPENAI_API_KEY in the Azure template) is replaced, not doubled."""
+    def entry_end(start: int) -> int:
+        depth = len(lines[start]) - len(lines[start].lstrip())
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and len(lines[end]) - len(lines[end].lstrip()) > depth:
+            end += 1
+        return end
+
+    named = [i for i, line in enumerate(lines) if line.strip() == f"- name: {env_var}"]
+    anchor = [i for i, line in enumerate(lines) if line.strip() == "- name: SAS_SCR_LOG_LEVEL_SCR_IO"]
+    if named:
+        at = named[0]
+        lines = lines[:at] + lines[entry_end(at):]
+    elif anchor:
+        at = entry_end(anchor[0])
+    else:
+        raise ValueError("the deployment template has no env list (no SAS_SCR_LOG_LEVEL_SCR_IO entry) to add "
+                         f"{env_var} to")
+    indent = lines[anchor[0]][:len(lines[anchor[0]]) - len(lines[anchor[0]].lstrip())] if anchor else "        "
+    block = [
+        f"{indent}# The provider key (auth.mode env) - from a Kubernetes Secret, never from the image.",
+        f"{indent}- name: {env_var}",
+        f"{indent}  valueFrom:",
+        f"{indent}    secretKeyRef:",
+        f"{indent}      name: {secret}",
+        f"{indent}      key: {env_var}",
+    ]
+    return lines[:at] + block + lines[at:]
 
 
 @app.command()
@@ -2018,16 +4387,17 @@ def radar(
                                        "hand-maintained scorer - no provider surface to check"))
             continue
         adapter = adapters.get(manifest.provider.adapter)
-        results.append(check_model(manifest, adapter, session, env_key_for(adapter) if adapter else None, probe))
+        results.append(check_model(manifest, adapter, session,
+                                   env_key_for(adapter, manifest) if adapter else None, probe))
     if as_json:
         console.print_json(json.dumps([r.__dict__ for r in results]))
     else:
         table = Table()
         for col in ("model_id", "provider", "status", "detail"):
-            table.add_column(col)
+            table.add_column(_plain(col))
         for r in results:
             color = {"ok": "green", "missing": "red", "not-serving": "red", "skipped": "dim"}[r.status]
-            table.add_row(r.model_id, r.provider, f"[{color}]{r.status}[/{color}]", r.detail)
+            table.add_row(_plain(r.model_id), _plain(r.provider), f"[{color}]{_plain(r.status)}[/{color}]", _plain(r.detail))
         console.print(table)
     dead = [r for r in results if r.status in ("missing", "not-serving")]
     if dead:
@@ -2055,29 +4425,37 @@ def retire(
     ctx = Context()
     folder = ctx.find_folder(model_id)
     if folder is None or not (folder / MANIFEST_FILENAME).is_file():
-        console.print(f"[red]{model_id}: no managed definition found.[/red]")
+        console.print(f"[red]{_plain(model_id)}: no managed definition found.[/red]")
         raise typer.Exit(2)
     manifest = load_manifest(folder)
     already_deprecated = "deprecated" in manifest.tags.extra
     if already_deprecated and not archive:
-        console.print(f"{model_id}: already deprecated.")
+        console.print(f"{_plain(model_id)}: already deprecated.")
         raise typer.Exit(0)
     # Tag + regenerate only when not already deprecated; an already-deprecated
     # definition passed with --archive proceeds straight to archiving.
     if already_deprecated:
-        console.print(f"{model_id}: already deprecated - archiving.")
+        console.print(f"{_plain(model_id)}: already deprecated - archiving.")
     else:
         manifest.tags.extra.append("deprecated")
-        manifest.save(folder)
-        rendered = render_assets(manifest, ctx.core)
+        # Rendered and checked before the manifest is saved: a manifest that
+        # cannot be rendered (an option that breaks check_options_json) or a
+        # generated file edited by hand is refused with nothing written, so
+        # the rerun the refusal asks for finds the definition not deprecated.
+        try:
+            rendered = render_assets(manifest, ctx.core)
+        except GenerationError as exc:
+            _line(f"{model_id}: {one_line(str(exc))}", "red")
+            raise typer.Exit(1)
         blockers = [c for c in drift.classify(folder, rendered)
                     if c.status in (drift.FileStatus.HAND_EDITED, drift.FileStatus.UNTRACKED)]
         if blockers:
             for c in blockers:
-                console.print(f"[red]{model_id}/{c.filename} was edited by hand - retire refuses to overwrite it.[/red]")
+                console.print(f"[red]{_plain(model_id)}/{_plain(c.filename)} was edited by hand - retire refuses to overwrite it.[/red]")
             console.print("Fold the edits into definition.yaml (or generation.overrides), run mdb generate --force, "
                           "then rerun mdb retire.")
             raise typer.Exit(1)
+        manifest.save(folder)
         for name, content in rendered.items():
             (folder / name).write_bytes(content)
         drift.write_lock(folder, (folder / MANIFEST_FILENAME).read_bytes(), rendered)
@@ -2085,7 +4463,7 @@ def retire(
         # --archive drops the row below.
         if not archive:
             facts.upsert_row(ctx.fact_sheet(manifest.kind), manifest)
-        console.print(f"[green]{model_id}: tagged deprecated and regenerated.[/green]")
+        console.print(f"[green]{_plain(model_id)}: tagged deprecated and regenerated.[/green]")
 
     # Also retire the registered model in SAS Model Manager, if reachable and
     # registered. Best-effort: retire stays a local tagging op when Viya is not
@@ -2095,17 +4473,20 @@ def retire(
         with create_session() as session:
             from .viya.registry import ensure_model_lifecycle
             if ensure_model_lifecycle(session, model_id, "retired", "retired"):
-                console.print(f"[green]{model_id}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
+                console.print(f"[green]{_plain(model_id)}: modelStatus=retired, approvalState=retired in SAS Model Manager.[/green]")
             else:
-                console.print(f"[dim]{model_id}: not registered (or already retired) in SAS Model Manager.[/dim]")
-    except ViyaConfigError:
-        console.print("[yellow]SAS Viya is not configured - the registered model's status was not updated.[/yellow]")
+                console.print(f"[dim]{_plain(model_id)}: not registered (or already retired) in SAS Model Manager.[/dim]")
+    except ViyaConfigError as exc:
+        # what kept mdb from SAS Viya, as the commands that need it print it: no configuration, an address
+        # mdb cannot use, a sign-in that was refused or got no answer
+        console.print(f"The registered model's status was not updated: {exc}", style="yellow", markup=False,
+                      highlight=False, soft_wrap=True)
     except Exception as exc:
-        console.print(f"[yellow]Could not update the registered model's status: {exc}[/yellow]")
+        console.print(f"[yellow]Could not update the registered model's status: {_plain(one_line(str(exc)))}[/yellow]")
 
     if not archive:
-        console.print(f"Push the deprecated flag to the registered model with: mdb register {model_id} --update")
-        console.print(f"[dim]  Move it out of the active set entirely with: mdb retire {model_id} --archive[/dim]")
+        console.print(f"Push the deprecated flag to the registered model with: mdb register {_plain(model_id)} --update")
+        console.print(f"[dim]  Move it out of the active set entirely with: mdb retire {_plain(model_id)} --archive[/dim]")
         return
 
     # Archive the definition out of the active, tracked set. _archive/ is
@@ -2120,8 +4501,8 @@ def retire(
         shutil.rmtree(destination)
     shutil.move(str(folder), str(destination))
     fact_note = ", fact-sheet row removed" if removed == "removed" else ""
-    console.print(f"[green]{model_id}: archived to _archive/{manifest.kind}/{model_id}/ (git-ignored){fact_note}.[/green]")
-    console.print(f"[dim]  No longer in the tracked repo. Recover it with 'mdb pull {model_id}' or from git history.[/dim]")
+    console.print(f"[green]{_plain(model_id)}: archived to _archive/{_plain(manifest.kind)}/{_plain(model_id)}/ (git-ignored){_plain(fact_note)}.[/green]")
+    console.print(f"[dim]  No longer in the tracked repo. Recover it with 'mdb pull {_plain(model_id)}' or from git history.[/dim]")
 
 
 @app.command()
@@ -2144,7 +4525,7 @@ def providers():
         if decision_template is not None:
             served.append("decision")
         kinds = " + ".join(served)
-        table.add_row(adapter.id, adapter.display_name, kinds, adapter.env_key_var or "-", adapter.template)
+        table.add_row(_plain(adapter.id), _plain(adapter.display_name), _plain(kinds), _plain(adapter.env_key_var or "-"), _plain(adapter.template))
     console.print(table)
     console.print("Third-party adapters: pip packages exposing the 'mdb.providers' entry-point group.")
 
@@ -2152,6 +4533,7 @@ def providers():
 provider_app = typer.Typer(
     help="Third-party provider adapter tooling.",
     context_settings={"help_option_names": ["-h", "--help"]},
+    pretty_exceptions_show_locals=False,
 )
 app.add_typer(provider_app, name="provider")
 
@@ -2165,7 +4547,7 @@ class {cls}(OpenAICompatAdapter):
             id="{name}",
             display_name="{title}",  # TODO
             provider_tag="{title}",  # TODO: the tag shown in SAS Model Manager
-            key_name="{title}",      # TODO: must match your LLM_API_KEYS KeyName
+            key_name="{key}",      # TODO: must match your LLM_API_KEYS KeyName (letters, digits, . _ -)
             env_key_var="{env}_API_KEY",
             base_url="https://api.example.com/v1",  # TODO: OpenAI-compatible base URL
             docs_url="https://example.com/keys",    # TODO
@@ -2202,9 +4584,9 @@ def provider_scaffold(name: str = typer.Argument(..., help="Adapter id (kebab-ca
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "adapter.py").write_text(
         SCAFFOLD_ADAPTER.format(name=name, cls=cls, title=snake.title().replace("_", " "),
-                                env=snake.upper()), encoding="utf-8")
-    console.print(f"[green]Scaffolded {root}/[/green] - fill in the TODOs, then:")
-    console.print(f"  pip install -e {root} && mdb provider check {name}")
+                                key=snake.title().replace("_", ""), env=snake.upper()), encoding="utf-8")
+    console.print(f"[green]Scaffolded {_plain(root)}/[/green] - fill in the TODOs, then:")
+    console.print(f"  pip install -e {_plain(root)} && mdb provider check {_plain(name)}")
 
 
 @provider_app.command("check")
@@ -2215,7 +4597,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
     adapters = load_adapters()
     adapter = adapters.get(adapter_id)
     if adapter is None:
-        console.print(f"[red]Adapter '{adapter_id}' not found (is its package installed?).[/red]")
+        console.print(f"[red]Adapter '{_plain(adapter_id)}' not found (is its package installed?).[/red]")
         raise typer.Exit(2)
     problems = []
     for attr in ("id", "display_name", "provider_tag", "template"):
@@ -2225,7 +4607,7 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         static = adapter.static_catalog(ctx.core.core_dir)
         console.print(f"static catalog: {len(static)} models")
     except Exception as exc:
-        problems.append(f"static_catalog raised: {exc}")
+        problems.append(f"static_catalog raised: {one_line(str(exc))}")
         static = []
     dummy = static[0] if static else CatalogModel(ref="dummy-model", display_name="Dummy Model")
     try:
@@ -2236,56 +4618,188 @@ def provider_check(adapter_id: str = typer.Argument(...)):
         rendered = render_assets(manifest, ctx.core)
         console.print(f"manifest builds and renders {len(rendered)} assets")
     except Exception as exc:
-        problems.append(f"build/render failed: {exc}")
+        problems.append(f"build/render failed: {one_line(str(exc))}")
     if problems:
         for problem in problems:
-            console.print(f"[red]FAIL: {problem}[/red]")
+            _line(f"FAIL: {problem}", "red")
         raise typer.Exit(1)
-    console.print(f"[green]{adapter_id}: conformance checks passed.[/green]")
+    console.print(f"[green]{_plain(adapter_id)}: conformance checks passed.[/green]")
 
 
-def _credential_manifest(manifest: Optional[str], domain: str,
-                         identity_type: str, identities: Optional[list[str]],
+def _manifest_file(manifest: Optional[str], option: str = "--manifest") -> Path:
+    """The credentials manifest a command reads or writes: --manifest as it
+    was given, else credentials.yaml. An empty value is refused, and so is a
+    folder: it was reported as no manifest, with a command to write one that
+    does not run as printed, or ended in the error of the file system."""
+    from .viya.credentials import DEFAULT_MANIFEST
+
+    path = Path(_not_empty(option, manifest, "file") or DEFAULT_MANIFEST)
+    if path.is_dir():
+        console.print(f"{path} is a folder; {option} names the credentials manifest, a file. Nothing was done.",
+                      style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return path
+
+
+def _listed_twice(identities) -> list[str]:
+    """`<type> '<id>' is listed <n> times` for every identity that is named
+    more than once: present and absent, it would be written and deleted in
+    one run, in that order; present twice, it would be written twice and
+    counted twice."""
+    listed: dict = {}
+    for who in identities:
+        listed[(who.type, who.id)] = listed.get((who.type, who.id), 0) + 1
+    return [f"{kind} '{who}' is listed {count} times" for (kind, who), count in listed.items() if count > 1]
+
+
+def _credential_manifest(manifest: Optional[str], domain: Optional[str],
+                         identity_type: Optional[str], identities: Optional[list[str]],
                          env_file: Optional[str], keys_file: Optional[str]):
-    """A manifest from a file, or one assembled from the flags."""
+    """A manifest from a file, or one assembled from the flags. `domain`,
+    `identity_type`, `env_file` and `keys_file` are the options as given,
+    None where they were not: a manifest names its own domain, and the type
+    and the source of each identity, so each of them is refused with a
+    manifest - a --domain where it names another domain than the manifest."""
     from .viya.credentials import (
-        DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
+        DEFAULT_DOMAIN, DEFAULT_MANIFEST, CredentialError, Identity, Manifest,
     )
 
+    for option, value in (("--manifest", manifest), ("--env-file", env_file), ("--keys-file", keys_file)):
+        _not_empty(option, value, "file")
     # Naming identities on the command line is the single-identity mode and
     # wins; otherwise this is a manifest run, and an unnamed manifest means
     # the conventional file in the working directory.
     if not identities:
-        path = Path(manifest or DEFAULT_MANIFEST)
+        path = _manifest_file(manifest)
         if not path.is_file():
-            console.print(f"[red]No credentials manifest at {path}.[/red]")
+            console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
+            named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
             console.print(
-                "Write one with [bold]mdb credentials-init[/bold], or equip a "
-                "single identity with [bold]--identity[/bold].")
+                f"Write one with [bold]mdb credentials-init{_plain(named)}[/bold] or "
+                f"[bold]mdb credentials-add <type> <id>{_plain(named)}[/bold], or equip a single identity "
+                "with [bold]--identity[/bold].")
             raise typer.Exit(2)
-        return Manifest.load(path)
+        try:
+            loaded = Manifest.load(path)
+        except CredentialError as exc:
+            # A manifest the loader refuses - a wrong type, a `state` that is
+            # neither present nor absent - ends every command the same way.
+            console.print(f"[red]{_plain(exc)}[/red]")
+            raise typer.Exit(2)
+        # credentials-add and -remove refuse a manifest that lists an identity twice too
+        twice = _listed_twice(loaded.identities)
+        if twice:
+            console.print(f"{path}: {'; '.join(twice)} - make each one entry by hand first. Nothing was asked of "
+                          "SAS Viya.", style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
+        if domain is not None and domain != loaded.domain:
+            # the run would go to the domain of the manifest - and remove there what it marks absent
+            console.print(f"--domain {_shell_word(domain)} is read only with --identity: {path} names the "
+                          f"credential domain {loaded.domain}. Nothing was asked of SAS Viya.", style="red",
+                          markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
+        for option, value, named in (("--env-file", env_file, "the key file"), ("--keys-file", keys_file, "the key file"),
+                                     ("--identity-type", identity_type, "the type")):
+            if value is not None:
+                # the run would write what the manifest names, not what the option does
+                console.print(f"{option} is read only with --identity: {path} names {named} of each identity. "
+                              "Nothing was asked of SAS Viya.", style="red", markup=False, highlight=False,
+                              soft_wrap=True)
+                raise typer.Exit(2)
+        return loaded
     if manifest:
         console.print("[yellow]--identity was given, so --manifest is "
                       "ignored.[/yellow]")
     source = Path(keys_file or env_file or ".env").resolve()
     try:
-        return Manifest(
-            domain=domain,
+        plan = Manifest(
+            domain=domain or DEFAULT_DOMAIN,
             source=source,
-            identities=[Identity(type=identity_type, id=who,
+            identities=[Identity(type=identity_type or "group", id=who,
                                  verbatim=bool(keys_file))
                         for who in identities],
         )
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
+    twice = _listed_twice(plan.identities)
+    if twice:
+        console.print(f"--identity: {'; '.join(twice)} - name each identity once. Nothing was asked of SAS Viya.",
+                      style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return plan
+
+
+def _not_empty(option: str, value: Optional[str], what: str) -> Optional[str]:
+    """An option as it was given, where an empty value is refused: read as
+    not given it is the default - the file or the domain a site works with -
+    so a command typed for another one with a variable of the shell that is
+    not set would read or write that."""
+    if value is not None and not value.strip():
+        console.print(f"{option} is empty - what a variable of the shell that is not set gives - and names no "
+                      f"{what}. Nothing was done.", style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
+    return value
+
+
+def _given_domain(domain: Optional[str]) -> Optional[str]:
+    """--domain as it was given, for the four credentials commands that take
+    it. An empty value is refused: a manifest written with it names no domain
+    and is read as one for agentic-ai-keys, so a command typed for another
+    domain with a variable that is not set would end in the domain a site
+    works with. A domain a line could show as another name is refused as in
+    a manifest (`check_name`)."""
+    from .viya.credentials import CredentialError, check_name
+    if _not_empty("--domain", domain, "credential domain") is not None:
+        try:
+            check_name("a credential domain", domain)
+        except CredentialError as exc:
+            console.print(f"[red]{_plain(exc)}[/red]")
+            raise typer.Exit(2)
+    return domain
+
+
+def _credential_scaffold(target: Path, env_file: str, domain: str) -> tuple[str, int]:
+    """The starter manifest for `target` as text, and how many entries its
+    source carries. Writes nothing; ends the command when the source is not
+    there. `credentials-init` and a `credentials-add` that finds no manifest
+    both start here, so the two write the same file."""
+    from .viya.credentials import (
+        CredentialError, map_entries, read_name_value_file, scaffold,
+    )
+
+    source = Path(env_file)
+    if not source.is_file():
+        console.print(f"[red]No .env at {_plain(source)}.[/red] Pass --env-file to point at one.")
+        raise typer.Exit(2)
+    try:
+        entries = map_entries(read_name_value_file(source))
+    except CredentialError as exc:
+        console.print(f"[red]{_plain(exc)}[/red]")
+        raise typer.Exit(2)
+    if not entries:
+        console.print(
+            f"[yellow]{_plain(source)} carries no recognised entries - expected provider "
+            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
+            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
+            "anyway.[/yellow]")
+    return (scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries)),
+                     as_argument=_shell_word(target.name)),
+            len(entries))
+
+
+def _write_new_manifest(target: Path, text: str) -> None:
+    if target.parent != Path(""):
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
 
 
 @app.command("credentials-init")
 def credentials_init(
-    file: str = typer.Option(
-        "credentials.yaml", "--file", "-f",
-        help="Where to write the manifest — anywhere you keep deployment records"),
+    manifest: str = typer.Option(
+        "credentials.yaml", "--manifest", "-m", "--file", "-f",
+        help="Where to write the manifest - anywhere you keep deployment records. "
+             "--file / -f is the earlier name of this option and is still read"),
     env_file: str = typer.Option(
         ".env", "--env-file", help="The .env whose entries it should point at"),
     domain: str = typer.Option(
@@ -2302,40 +4816,239 @@ def credentials_init(
     The manifest holds no secrets — only identities and the paths to the files
     that do — which is what makes it the piece you commit and review, while
     the `.env` stays git-ignored.
+
+    The manifest it writes names a placeholder identity. Replace it by hand,
+    or with `mdb credentials-add group <id>`, which also writes this manifest
+    when there is none yet.
+    """
+    domain = _given_domain(domain)
+    target = _manifest_file(manifest, "--manifest / --file")
+    _not_empty("--env-file", env_file, "file")
+    if target.exists() and not force:
+        console.print(f"[red]{_plain(target)} already exists.[/red] Pass --force to overwrite it.")
+        raise typer.Exit(2)
+    text, count = _credential_scaffold(target, env_file, domain)
+    _write_new_manifest(target, text)
+    console.print(f"[green]Wrote {_plain(target)} listing {_plain(count)} available "
+                  "entries (names only - no values).[/green]")
+    console.print("Name the groups and users to equip - by hand, or with "
+                  f"[bold]mdb credentials-add group <id> --manifest {_plain(_shell_word(target))}[/bold] - "
+                  f"then run [bold]mdb credentials-apply --manifest {_plain(_shell_word(target))} "
+                  "--dry-run[/bold].")
+
+
+def _only_names(only: Optional[list[str]]) -> Optional[tuple]:
+    """`--only A,B --only C` -> (A, B, C), each name once, in the order typed.
+    None when the option was not given at all."""
+    if not only:
+        return None
+    names: list = []
+    for chunk in only:
+        for name in chunk.split(","):
+            if name.strip() and name.strip() not in names:
+                names.append(name.strip())
+    return tuple(names)
+
+
+@app.command("credentials-add")
+def credentials_add(
+    identity_type: str = typer.Argument(..., metavar="type", help="group or user"),
+    identity: str = typer.Argument(
+        ..., metavar="id", help="Id of the group or the user, as SAS Viya spells it"),
+    only: Optional[list[str]] = typer.Option(
+        None, "--only",
+        help="Give this identity only these entries, named as the DOMAIN spells "
+             "them (OpenRouter, PGVECTOR_RAG_PW); repeat it or separate with commas"),
+    source: Optional[str] = typer.Option(
+        None, "--source",
+        help="This identity's own key file, instead of the manifest's source"),
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="The manifest to edit (default: ./credentials.yaml)"),
+    env_file: Optional[str] = typer.Option(
+        None, "--env-file",
+        help="The .env a NEW manifest points at (default: ./.env); not read "
+             "when the manifest exists"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="The credential domain a NEW manifest targets (default: "
+             "agentic-ai-keys); not read when the manifest exists"),
+):
+    """Add a group or a user to the credentials manifest.
+
+    It edits the manifest and nothing else: no call goes to SAS Viya, and the
+    credential is written by the next `mdb credentials-apply`. Only the one
+    identity is touched — comments, blank lines, order and the other
+    identities stay as they are in the file.
+
+    * No manifest yet: it is written the way `mdb credentials-init` writes
+      it, from the .env named with --env-file and for the domain named with
+      --domain, with this identity in it.
+    * The manifest still names the placeholder of `credentials-init`: the
+      identity takes the placeholder's place, and the comment
+      `credentials-init` wrote above the placeholder leaves with it.
+    * The identity is already listed: nothing is added a second time. With
+      --only or --source its entry is updated and the change is printed; an
+      identity marked `state: absent` is set back to present. An `only:`
+      list that holds a comment between its entries is not rewritten: the
+      command says so and writes nothing.
+
+    An --only name the source does not carry is refused, in the words
+    `mdb credentials-apply` uses, and nothing is written.
+
+    A GROUP credential reaches only the members of that group: name a group
+    the people who open the Prompt Builder are members of. `mdb setup` writes
+    the commands that create the group LLMConsumers for that into
+    sas-viya-cli-commands.txt.
+
+    No secret value is read into the output or written to the manifest — only
+    entry names and paths.
     """
     from .viya.credentials import (
-        CredentialError, map_entries, read_name_value_file, scaffold,
+        DEFAULT_DOMAIN, PLACEHOLDER_ID, CredentialError,
+        edit_identity, planned_entries, read_manifest_text, relative_source,
+        write_manifest_text,
     )
 
-    target = Path(file)
-    if target.exists() and not force:
-        console.print(f"[red]{target} already exists.[/red] Pass --force to overwrite it.")
+    if identity_type not in ("user", "group"):
+        console.print("[red]The type must be user or group.[/red]")
         raise typer.Exit(2)
-    source = Path(env_file)
-    if not source.is_file():
-        console.print(f"[red]No .env at {source}.[/red] Pass --env-file to point at one.")
+    domain = _given_domain(domain)
+    for option, value in (("--manifest", manifest), ("--env-file", env_file), ("--source", source)):
+        _not_empty(option, value, "file")
+    names = _only_names(only)
+    if names == ():
+        console.print("[red]--only was given without an entry name.[/red]")
+        raise typer.Exit(2)
+    path = _manifest_file(manifest)
+    created = not path.exists()
+    starter, count = "", 0
+    if created:
+        starter, count = _credential_scaffold(path, env_file or ".env", domain or DEFAULT_DOMAIN)
+    else:
+        if env_file:
+            console.print(f"[yellow]--env-file is read only when the manifest is "
+                          f"created; {_plain(path)} exists and names its own source.[/yellow]")
+        if domain:
+            console.print(f"[yellow]--domain is read only when the manifest is "
+                          f"created; {_plain(path)} exists and names its own domain.[/yellow]")
+    spelled = relative_source(Path(source).resolve(), path.resolve()) if source else None
+    try:
+        text = starter if created else read_manifest_text(path)
+        edit = edit_identity(text, path, identity_type, identity,
+                             only=names, source=spelled, state="present")
+        if edit.outcome != "unchanged" and (names or source):
+            # What was typed is checked against the source before it is
+            # written: a name that is not there would only be found at the
+            # apply, in a manifest that already looks right.
+            _, problem = planned_entries(edit.manifest, edit.identity)
+            if problem:
+                console.print(f"[red]{_plain(identity_type)} {_plain(identity)}: {_plain(problem)}[/red]")
+                console.print(f"Nothing was written to {_plain(path)}.")
+                raise typer.Exit(2)
+        if created:
+            _write_new_manifest(path, edit.text)
+        elif edit.outcome != "unchanged":
+            write_manifest_text(path, edit.text)
+    except CredentialError as exc:
+        console.print(f"[red]{_plain(exc)}[/red]")
+        raise typer.Exit(2)
+
+    who = f"{identity_type} {identity}"
+    if created:
+        console.print(f"[green]Wrote {_plain(path)} with {_plain(who)} as its identity, listing "
+                      f"{_plain(count)} available entries (names only - no values).[/green]")
+    elif edit.outcome == "added":
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)}.[/green]")
+    elif edit.outcome == "placeholder":
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)}, in place of the "
+                      f"placeholder {_plain(PLACEHOLDER_ID)}.[/green]")
+    elif edit.outcome == "updated":
+        console.print(f"[green]Updated {_plain(who)} in {_plain(path)}:[/green]")
+        for change in edit.changes:
+            console.print(f"  {_plain(change)}")
+        if any(change.startswith("state:") for change in edit.changes):
+            console.print(f"{_plain(who)} was marked for removal and is set back to "
+                          "present: the next apply writes its credential.")
+    else:
+        console.print(f"{_plain(who)} is already in {_plain(path)} - nothing was changed.")
+    if edit.outcome in ("added", "placeholder"):
+        if edit.identity.only:
+            console.print("  only: " + _plain(", ".join(edit.identity.only)))
+        if spelled:
+            console.print(f"  source: {_plain(spelled)}")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(_shell_word(path))} "
+                  "--dry-run[/bold]")
+
+
+@app.command("credentials-remove")
+def credentials_remove(
+    identity_type: str = typer.Argument(..., metavar="type", help="group or user"),
+    identity: str = typer.Argument(
+        ..., metavar="id", help="Id of the group or the user, as SAS Viya spells it"),
+    manifest: Optional[str] = typer.Option(
+        None, "--manifest", "-m",
+        help="The manifest to edit (default: ./credentials.yaml)"),
+):
+    """Mark the credential of a group or a user for removal, in the manifest.
+
+    It writes `state: absent` on that identity — adding the identity when the
+    manifest does not list it — and nothing else: no call goes to SAS Viya.
+    (In a manifest that still names the placeholder of `credentials-init`
+    the identity takes the placeholder's place, and the comment about the
+    placeholder leaves with it.)
+    The credential is deleted on the server by the next
+    `mdb credentials-apply`, which shows the action `remove` in its plan and
+    in a --dry-run.
+
+    The entry stays in the manifest on purpose. The credentials service cannot
+    list who holds a credential, so nothing is ever removed because a line is
+    missing from the file; `state: absent` is what a removal is.
+
+    `mdb credentials-add` on the same identity sets it back to present.
+    """
+    from .viya.credentials import (
+        DEFAULT_MANIFEST, PLACEHOLDER_ID, CredentialError, edit_identity,
+        read_manifest_text, write_manifest_text,
+    )
+
+    if identity_type not in ("user", "group"):
+        console.print("[red]The type must be user or group.[/red]")
+        raise typer.Exit(2)
+    path = _manifest_file(manifest)
+    if not path.is_file():
+        console.print(f"[red]No credentials manifest at {_plain(path)}.[/red]")
+        named = _given_file("--manifest", manifest, DEFAULT_MANIFEST)
+        console.print("A removal is recorded in a manifest: write one with "
+                      f"[bold]mdb credentials-init{_plain(named)}[/bold] first.")
         raise typer.Exit(2)
     try:
-        entries = map_entries(read_name_value_file(source))
+        edit = edit_identity(read_manifest_text(path), path, identity_type,
+                             identity, state="absent")
+        if edit.outcome != "unchanged":
+            write_manifest_text(path, edit.text)
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
-    if not entries:
-        console.print(
-            f"[yellow]{source} carries no recognised entries — expected provider "
-            "keys (OPENAI_API_KEY, …), <BACKEND>_RAG_USER/_PW pairs and/or "
-            "<BACKEND>_HOST/_PORT/_DB/_SSLMODE settings. Writing the manifest "
-            "anyway.[/yellow]")
 
-    if target.parent != Path(""):
-        target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        scaffold(source.resolve(), target.resolve(), domain, tuple(sorted(entries))),
-        encoding="utf-8")
-    console.print(f"[green]Wrote {target} listing {len(entries)} available "
-                  "entries (names only — no values).[/green]")
-    console.print("Name the groups and users to equip, then run "
-                  f"[bold]mdb credentials-apply --manifest {target} --dry-run[/bold].")
+    who = f"{identity_type} {identity}"
+    if edit.outcome == "unchanged":
+        console.print(f"{_plain(who)} is already marked `state: absent` in {_plain(path)} - "
+                      "nothing was changed.")
+    elif edit.outcome == "updated":
+        console.print(f"[green]Marked {_plain(who)} as `state: absent` in {_plain(path)}.[/green]")
+    elif edit.outcome == "placeholder":
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)} with `state: absent`, in "
+                      f"place of the placeholder {_plain(PLACEHOLDER_ID)}.[/green]")
+    else:
+        console.print(f"[green]Added {_plain(who)} to {_plain(path)} with `state: absent`.[/green]")
+    console.print("The credential is deleted on the server by the next "
+                  f"[bold]mdb credentials-apply --manifest {_plain(_shell_word(path))}[/bold]; this "
+                  "command did not contact the server.")
+    console.print("Keep the entry in the manifest: a line that is deleted from "
+                  "the file removes nothing.")
+    console.print(f"Next: [bold]mdb credentials-apply --manifest {_plain(_shell_word(path))} "
+                  "--dry-run[/bold]")
 
 
 @app.command("credentials-apply")
@@ -2346,16 +5059,19 @@ def credentials_apply(
     identity: Optional[list[str]] = typer.Option(
         None, "--identity", "-i",
         help="Identity id to equip; repeat for several (without --manifest)"),
-    identity_type: str = typer.Option(
-        "group", "--identity-type",
-        help="user or group. A user credential overrides a group one"),
-    domain: str = typer.Option(
-        "agentic-ai-keys", "--domain", help="Credential domain to write into"),
+    identity_type: Optional[str] = typer.Option(
+        None, "--identity-type",
+        help="user or group, with --identity (default: group); a manifest names its own. A user credential "
+             "overrides a group one"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="Credential domain to write into, with --identity (default: agentic-ai-keys); a manifest names its "
+             "own"),
     env_file: Optional[str] = typer.Option(
-        None, "--env-file", help="Source .env (default: ./.env)"),
+        None, "--env-file", help="Source .env, with --identity (default: ./.env); a manifest names its own"),
     keys_file: Optional[str] = typer.Option(
         None, "--keys-file",
-        help="Raw NAME=VALUE file stored verbatim, no provider mapping"),
+        help="Raw NAME=VALUE file stored verbatim, no provider mapping, with --identity; a manifest names its own"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Report what would change; write nothing"),
     skip_domain: bool = typer.Option(
@@ -2383,32 +5099,44 @@ def credentials_apply(
     * Creating the domain, or any GROUP credential, needs SAS administrator
       rights. A user may always (re)write their own.
 
+    A GROUP credential reaches only the members of that group, and a user's
+    own credential replaces it for that user. A run that plans or writes a
+    group credential says so once: a credential for a group the users are not
+    members of looks like a finished rollout and leaves them without a key.
+
+    An identity the manifest marks `state: absent` is planned as `remove`, and
+    its credential is deleted; one that is already gone is reported, not
+    failed. Nothing is removed because a line is missing from the manifest —
+    the service cannot list who holds a credential. `mdb credentials-add` and
+    `mdb credentials-remove` edit the manifest.
+
     Secret values are never printed, logged or written anywhere by this
     command — only entry names and counts.
     """
     from .viya.credentials import (
-        CredentialError, build_steps, ensure_domain, entries_for,
-        fetch_credential, put_credential,
+        DEFAULT_DOMAIN, DEFAULT_MANIFEST, GROUP_REACH, CredentialError, build_steps, delete_credential,
+        ensure_domain, entries_for, fetch_credential, put_credential,
     )
 
-    if identity_type not in ("user", "group"):
+    if identity_type not in (None, "user", "group"):
         console.print("[red]--identity-type must be user or group.[/red]")
         raise typer.Exit(2)
+    domain = _given_domain(domain)
     try:
         plan = _credential_manifest(manifest, domain, identity_type, identity,
                                     env_file, keys_file)
     except CredentialError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{_plain(exc)}[/red]")
         raise typer.Exit(2)
 
     with _viya_session() as session:
         try:
             steps = build_steps(plan, lambda who: fetch_credential(session, plan.domain, who))
         except CredentialError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{_plain(exc)}[/red]")
             raise typer.Exit(2)
 
-        table = Table(title=f"Credential domain '{plan.domain}'")
+        table = Table(title=f"Credential domain '{_plain(plan.domain)}'")
         table.add_column("Identity")
         table.add_column("Type")
         table.add_column("Action")
@@ -2416,19 +5144,28 @@ def credentials_apply(
         table.add_column("Currently")
         for step in steps:
             if not step.ok:
-                table.add_row(step.identity.id, step.identity.type,
-                              "[red]skip[/red]", "-", step.problem)
+                table.add_row(_plain(step.identity.id), _plain(step.identity.type),
+                              "[red]skip[/red]", "-", _plain(step.problem))
+                continue
+            if step.action == "remove":
+                # Planned from `state: absent`. What is there now decides
+                # only what the line says, never whether the step runs.
+                held = (f"written by {step.existing_by} {step.existing_at[:10]}"
+                        if step.found else "no credential - already gone")
+                table.add_row(_plain(step.identity.id), _plain(step.identity.type),
+                              "[yellow]remove[/yellow]", "-", _plain(held))
                 continue
             held = (f"written by {step.existing_by} {step.existing_at[:10]}"
                     if step.action == "replace" else "no credential")
-            table.add_row(step.identity.id, step.identity.type,
+            table.add_row(_plain(step.identity.id), _plain(step.identity.type),
                           "replace" if step.action == "replace" else "create",
-                          str(len(step.entry_names)), held)
+                          _plain(len(step.entry_names)), _plain(held))
         console.print(table)
         usable = [step for step in steps if step.ok]
-        if usable:
-            console.print("Entries: " + ", ".join(usable[0].entry_names))
-            if any(set(s.entry_names) != set(usable[0].entry_names) for s in usable):
+        writes = [step for step in usable if step.action != "remove"]
+        if writes:
+            console.print("Entries: " + _plain(", ".join(writes[0].entry_names)))
+            if any(set(s.entry_names) != set(writes[0].entry_names) for s in writes):
                 console.print("[yellow]…and different sets for some identities; "
                               "see the manifest.[/yellow]")
         broken = [step for step in steps if not step.ok]
@@ -2438,35 +5175,56 @@ def credentials_apply(
             console.print("[red]Nothing to do.[/red]")
             raise typer.Exit(1)
         if dry_run:
-            console.print("[yellow]Dry run — nothing was written. The current "
-                          "contents of an existing credential cannot be read "
-                          "back, so a replace is reported without a diff.[/yellow]")
+            if any(step.identity.type == "group" for step in writes):
+                console.print(_plain(GROUP_REACH))
+            console.print("[yellow]Dry run - nothing was written and nothing "
+                          "was removed. The current contents of an existing "
+                          "credential cannot be read back, so a replace is "
+                          "reported without a diff.[/yellow]")
             raise typer.Exit(0)
 
-        if not skip_domain:
+        # A run that only removes writes into no domain, so it creates none.
+        if writes and not skip_domain:
             try:
                 ensure_domain(session, plan.domain)
-                console.print(f"[green]Domain '{plan.domain}' is in place.[/green]")
+                console.print(f"[green]Domain '{_plain(plan.domain)}' is in place.[/green]")
             except CredentialError as exc:
-                console.print(f"[yellow]{exc}[/yellow]")
+                console.print(f"[yellow]{_plain(exc)}[/yellow]")
                 console.print("[yellow]Continuing: the domain may already exist "
                               "and only an administrator can (re)create it. Pass "
                               "--skip-domain to stop trying.[/yellow]")
 
         failed = 0
+        group_written = False
         for step in usable:
+            who = f"{step.identity.type} {step.identity.id}"
             try:
+                if step.action == "remove":
+                    if delete_credential(session, plan.domain, step.identity):
+                        console.print(f"[green]{_plain(who)}: credential removed.[/green]")
+                    else:
+                        console.print(f"{_plain(who)}: no credential to remove - it "
+                                      "is already gone.")
+                    continue
                 put_credential(session, plan.domain, step.identity,
                                entries_for(plan, step.identity))
                 console.print(
-                    f"[green]{step.identity.type} {step.identity.id}: "
-                    f"{len(step.entry_names)} entries stored.[/green]")
+                    f"[green]{_plain(who)}: {len(step.entry_names)} "
+                    f"{'entry' if len(step.entry_names) == 1 else 'entries'} stored.[/green]")
+                group_written = group_written or step.identity.type == "group"
             except CredentialError as exc:
                 failed += 1
-                console.print(f"[red]{exc}[/red]")
+                console.print(f"[red]{_plain(exc)}[/red]")
+        if group_written:
+            console.print(_plain(GROUP_REACH))
         if failed:
             raise typer.Exit(1)
-        console.print("[green]Done. Check it with `mdb credentials-report`.[/green]")
+        # the report of what this run was given: the same manifest, or the same identities of the same domain
+        report = "mdb credentials-report" + (
+            "".join(_given("--identity", who) for who in identity)
+            + _given("--identity-type", identity_type, "group") + _given("--domain", domain, DEFAULT_DOMAIN)
+            if identity else _given_file("--manifest", manifest, DEFAULT_MANIFEST))
+        console.print(f"[green]Done. Check it with `{_plain(report)}`.[/green]")
 
 
 @app.command("credentials-report")
@@ -2475,10 +5233,11 @@ def credentials_report(
         None, "--manifest", "-m", help="YAML naming the identities to ask about"),
     identity: Optional[list[str]] = typer.Option(
         None, "--identity", "-i", help="Identity id to ask about; repeat for several"),
-    identity_type: str = typer.Option(
-        "group", "--identity-type", help="user or group"),
-    domain: str = typer.Option(
-        "agentic-ai-keys", "--domain", help="Credential domain to inspect"),
+    identity_type: Optional[str] = typer.Option(
+        None, "--identity-type", help="user or group, with --identity (default: group); a manifest names its own"),
+    domain: Optional[str] = typer.Option(
+        None, "--domain",
+        help="Credential domain to inspect, with --identity (default: agentic-ai-keys); a manifest names its own"),
 ):
     """Who holds a credential in the domain, and who wrote it.
 
@@ -2489,36 +5248,75 @@ def credentials_report(
 
     It cannot show what a credential contains: a read returns metadata only,
     never the secrets and not even their names.
-    """
-    from .viya.credentials import CredentialError, fetch_credential
 
+    An identity the manifest marks `state: absent` is expected to hold none:
+    it is shown as `absent` once its credential is gone, and as
+    `STILL THERE` while the credential exists — until the next
+    `mdb credentials-apply` removes it.
+
+    Where a group holds a credential, the report says once that a group
+    credential reaches only the members of that group.
+    """
+    from .viya.credentials import DEFAULT_MANIFEST, GROUP_REACH, CredentialError, fetch_credential
+
+    domain = _given_domain(domain)
     plan = _credential_manifest(manifest, domain, identity_type, identity,
                                 None, None)
-    table = Table(title=f"Credential domain '{plan.domain}'")
+    table = Table(title=f"Credential domain '{_plain(plan.domain)}'")
     table.add_column("Identity")
     table.add_column("Type")
     table.add_column("Credential")
     table.add_column("Last written by")
     table.add_column("When")
     held = 0
+    lingering = 0
+    unread = []
+    group_held = False
     with _viya_session() as session:
         for who in plan.identities:
             try:
                 body = fetch_credential(session, plan.domain, who)
             except CredentialError as exc:
-                table.add_row(who.id, who.type, "[red]unreadable[/red]", str(exc)[:40], "")
+                # the sentence whole: the HTTP status is its last word
+                table.add_row(_plain(who.id), _plain(who.type), "[red]unreadable[/red]", _plain(exc), "")
+                unread.append(who)
                 continue
             if body is None:
-                table.add_row(who.id, who.type, "[yellow]none[/yellow]", "", "")
+                table.add_row(_plain(who.id), _plain(who.type),
+                              "[green]absent (as the manifest says)[/green]"
+                              if who.absent else "[yellow]none[/yellow]", "", "")
                 continue
-            held += 1
-            table.add_row(
-                who.id, who.type, "[green]yes[/green]",
+            written = (
                 str(body.get("modifiedBy") or body.get("createdBy") or ""),
                 str(body.get("modifiedTimeStamp") or body.get("creationTimeStamp") or "")[:19],
             )
+            if who.absent:
+                lingering += 1
+                table.add_row(_plain(who.id), _plain(who.type),
+                              "[red]STILL THERE (manifest: absent)[/red]", _plain(written[0]), _plain(written[1]))
+                continue
+            held += 1
+            group_held = group_held or who.type == "group"
+            table.add_row(_plain(who.id), _plain(who.type), "[green]yes[/green]", _plain(written[0]), _plain(written[1]))
     console.print(table)
-    console.print(f"{held} of {len(plan.identities)} named identities hold a credential.")
+    expected = [who for who in plan.identities if not who.absent]
+    # an identity whose credential could not be read is counted neither way
+    unread_present = len([who for who in unread if not who.absent])
+    unread_absent = len(unread) - unread_present
+    console.print(f"{_plain(held)} of {len(expected)} named identities hold a credential"
+                  + (f"; {_plain(unread_present)} could not be read." if unread_present else "."))
+    marked = len(plan.identities) - len(expected)
+    if marked:
+        console.print(f"{_plain(marked - lingering - unread_absent)} of {_plain(marked)} identities marked "
+                      "`state: absent` hold none"
+                      + (f"; {_plain(unread_absent)} could not be read." if unread_absent else "."))
+    if group_held:
+        # `yes` for a group is not yet a key for the people who open the Builder
+        console.print(_plain(GROUP_REACH))
+    if lingering:
+        console.print(f"[red]{_plain(lingering)} credential(s) the manifest marks absent "
+                      "are still there.[/red] Run [bold]mdb credentials-apply"
+                      f"{_plain(_given_file('--manifest', manifest, DEFAULT_MANIFEST))}[/bold] to remove them.")
     console.print("[dim]Contents are never shown: a credential read returns "
                   "metadata only, so no identity can see another's keys.[/dim]")
 
@@ -2530,7 +5328,7 @@ def schema_export():
     target = ctx.core.core_dir / "schema" / "manifest.schema.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes((json.dumps(export_json_schema(), indent=4, ensure_ascii=False) + "\n").encode("utf-8"))
-    console.print(f"[green]Wrote {target}[/green]")
+    console.print(f"[green]Wrote {_plain(target)}[/green]")
 
 
 def main() -> None:
@@ -2539,7 +5337,17 @@ def main() -> None:
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
         pass
-    app()
+    try:
+        app()
+    except Exception as exc:
+        # An exception no command caught - an answer of SAS Viya that sasctl raises as an HTTPError, its body in
+        # the text of the exception: typer printed its traceback with that text as it is, ESC included
+        # (gate-23a, review-23a). It is the traceback Python prints, through a console of mdb on stderr - without
+        # control characters, as it is otherwise, on lines of their own width -, the text of each exception on the
+        # one line that names it (traceback_text), and exit code 1.
+        _Console(stderr=True, emoji=False, highlight=False, soft_wrap=True).print(
+            traceback_text(exc), markup=False, end="")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

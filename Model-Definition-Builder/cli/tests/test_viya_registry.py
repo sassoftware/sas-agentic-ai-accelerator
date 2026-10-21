@@ -99,7 +99,7 @@ def test_model_config_reconstruction_from_attributes():
     body = {
         "name": "gemini_flash_15_8b", "description": "Gemini.", "function": "text generation",
         "targetVariable": "response", "tool": "Python 3", "tags": ["Google", "LLM", "deprecated"],
-        "modeler": "gerdaw", "expectedBenefit": "", "id": "abc", "links": [], "champion": None,
+        "modeler": "some.modeler", "expectedBenefit": "", "id": "abc", "links": [], "champion": None,
     }
     config = _model_config_from_attributes(body, "gemini_flash_15_8b.py")
     assert config["name"] == "gemini_flash_15_8b"

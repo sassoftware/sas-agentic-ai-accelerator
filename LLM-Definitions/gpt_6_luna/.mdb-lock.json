@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 2.3.0",
+    "manifest_sha256": "9a43370188d0b8b361e7bd18be33a55e643e30375e6cc3ae9c3040495b861046",
+    "files": {
+        "Model-Card.md": "5a296cbc7eebe9886ddc8b8a3c21b2f4829293666b4eaf3460c2cb464c3cb9f2",
+        "README.md": "4d39f1e23c9660799a9b34880ee79ffaadeeea79bb1d73b422a8f0a98b583491",
+        "gpt6LunaScore.py": "fcb7e28e05c44c52fd8346919d4b58a494d7d794c35ddd0b9e13974cf57f4709",
+        "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
+        "modelConfiguration.json": "d93d5ed8e36dc22cfd8365d89cc15d6427146fbc4196e27e749b14c083d057b5",
+        "options.json": "6639ad2aae14d2e61d510bc44ce0a106fd1bfe277052ceb2e7f3cd62e627fc9e",
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}

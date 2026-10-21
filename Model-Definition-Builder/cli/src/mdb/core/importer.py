@@ -66,6 +66,11 @@ def _detect_family(score_text: str) -> tuple[str, str, str]:
     if "api.anthropic.com" in score_text:
         return "llm", "anthropic_messages", "anthropic"
     if _looks_like_azure(score_text):
+        # azure_openai_env reads the deployment and the key from the
+        # container's environment; read as azure_openai_v1 it became a
+        # definition without API_KEY whose scorer asked every call for one
+        if "DEPLOYMENT_ENV = " in score_text:
+            return "llm", "azure_openai_env", "azure-foundry-env"
         return "llm", "azure_openai_v1", "azure-foundry"
     if "generativelanguage.googleapis.com" in score_text:
         return "llm", "gemini_generate", "google"
@@ -172,14 +177,30 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
                 "environment-neutral (AZURE_OPENAI_RESOURCE decides per deployment)."
             )
         if not model_version:
-            deploy_match = re.search(r"deploymentName\s*=\s*'([^']+)'", score_text)
+            # azure_openai_env names its default defaultDeploymentName
+            deploy_match = re.search(r"[dD]eploymentName\s*=\s*'([^']+)'", score_text)
             model_version = deploy_match.group(1) if deploy_match else model_id
         notes.append("Azure definitions are converged onto the GA v1 endpoint - the generated scorer "
                      "differs from legacy dated-api-version scripts by design.")
 
-    # Options: keep the folder's defaults; API_KEY becomes auth.key_name
-    api_key_entry = options_doc.pop("API_KEY", None)
-    key_name = (api_key_entry or {}).get("default")
+    # Options: keep the folder's defaults; API_KEY becomes auth.key_name.
+    # What is read of options.json - the default of each option, the key name
+    # of API_KEY where the file has an API_KEY - keeps check_options_json, so
+    # a folder that breaks it is refused with the line naming the option. An
+    # API_KEY whose default is no text or an empty one (0, false, "", null)
+    # is refused like one whose default is 5: taken as "no key", it made the
+    # definition auth.mode none, and the regenerated options.json lost the
+    # API_KEY the score code still read.
+    from .generator import check_options_json
+    if not isinstance(options_doc, dict):
+        check_options_json(options_doc)
+    key_name = None
+    if "API_KEY" in options_doc:
+        api_key_entry = options_doc.pop("API_KEY")
+        read_key = ({"default": api_key_entry["default"]}
+                    if isinstance(api_key_entry, dict) and "default" in api_key_entry else api_key_entry)
+        check_options_json({"API_KEY": read_key})
+        key_name = read_key["default"]
     if key_name in ("ProviderName", "Provider"):
         # The base template's placeholder leaked into some folders (PR #6 finding);
         # normalize to the provider's LLM_API_KEYS KeyName
@@ -198,7 +219,9 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             continue
         if name not in CORE_OPTIONS:
             notes.append(f"Option '{name}' is outside the core set - verify it against the vocabulary.")
-        option_specs[name] = OptionSpec(default=meta.get("default", 1))
+        read = {"default": meta.get("default", 1)} if isinstance(meta, dict) else meta
+        check_options_json({name: read})
+        option_specs[name] = OptionSpec(default=read["default"])
 
     row = read_row(fact_sheet, model_id) or {}
     if not row:
@@ -243,6 +266,31 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             )
             break
 
+    # A folder generated in auth.mode env has no API_KEY option: its score code
+    # names the container variable it reads the key from (partials/
+    # _env_api_key.py.j2). Without this the import would make it mode none and
+    # regenerate a scorer that reads options['API_KEY'], which no call holds.
+    auth = AuthBlock(mode="api_key", key_name=key_name) if key_name else AuthBlock(mode="none")
+    from .generator import KEY_OPTION_TEMPLATES
+    env_match = re.search(r"^API_KEY_ENV = '([A-Z_][A-Z0-9_]*)'$", score_text, re.MULTILINE)
+    if (not key_name and env_match and template in KEY_OPTION_TEMPLATES
+            and "DEPLOYMENT_ENV = " not in score_text):
+        auth = AuthBlock(mode="env", env_var=env_match.group(1))
+        notes.append(f"The score code reads the key from the container environment variable "
+                     f"{env_match.group(1)} - auth.mode env, no API_KEY option.")
+    # A folder of a template that sends the key a call carries, with no API_KEY
+    # in its options.json and no variable in its score code: as auth.mode none
+    # it would give a scorer that refuses every call for an option the model
+    # does not declare (generator.key_env_var refuses that definition). A
+    # scorer that stays hand-maintained (extra_overrides) is not regenerated.
+    if auth.mode == "none" and template in KEY_OPTION_TEMPLATES and not extra_overrides:
+        from .generator import NO_API_KEY_FAILURE, OptionRuleError
+        raise OptionRuleError(
+            f"options.json has no option API_KEY, and the score template '{template}' sends the provider key a call "
+            f"carries in it - every call would fail with '{NO_API_KEY_FAILURE}' Add \"API_KEY\": {{\"default\": "
+            "\"<entry>\"} to options.json, <entry> the name of the entry of the credential domain that holds the key "
+            "(such as OpenAI).")
+
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(
         kind=kind,
@@ -253,7 +301,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             model_version=model_version or model_id,
             endpoint=endpoint,
             params=params,
-            auth=AuthBlock(mode="api_key", key_name=key_name) if key_name else AuthBlock(mode="none"),
+            auth=auth,
         ),
         runtime=RuntimeBlock(template=template, requirements_profile=requirements_profile),
         options=option_specs,

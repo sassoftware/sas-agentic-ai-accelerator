@@ -167,11 +167,10 @@ def test_shipped_decision_cards_carry_their_measurements(repo_root):
 def test_sas_fact_sheet_loader_knows_the_decision_sheet(repo_root):
     loader = (repo_root / "SAS-Viya-Integrations" / "Logging-Monitoring" / "Load-Fact-Sheets.sas").read_text(encoding="utf-8")
     assert "decision_fact_sheet.csv" in loader
-    for statement in ("dropTable casData='DECISION_FACT_SHEET' quiet;",
-                      "load data=work._lfs_decision_fact_sheet casOut='DECISION_FACT_SHEET';",
-                      "promote casData='DECISION_FACT_SHEET' casOut='DECISION_FACT_SHEET';",
-                      "save casData='DECISION_FACT_SHEET' casOut='DECISION_FACT_SHEET' replace;"):
-        assert statement in loader
+    # the sheet is read and counted beside its table, and the counted upload takes the place of the table
+    for statement in ("%_lfs_read(decision_fact_sheet.csv, _lfs_decision_fact_sheet, DECISION_FACT_SHEET);\n"
+                      "%_lfs_swap(DECISION_FACT_SHEET);\n",):
+        assert statement in loader.replace("\r\n", "\n")
 
 
 @pytest.mark.parametrize("score, expected", [

@@ -9,13 +9,48 @@ Every prompt template checks for an environment variable called *LLMCONTAINERPAT
 
 ## Prompt templates with the included LLM call
 
-If a prompt was manifested with the *Include the LLM call in the manifested model* option, the generated Python model performs the LLM call itself using the *requests* package — a *requirements.json* is stored with the model so publishing destinations that build a Python environment install it. In addition to *LLMCONTAINERPATH*, these models check three more environment variables:
+If a prompt was manifested with the *Include the LLM call in the manifested model* option, the generated Python model performs the LLM call itself using the *requests* package — a *requirements.json* is stored with the model so publishing destinations that build a Python environment install it. A manifested **decision template** always calls its decision model this way. In addition to *LLMCONTAINERPATH*, these models check three more environment variables:
 
-- *LLMCONTAINERCABUNDLE*: path to the CA bundle used to verify the TLS connection to the LLM container. It defaults to */security/trustedcerts.pem*, which SAS Viya mounts into its pods, so calls to an ingress secured by the deployment's own CA verify out of the box.
-- *LLMCONTAINERSSLVERIFY*: set to *false* to disable TLS verification entirely (not recommended).
+- *LLMCONTAINERCABUNDLE*: path to the CA bundle used to verify the TLS connection to the LLM container. It defaults to */security/trustedcerts.pem*. SAS Viya mounts that file into the pods of CAS and of the compute servers, so a model that runs there — the in-app test of SAS Intelligent Decisioning, a SAS Studio session — verifies an ingress secured by the deployment's own CA without any setting. The file is **not** in every container that runs Python: where SAS Micro Analytic Service runs Python in a separate runner container, it is missing there — see [Publishing to SAS Micro Analytic Service: the certificate bundle](#mas-certificate-bundle). When the file does not exist, the model verifies against the public certificate authorities that come with *requests*, and a certificate signed by the deployment's own CA is then refused.
+- *LLMCONTAINERSSLVERIFY*: switches TLS verification on or off for this destination, whatever the model was manifested with. *false*, *no* or *0* switches it off; *true*, *yes* or *1* switches it on. Upper and lower case are the same. When the variable is not set, or holds any other word, the model does what was written into it when it was manifested — see [the default written at manifest time](#tls-default-at-manifest-time).
 - *LLMCONTAINERTIMEOUT*: timeout for the LLM call in seconds (default 600).
 
-If the LLM call fails (network issue, TLS failure or a non-200 response), the model does not raise an error — the failure message is returned in the *response* output, the parsed output variables keep their default values and *parse_status* returns 0.
+If the LLM call fails (network issue, TLS failure or a non-200 response), the model does not raise an error — the failure message is returned in the *response* output, the parsed output variables keep their default values and *parse_status* returns 0. A decision template returns the message in its *answer* output, and its other outputs stay empty.
+
+### The default written at manifest time {#tls-default-at-manifest-time}
+
+The Options pane of the Prompt Builder has the checkbox **Verify TLS certificates in manifested models** (`sslVerify`, ticked by default — see [the options of the Prompt Builder](./Setup-Additional-UIs.md#configuration-properties-panel)). Its state is written into the score code of every model manifested from then on:
+
+| The option when the model was manifested | *LLMCONTAINERSSLVERIFY* on the destination | The model |
+| --- | --- | --- |
+| ticked | not set, or another word | verifies — against the bundle, or against the public CAs when the bundle file is missing |
+| ticked | *false*, *no*, *0* | does not verify |
+| not ticked | not set, or another word | does not verify |
+| not ticked | *true*, *yes*, *1* | verifies, as in the first row |
+
+Three things follow from that:
+
+- The option is a default for **new** manifests. A model that is already manifested keeps what it was manifested with until it is manifested again; changing the option changes no registered model and no published one.
+- The environment variable wins in both directions, so a model manifested with verification off can be made to verify on one destination, and the reverse, without manifesting it again.
+- With the option ticked, a model behaves as a model manifested before release 2.3.0 does.
+
+The option reaches the models that make an HTTPS call themselves: a prompt template with the included LLM call, a decision template, and the retrieval model of a RAG setup, which reads two variables of its own — see [RAG Ingestion and Retrieval](./RAG-Ingestion-and-Retrieval.md#tls-verification-in-the-retrieval-model). A retrieval model registered with the SAS Studio custom step *RAG - Register Setup* is not manifested in the Prompt Builder and does not get the option: the step has a checkbox of its own, **Verify TLS certificates in the registered retrieval model**, which writes the same default — see [the checkbox of the custom step](./RAG-Ingestion-and-Retrieval.md#tls-register-setup-step). The option does not change a prompt manifested for the *Call LLM* node, where the node makes the call, nor anything the Prompt Builder page does in the browser, nor the ingestion job of a RAG setup.
+
+### Finding the models that do not verify {#finding-the-models-that-do-not-verify}
+
+A model manifested while the option was not ticked carries the tag **TLS-Verification-Off** in SAS Model Manager: a decision template, the retrieval model of a RAG setup, and a prompt template manifested with the included LLM call. The step that manifests it shows a warning before the button is clicked — *Finalize* for a decision template, *Finalize* for a prompt only while **Include the LLM call in the manifested model** is ticked, and *Manifest setup* for a RAG setup. A retrieval model registered with the custom step *RAG - Register Setup* while its checkbox **Verify TLS certificates in the registered retrieval model** is not ticked carries the same tag, and the log of the step ends with WARNING lines that say so. A prompt manifested for the *Call LLM* node makes no call itself, so it gets neither the warning nor the tag. The tag stands with the model's other tags, such as *LLM-Call-Included*. To list every such model, filter the models on that tag in SAS Model Manager, or ask the model repository:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://<sas-viya-host>/modelRepository/models?filter=contains(tags,'TLS-Verification-Off')&limit=100" \
+  | jq -r '.items[] | [.name, .projectName, .modifiedBy] | @tsv'
+```
+
+The tag says what the model was manifested with, not what a destination does: *LLMCONTAINERSSLVERIFY=true* on a destination makes a tagged model verify there, and *LLMCONTAINERSSLVERIFY=false* stops an untagged one from verifying. Manifesting the model again with the option ticked removes the tag, on all three kinds; running the custom step again with its checkbox ticked removes it from a model the step registered.
+
+The tag follows the score code the model holds, with one case the page cannot decide. A manifest whose score code SAS Model Manager refused is reported as failed and leaves the tags as they were. When the upload of the score code gets no answer at all — the connection drops, or an ingress answers with its error page — SAS Model Manager may have stored the code all the same; the manifest then says beside its button that *it is not known whether* the score code was stored, leaves the tags as they were and asks for the manifest to be repeated. Until a manifest of that model completes, its tag may not match its score code, in either direction; the line in the score code named below is what counts. The tags are the first thing written once the score code is stored, before `requirements.json` and the attributes of the model, so a manifest of a prompt or decision template that stops at a later request — *The manifest was not completed* beside its button — leaves the tags of the score code that is stored. When the tags could not be updated, the manifest says so beside its button in both directions — the tag could not be written to a model that does not verify, or could not be taken away from one that does — so that it can be put right in SAS Model Manager.
+
+To read the setting in the score code itself, open the model in SAS Model Manager and look for one line. The score code of a prompt template with the included LLM call and of a decision template holds `sslVerifyDefault = True` or `sslVerifyDefault = False`. The `retrieve_context.py` of a retrieval model holds `SSL_VERIFY = True` or `SSL_VERIFY = False` in its MANIFEST block. A prompt manifested for the *Call LLM* node holds neither line. Nothing else in the score code of a prompt or decision template carries the name `sslVerifyDefault`: the Prompt Builder refuses a variable, an output variable or a question of that name.
 
 ## Kubernetes vs Azure Container Apps/Instances
 
@@ -52,3 +87,204 @@ target:
   name: sas-microanalytic-score
   version: v1
 ```
+
+This transformer adds the variable to the first container of the pod, the main container *sas-microanalytic-score*. Every prompt template reads *LLMCONTAINERPATH* in its Python score code, with or without the included LLM call: a prompt manifested for the *Call LLM* node builds the URL it hands to the node in that code too. Where MAS runs Python in a separate runner container, the score code does not run in the first container — set the variable on the runner as well, as [the variable and the Python runner](#the-variable-and-the-python-runner) below shows.
+
+## The Call LLM node and its id {#call-llm-node-uuid}
+
+A decision references a custom node by its **id**, not by its name: the step of the node holds the address `/decisions/decisionNodeTypes/<id>`, and the code of the node is read from that address every time the decision is tested, its code is generated or it is published. A transfer package of a folder with a decision carries the node it uses, with its id, and an import matches the node by that id alone. Where every site creates the node under an id of its own, a decision built on one site does not find its node on another.
+
+The accelerator therefore ships the *Call LLM* node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`. The content folder holds the decision `Decisions/Call LLM Node`, which uses only this node and is not meant to be published: the transfer package carries the node under that id as its dependency, and a decision built with it on one site imports on another without a mapping.
+
+### A new site
+
+- **The import of the package creates the node** under the id, with the content of the release: `mdb builders-import` imports the decision and the node type in a transfer job of their own - see [Install or upgrade with the transfer package](./Setup-Additional-UIs.md#the-transfer-package). On a site that has the node under that id already, the import overwrites it in place - its code and its terms become the ones of the release, and local edits of them are gone -, also where the node was made on the site by the program below or by the migration.
+- **Or run `Create-Custom-SAS-Intelligent-Decisioning-Node.sas`** (folder [`SAS-Intelligent-Decisioning-Integration`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration)). It creates the node under the id. It asks for the id first and creates nothing where the node is there already: the log then names `Update-Custom-SAS-Intelligent-Decisioning-Node.sas`, which brings the content of the node to the one of the release. It creates nothing either where a node named *Call LLM* is there under another id, and its ERROR lines name the migration below. It never sends the request that creates a node for an id that is taken: SAS Viya answers such a request with an error, and renames the node of that id to the name of the request before it does.
+
+`Update-Custom-SAS-Intelligent-Decisioning-Node.sas` looks for the node under the id first. Where no node is there, it updates the node named *Call LLM* and says in a NOTE that the node of the site is not under the shipped id yet.
+
+### A site that has the node under another id
+
+A site that created the node with the program of an earlier release has it under an id of its own. A node cannot be given another id, and node names are unique, so the node of the release cannot be created beside it. Run the migration once, before the import:
+
+```bash
+mdb decision-node-migrate           # dry run: the node and every decision version that calls it - changes nothing
+mdb decision-node-migrate --apply
+mdb builders-import
+```
+
+With `--apply` the command:
+
+1. renames the node of the site to `Call LLM (before f9efcbb7)`, so that its name is free;
+2. creates `Call LLM` under the shipped id, with the settings, the code and the terms of the node of the site;
+3. moves every decision that calls the old node to the new one, by a transfer re-import of the decision over itself with a mapping of the node from the old id to the new one. This rewrites **every version** of the decision, the locked ones included, and keeps the ids of the versions. An edit in SAS Intelligent Decisioning, or a change over REST, reaches the current version only: a locked version cannot be changed any other way. The tasks of each import job are read, and every version is read back;
+4. keeps the old node. `--delete-old` deletes it at the end, and only when a fresh look finds no version of any decision that calls it.
+
+Published modules - in SAS Micro Analytic Service or in a SAS Container Runtime image - hold the compiled code of the decision and are not affected: they keep running as they are. A moved decision uses the new node from its next test, code generation or publish on. A run that stopped is run again: what was done is found done.
+
+**A node renamed by hand.** A site that renamed its old node itself, to free the name, and then imported the package or ran the Create program has the node under the shipped id and its decisions still on the old one. `mdb decision-node-migrate` reads every decision there as well and lists every version that calls a node like *Call LLM* - one with the code of the node under the shipped id, or, as a warning, one whose name starts with *Call LLM* and whose code is another. Check that such a node is an older *Call LLM* before you move its decisions. `mdb decision-node-migrate --from-id <id of the old node> --apply` moves the decisions of that node to the one under the shipped id; it creates and renames nothing. With `--delete-old` it deletes that node only when it is a copy. A node with other code is kept, and the run says so: delete it in SAS Intelligent Decisioning once you are sure.
+
+**Never delete a node that a decision uses.** SAS Viya does not refuse the delete. It removes the reference to the node from every version of every decision that uses it, the locked ones included: their tests fail with *customObjectURI is null*, and their code cannot be generated. Creating a node under the old id again does not bring the reference back - there is no undo. The dry run of the migration lists such versions as a warning. A transfer re-import of each decision with a mapping to an existing node is the only repair.
+
+[Moving the Call LLM node to its id](./Model-Definition-Builder.md#decision-node-migrate) lists the options of the command.
+
+### Importing the package on such a site
+
+`mdb builders-import` asks the site before it uploads anything of the decisions. Where a node named *Call LLM* is there under another id, it leaves the decision and the node out, imports the rest of the package, and ends with exit code 1 and the migration command; `--no-decisions` leaves them out on purpose. A transfer import of the package by other means - in SAS Environment Manager, or with the transfer service directly - goes ahead: the task of the node fails with *Decision node type names must be unique* (409), and the decision of the same package is skipped without a task of its own, while the import job still ends `completed`. Read the tasks of such a job, not only its state, and run the migration before the import.
+
+Measured on 2026-10-20 on the test system with nodes and decisions of a test, not with *Call LLM*: the creation under a chosen id, the rename that a create request for a taken id caused, the delete that cleared the reference in a locked version and the re-import that repaired it, the unaffected MAS module, and the failed import with its skipped decision. A decision moved by the re-import was then checked in SAS Intelligent Decisioning: its current and its locked version ran with the new node. Measured on 2026-10-21: the import of a package over a node of the same id whose content was made on the site - as the Create program and the migration make it - completed, gave the node the code and the terms of the package, and the decision of the package ran with it.
+
+## Publishing to SAS Micro Analytic Service: the certificate bundle {#mas-certificate-bundle}
+
+A decision that works in the in-app test of SAS Intelligent Decisioning can fail with a certificate error once it is published to SAS Micro Analytic Service (MAS). The in-app test runs in CAS, where the CA bundle is mounted. MAS can run Python in a container where it is not.
+
+What follows was measured on one deployment (SAS Viya on Kubernetes, namespace `viya4`). Container and volume names can differ on yours, so the steps start with a command that shows what you have.
+
+### What the deployment looked like
+
+- The deployment `sas-microanalytic-score` has two containers: `sas-microanalytic-score` and a Python runner, there named `viya4-mas-python-runner` — the name carries the deployment's name prefix.
+- The pod has a volume named `security`, an `emptyDir` that the init container `sas-certframe` fills. It holds the trust bundle `trustedcerts.pem`, and more than that: the private key directory of the pod, `private`, is in the same volume.
+- The main container mounts the whole volume at `/security`, and parts of it a second time elsewhere by `subPath` (`cacerts`, `private`). It has `SSLCALISTLOC=/security/trustedcerts.pem`.
+- The Python runner mounts four volumes, and `security` is not one of them: `pytmp` at `/tmp`, `pylog` at `/pylog`, `python-volume` at `/opt/sas/viya/home/sas-pyconfig` and `astores-volume` at `/models/resources/viya`. It has no certificate environment variable, and inside it `/security/trustedcerts.pem` does not exist.
+
+A manifested model that calls the model container itself runs in the Python runner. It looks for the bundle, does not find the file, falls back to the public certificate authorities, and refuses the certificate of an ingress that is signed by the deployment's own CA.
+
+### The symptom
+
+The publishing validation of the decision ends with HTTP 201, and every row carries the error in the model's text output — *answer* for a decision template, *response* for a prompt template — while the other outputs are empty:
+
+```text
+Decision model call failed: HTTPSConnectionPool(host=..., port=443): Max retries exceeded with url: /llm/von_1_2/von_1_2 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain')))
+```
+
+For a prompt template the line starts with `LLM call failed:`. The URL names the model container that was called, here `von_1_2`.
+
+### How to tell that it is this case
+
+- The same decision returns answers in the **in-app test** of SAS Intelligent Decisioning, which runs in CAS, and fails in the **publishing validation** on the MAS destination.
+- A decision that reaches the same model container through the **Call LLM** node works on the same MAS destination. The node is DS2 code and runs in the main container, which has the bundle.
+- The Python runner has no bundle. Find the container names, then look for the file:
+
+  ```bash
+  kubectl -n <namespace> get deployment sas-microanalytic-score -o jsonpath='{.spec.template.spec.containers[*].name}'
+  kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
+  ```
+
+  `No such file or directory` is this case. If the file is listed, the cause is another one: the certificate of the endpoint is not signed by a CA in that bundle — point *LLMCONTAINERCABUNDLE* at a bundle that covers it.
+
+### Two ways out
+
+1. **Mount the bundle file into the Python runner.** Verification stays on, and no model has to be manifested again. This is the fix for production; the steps are in the next section.
+2. **Switch verification off** for the models concerned: clear **Verify TLS certificates in manifested models** in the Options pane of the Prompt Builder and manifest the model again (for a retrieval model registered with the custom step *RAG - Register Setup*: clear the step's checkbox **Verify TLS certificates in the registered retrieval model** and run the step again), or set *LLMCONTAINERSSLVERIFY=false* on the destination (see [the variable and the Python runner](#the-variable-and-the-python-runner)). Either way the model no longer checks that the answer comes from the real model container: whatever answers on that address inside the network is believed, and the prompt or the state is sent to it. That is acceptable on a test system whose cluster network is closed to others. It is not a setting for production — there, mount the bundle.
+
+   On the deployment described here the option made exactly that difference: a decision whose decision template was manifested with verification off returned answers in the publishing validation on the MAS destination, and the same decision with the template manifested with verification on failed there with the error above.
+
+### Mounting the bundle into the Python runner
+
+The volume already exists in the pod; the runner only lacks the mount. Mount the bundle **file**, not the volume. The `security` volume also holds the private key directory of the pod — `/security/private` in the main container — and the runner is the container that executes the code of the models. A mount with `subPath` gives the runner the one file it needs and nothing else of the volume.
+
+In both forms, replace `<prefix>-mas-python-runner` with the container name that the first command above printed.
+
+**For a test.** Save the patch as `mas-python-runner-trust.patch.yaml`:
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: <prefix>-mas-python-runner
+          volumeMounts:
+            - name: security
+              mountPath: /security/trustedcerts.pem
+              subPath: trustedcerts.pem
+              readOnly: true
+```
+
+Then apply it. The patch is a file because a patch written on the command line is quoted differently in PowerShell and in bash:
+
+```bash
+kubectl -n <namespace> patch deployment sas-microanalytic-score --type=strategic --patch-file mas-python-runner-trust.patch.yaml
+```
+
+The patch changes the pod template, so it restarts the MAS pods — plan it like any other restart of MAS. A one-off patch is also overwritten by the next update of the deployment, which is why the second form exists.
+
+To see what the patch does before anything changes, add `--dry-run=client -o yaml` to the command. On the deployment this was written against, that dry run added the mount to the runner and left the main container as it was.
+
+**To keep it.** Add the same patch, with the header kustomize needs, to the site configuration of the deployment, for example as `site-config/sas-microanalytic-score/mas-python-runner-trust.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sas-microanalytic-score
+spec:
+  template:
+    spec:
+      containers:
+        - name: <prefix>-mas-python-runner
+          volumeMounts:
+            - name: security
+              mountPath: /security/trustedcerts.pem
+              subPath: trustedcerts.pem
+              readOnly: true
+```
+
+List it under `patches:` in `kustomization.yaml`:
+
+```yaml
+patches:
+  - path: site-config/sas-microanalytic-score/mas-python-runner-trust.yaml
+    target:
+      kind: Deployment
+      name: sas-microanalytic-score
+```
+
+Then build and apply the deployment as your site normally does.
+
+**Check the result** after either form, once the rollout has ended. On the deployment described here the form for a test was applied on 2026-10-11 by the owner of the cluster, with the patch and the command as they stand above:
+
+- The deployment rolled to a new pod, and that pod became ready with both containers (2/2).
+- In the runner, `ls -l /security` then listed exactly one entry, `trustedcerts.pem` (367,876 bytes). The directory `private` of the volume was not visible there.
+- A decision whose decision template is manifested with verification **on** — its score code holds `sslVerifyDefault = True` and passes `verify=sslVerify` to the call — was published again to the MAS destination `maslocal` with *Replace item with the same name*. Its publishing validation ended with *Completed successfully* on four rows: four answers with HTTP status 201 and an empty error column. Before the patch the same decision had answered `CERTIFICATE_VERIFY_FAILED` there.
+- A second decision, with three model nodes that were all manifested in the Prompt Builder — the retrieval model of a RAG setup, a prompt template with the included LLM call and a decision template — was published to `maslocal` the same day, with the bundle mounted and verification on. All three nodes ran; its publishing validation ended on three rows with HTTP status 201 and an empty error column, and the prompt template and the decision template answered. The retrieval model answered `retrieval failed: RuntimeError: no vector-store credentials resolved: …` in `retrieval_status`, with no chunk: the runner had no `PGVECTOR_RAG_USER` and `PGVECTOR_RAG_PW`. [The retrieval model in a decision](./RAG-Ingestion-and-Retrieval.md#the-retrieval-model-in-a-decision) names the variables it needs.
+- The same decision with the user and the password of the vector store passed per call, in the `options` input of the retrieval model: called one row at a time, six calls one after another each returned HTTP status 201, `retrieval_status` *ok*, three hits, an envelope of 1969 characters and the answer of the LLM from the retrieved context — with verification on in the score code of all three models. Its publishing validation on `maslocal` gave different results from run to run: all three rows complete in one, and in others rows with HTTP status 201, an empty error column and **empty outputs** of every node. That was not the certificate, and not the lengths of the model's variables: SAS Micro Analytic Service had ended those executions after 30 seconds, because the validation sends its rows at the same time and the two self-hosted models behind the nodes then took longer than that ([the execution timed out](./Troubleshooting-Guide.md#empty-outputs-published-decision)).
+- The same decision with `PGVECTOR_RAG_USER` and `PGVECTOR_RAG_PW` as environment variables: set on the containers of the deployment from a Kubernetes secret (`kubectl set env deployment/sas-microanalytic-score --containers=* --from=secret/<name>`; the pod restarts), a call with `{}` as the `options` of the retrieval model returned `retrieval_status` *ok* and three hits. Which of the containers needs the two variables was not separated.
+
+That was the one-off patch, not the kustomize form: on that deployment the mount is lost at the next apply of the deployment unless the kustomize form is added. Not measured: the kustomize form itself on a cluster; the call of a retrieval model to the SAS Viya credentials service from SAS Micro Analytic Service, which it does not make when the credentials come with the call or from the environment; the credentials of the vector store as environment variables in the test of SAS Intelligent Decisioning and in a SAS Container Runtime container; and whether a variable set on the main container alone reaches the Python in the runner, which [the variable and the Python runner](#the-variable-and-the-python-runner) is about. Container and volume names can differ on your deployment, so the check stays part of the procedure.
+
+```bash
+kubectl -n <namespace> rollout status deployment sas-microanalytic-score
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls -l /security/trustedcerts.pem
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- ls /security
+```
+
+The first `ls` has to list the file. The second should show that file and nothing else — no `private` directory. Then run the publishing validation of the decision again: the rows have to carry answers instead of the error. If the file is listed and an error stays, read its text again — a different text is a different cause.
+
+### The variable and the Python runner {#the-variable-and-the-python-runner}
+
+A Python model reads the environment of the container its code runs in. That holds for every *LLMCONTAINER...* variable: *LLMCONTAINERPATH*, which every prompt template and every decision template reads, and *LLMCONTAINERCABUNDLE*, *LLMCONTAINERSSLVERIFY* and *LLMCONTAINERTIMEOUT*, which the models that make the call themselves read.
+
+The PatchTransformer in [MAS vs SCR](#mas-vs-scr) adds a variable to the first container of the pod, which on the deployment described here is the main one and not the runner. The containers of a pod do not share their environment, and whether MAS hands the environment of its main container on to the Python it starts in the runner has not been measured. So where MAS runs Python in a separate runner, add the variable to the runner as well, by its name, and look at what the runner really has with the command below:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sas-microanalytic-score
+spec:
+  template:
+    spec:
+      containers:
+        - name: <prefix>-mas-python-runner
+          env:
+            - name: LLMCONTAINERPATH
+              value: <YOURVALUE>
+```
+
+It is listed under `patches:` like the mount above. Another variable is another entry of the same `env` list — *LLMCONTAINERSSLVERIFY* with the value `"false"`, in quotes, for the second of the two ways out; the *RAGEMBED_...* and *RAGSTORE_...* variables of a retrieval model go there in the same way, and so do the user and the password of its vector store, *PGVECTOR_RAG_USER* and *PGVECTOR_RAG_PW* for pgvector — a retrieval model without them answers *no vector-store credentials resolved* and returns no chunk ([the retrieval model in a decision](./RAG-Ingestion-and-Retrieval.md#the-retrieval-model-in-a-decision) has the full list). A password in the `env` of a deployment is readable by everyone who can read the deployment; a Kubernetes secret referenced with `valueFrom` keeps it out of the manifest. Measured on 2026-10-11 for the two variables of the vector store: taken from a Kubernetes secret and set on every container of the deployment with `kubectl set env deployment/sas-microanalytic-score --containers=* --from=secret/<name>`, after which the pod restarted, they reached the retrieval model — a call with `{}` as its `options` returned `retrieval_status` *ok* and three hits. That was every container at once, so it does not say which of them needs the variables. Check it like the mount, with `env` in place of `ls`:
+
+```bash
+kubectl -n <namespace> exec deploy/sas-microanalytic-score -c <prefix>-mas-python-runner -- env
+```
+
+The output has to hold the variable with your value (pipe it through `grep LLMCONTAINER`, or `Select-String LLMCONTAINER` in PowerShell, to shorten it). A variable set this way holds for every model published to that MAS — *LLMCONTAINERSSLVERIFY=false*, for one, also for the models manifested with verification on.

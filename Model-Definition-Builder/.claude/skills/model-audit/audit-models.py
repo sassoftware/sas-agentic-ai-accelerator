@@ -3,7 +3,9 @@
 """Audit the models registered in SAS Model Manager for the attributes and
 lifecycle that mdb 1.6.0 populates, and flag duplicated input/output variables.
 
-Read-only: it performs GETs only, never writes. For each registered model it
+Read-only: besides the sign-in (the password grant, or with a token or the
+SAS Viya CLI login one HEAD of the address) it sends GET requests only, and
+never writes. For each registered model it
 fetches the full model detail (the list summary omits custom attributes such as
 llmodelType) plus the variable list, and reports what a pre-1.6.0 registration
 is missing and the exact remediation command.
@@ -30,6 +32,7 @@ try:
 except ImportError:
     pass
 
+from mdb.core.printable import printable, traceback_text
 from mdb.viya.registry import KIND_PROJECT
 from mdb.viya.session import ViyaConfigError, create_session
 from sasctl.services import model_repository as mr
@@ -99,44 +102,58 @@ def audit() -> list[dict]:
     return rows
 
 
+def say(text="", **options) -> None:
+    """One print of the script: what SAS Logon and SAS Model Manager answered
+    - a sign-in that failed, the name and the attributes of a model, the
+    traceback of an answer the audit did not catch - loses
+    its control characters first, as every line of mdb does."""
+    print(printable(text), **options)
+
+
 def main() -> None:
     as_json = "--json" in sys.argv[1:]
     try:
         rows = audit()
     except ViyaConfigError as exc:
-        print(f"SAS Viya is not configured: {exc}", file=sys.stderr)
+        say(f"SAS Viya could not be used: {exc}", file=sys.stderr)
         sys.exit(2)
+    except Exception as exc:
+        # an answer of SAS Model Manager that sasctl raises as an HTTPError holds its body in the text of the
+        # exception: the traceback Python prints, without control characters, the text of each exception on the
+        # one line that names it (traceback_text), and exit code 1
+        say(traceback_text(exc), end="", file=sys.stderr)
+        sys.exit(1)
 
     if as_json:
-        print(json.dumps(rows, indent=2))
+        say(json.dumps(rows, indent=2))
         return
 
     if not rows:
-        print("No registered models found in the LLM / Embedding model projects.")
+        say("No registered models found in the LLM / Embedding model projects.")
         return
 
-    print(f"{'model_id':32} {'kind':10} {'family':10} {'status':22} {'vars':7} needs update")
-    print("-" * 100)
+    say(f"{'model_id':32} {'kind':10} {'family':10} {'status':22} {'vars':7} needs update")
+    say("-" * 100)
     for row in rows:
         vtxt = f"{row['variables']}{' dup!' if row['duplicated_variables'] else ''}"
-        print(
-            f"{(row['model_id'] or '')[:32]:32} {row['kind']:10} "
-            f"{(row['llmodelType'] or '-')[:10]:10} {(row['modelStatus'] or '-')[:22]:22} "
+        say(
+            f"{printable(row['model_id'] or '')[:32]:32} {row['kind']:10} "
+            f"{printable(row['llmodelType'] or '-')[:10]:10} {printable(row['modelStatus'] or '-')[:22]:22} "
             f"{vtxt:7} {'YES' if row['needs_update'] else 'ok'}"
         )
 
     needing = [r for r in rows if r["needs_update"]]
     if not needing:
-        print("\nAll registered models carry the full attribute set and have no duplicated variables.")
+        say("\nAll registered models carry the full attribute set and have no duplicated variables.")
         return
 
-    print(f"\n{len(needing)} model(s) need attention:")
+    say(f"\n{len(needing)} model(s) need attention:")
     for row in needing:
         detail = ", ".join(row["missing"])
         if row["duplicated_variables"]:
             detail = (detail + "; " if detail else "") + "duplicated variables"
-        print(f"  - {row['model_id']} ({row['kind']}): {detail}")
-    print(
+        say(f"  - {row['model_id']} ({row['kind']}): {detail}")
+    say(
         "\nBackfill a model that still has its local definition folder:\n"
         "  mdb register <model_id> --update        (or: mdb register --all --update)\n"
         "Recover a model registered by the legacy scripts (no local definition.yaml) first:\n"

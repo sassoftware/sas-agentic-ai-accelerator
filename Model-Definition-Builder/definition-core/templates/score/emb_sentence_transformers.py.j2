@@ -9,7 +9,10 @@ from sentence_transformers import SentenceTransformer
 os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
 
 checkpoint = '{{ model_path }}'
-model = SentenceTransformer(checkpoint)
+
+{% include "partials/_model_cache.py.j2" %}
+
+model = _cached(checkpoint, lambda: SentenceTransformer(checkpoint))
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from importlib.metadata import entry_points
 
+from ..core.printable import printable
+
 from .anthropic import AnthropicAdapter
 from .base import ProviderAdapter
 from .bedrock import BedrockAdapter
@@ -95,5 +97,5 @@ def load_adapters() -> dict[str, ProviderAdapter]:
             adapter = entry.load()()
             adapters[adapter.id] = adapter
         except Exception as exc:  # a broken third-party adapter must not break the CLI
-            print(f"WARNING: could not load provider adapter '{entry.name}': {exc}")
+            print(printable(f"WARNING: could not load provider adapter '{entry.name}': {exc}"))
     return adapters

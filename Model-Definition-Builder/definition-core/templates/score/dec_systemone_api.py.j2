@@ -16,6 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger("scoreModel")
 
 {% include "partials/_options_parser.py.j2" %}
+{% if key_env_var %}{% include "partials/_env_api_key.py.j2" %}{% else %}{% include "partials/_option_api_key.py.j2" %}{% endif %}
 
 def _state_value(state):
     # A state that parses as a JSON object or array is sent as structured
@@ -50,6 +51,7 @@ def scoreModel(state, questions, options):
 {{ options_defaults_block }}
     }
     options = {**optionsDefaults, **_parse_options(options)}
+    options["API_KEY"] = _api_key(options)
     # The System One request: the state once, every question beside it. The
     # questions arrive verbatim in the provider's own shape, so a new question
     # type needs no change here.

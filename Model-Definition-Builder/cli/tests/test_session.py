@@ -159,6 +159,8 @@ def fake_sasctl(monkeypatch):
             calls.append((args, kwargs))
 
     monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    # the HEAD a token is asked with before the command: answered
+    monkeypatch.setattr(s, "_probe", lambda session, url: None)
     return calls
 
 
@@ -178,3 +180,332 @@ def test_create_session_passes_the_password_grant_positionally(env, fake_sasctl)
     session = s.create_session()
     assert fake_sasctl == [((URL, "u", "p"), {"verify_ssl": False})]
     assert session.auth_summary == f"{URL} as u (password grant)"
+
+
+# -- a sign-in that is refused while sign-ins overlap ---------------------------------
+
+class AuthenticationError(ValueError):
+    """What sasctl raises for a password grant answered 401 - told by its name."""
+
+
+def test_a_refused_password_grant_is_asked_again(env):
+    """Seen on the test system: the grant answered 401 while several sign-ins
+    overlapped. The next one is taken - and the one after it."""
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        if len(asked) < 3:
+            raise _refused_grant()
+        return "session"
+    assert s._sign_in(make, sleep=waited.append) == "session"
+    assert len(asked) == 3 and waited == [2, 5]
+
+
+def test_a_wrong_password_is_passed_on_at_the_first_try(env):
+    """review-19 / gate-19: a wrong password cost three failed sign-ins per
+    command, and review-20 / gate-20: then two. What sasctl raises for the
+    answer "Bad credentials" is not asked again, whatever the setting says:
+    the refusal seen while sign-ins overlapped left sasctl another way."""
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        raise AuthenticationError("Authentication failed for user 'u'.")
+    for setting in (None, "1", "not a number", "5"):
+        del asked[:]
+        if setting:
+            env.setenv(s.LOGIN_ATTEMPTS_ENV, setting)
+        with pytest.raises(AuthenticationError) as caught:
+            s._sign_in(make, sleep=waited.append)
+        assert len(asked) == 1 and waited == [] and getattr(caught.value, s.SIGN_INS_MADE) == 1, setting
+    assert s.LOGIN_ATTEMPTS == 3 and not hasattr(s, "BAD_CREDENTIALS_ATTEMPTS")
+
+
+def test_anything_but_a_refused_sign_in_is_not_repeated(env):
+    """A server that is not reachable is not a sign-in that overlapped."""
+    asked = []
+
+    def make():
+        asked.append(1)
+        raise ConnectionError("no route to host")
+    with pytest.raises(ConnectionError):
+        s._sign_in(make, sleep=lambda seconds: pytest.fail("waited for nothing"))
+    assert len(asked) == 1
+
+
+def test_only_the_password_grant_is_repeated(env, monkeypatch, tmp_path):
+    """A token is taken or not: asking again does not change the answer."""
+    calls = []
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                # the grant: the 401 that is not "Bad credentials"; the token: sasctl's own error
+                raise _refused_grant() if len(args) == 3 else AuthenticationError("refused")
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "p")
+    assert s.create_session().auth_summary == f"{URL} as u (password grant)"
+    assert calls == [(URL, "u", "p"), (URL, "u", "p")]
+    del calls[:]
+    env.delenv(s.USER_ENV)
+    env.delenv(s.PASSWORD_ENV)
+    env.setenv(s.TOKEN_ENV, "not-a-jwt")
+    with pytest.raises(s.ViyaSignInError, match="refused the access token"):
+        s.create_session()
+    assert calls == [(URL,)]
+
+
+# -- the refusal as it arrives from sasctl ---------------------------------------------
+
+class HTTPError(IOError):
+    """requests.HTTPError, as sasctl lets it through from the token request:
+    told by its name, its response and the address the response is from."""
+
+    def __init__(self, message, status=None, url=None, body=None):
+        super().__init__(message)
+        if status is not None:
+            self.response = types.SimpleNamespace(status_code=status, url=url)
+        if body is not None:
+            self.response.json = lambda: json.loads(body)
+
+
+TOKEN_URL = f"{URL}/SASLogon/oauth/token"
+
+
+def _refused_grant():
+    """What `mdb content-deploy` ended with on the test system on 2026-10-12:
+    raise_for_status() inside sasctl's _request_token_with_oauth."""
+    return HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password", 401, TOKEN_URL)
+
+
+def test_the_refused_grant_is_recognised_as_sasctl_passes_it_on():
+    assert s._refused_sign_in(_refused_grant())
+    assert s._refused_sign_in(AuthenticationError("Authentication failed"))
+    # read from the message where the exception carries no response
+    assert s._refused_sign_in(HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password"))
+    # not a refused sign-in: another status of the token address, a 401 of another address, another exception
+    assert not s._refused_sign_in(HTTPError(f"503 Server Error: for url: {TOKEN_URL}", 503, TOKEN_URL))
+    assert not s._refused_sign_in(HTTPError(f"401 Client Error: for url: {URL}/folders/folders", 401,
+                                            f"{URL}/folders/folders"))
+    assert not s._refused_sign_in(ConnectionError("no route to host"))
+    assert not s._refused_sign_in(ValueError(f"401 Client Error:  for url: {TOKEN_URL}"))
+
+
+def test_a_grant_refused_with_401_is_asked_again(env):
+    """The live defect: the repeat knew sasctl's AuthenticationError only, so
+    the 401 that really arrived was passed on at the first try."""
+    waited, asked = [], []
+
+    def make():
+        asked.append(1)
+        if len(asked) < 2:
+            raise _refused_grant()
+        return "session"
+    assert s._sign_in(make, sleep=waited.append) == "session"
+    assert len(asked) == 2 and waited == [2]
+
+
+def test_a_refused_sign_in_ends_with_a_sentence_and_no_traceback(env, monkeypatch):
+    """Refused every time, the sign-in is a ViyaConfigError - what every
+    command turns into one red line and exit code 2 - and the sentence holds
+    neither the password nor a stack."""
+    asked = []
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            asked.append(args)
+            raise _refused_grant()
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert isinstance(caught.value, s.ViyaConfigError) and len(asked) == 3
+    message = str(caught.value)
+    assert message.startswith(f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD "
+                              "(3 sign-ins made): HTTP 401 from /SASLogon/oauth/token (no error_description could "
+                              "be read from the answer). Check the credentials")
+    assert "s3cret-p" not in message and "Traceback" not in message
+    # anything else is still passed on as it is: a server that is not there is no refusal
+    class Unreachable:
+        def __init__(self, *args, **kwargs):
+            raise ConnectionError("no route to host")
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Unreachable))
+    with pytest.raises(ConnectionError):
+        s.create_session()
+
+
+def test_the_command_line_shows_the_refusal_as_one_line(env, monkeypatch):
+    """Through a command: exit code 2 and the sentence, as for credentials
+    that are missing - no traceback reaches the user."""
+    from typer.testing import CliRunner
+
+    from mdb import cli
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            raise _refused_grant()
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    monkeypatch.setattr(cli, "Context", lambda: types.SimpleNamespace(repo=Path(__file__).resolve().parents[3]))
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    result = CliRunner().invoke(cli.app, ["content-deploy", "--dry-run"])
+    assert result.exit_code == 2 and not isinstance(result.exception, HTTPError)
+    printed = " ".join(result.output.split())
+    assert "refused the sign-in of u" in printed and "HTTP 401 from /SASLogon/oauth/token" in printed
+    assert "Traceback" not in result.output and "s3cret-p" not in result.output
+
+
+# -- what the answer of a refused sign-in says, and how often it is asked ----------------
+#: The body a password grant with a wrong password got on 2026-10-13 (401, application/json, 64 bytes).
+BAD_CREDENTIALS_BODY = '{"error":"invalid_client","error_description":"Bad credentials"}'
+
+
+def _answered(body: str):
+    return HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password", 401, TOKEN_URL, body)
+
+
+def test_the_answer_of_a_refused_sign_in_is_read():
+    assert len(BAD_CREDENTIALS_BODY) == 64
+    assert s._answer(_answered(BAD_CREDENTIALS_BODY)) == ("invalid_client", "Bad credentials")
+    assert s._bad_credentials(_answered(BAD_CREDENTIALS_BODY))
+    assert s._bad_credentials(_answered('{"error":"unauthorized","error_description":"BAD CREDENTIALS"}'))
+    assert s._bad_credentials(AuthenticationError("Authentication failed for user 'u'."))
+    # another body, no JSON, no response at all: a 401 that is not that answer
+    for other in (_answered('{"error":"unauthorized","error_description":"Too many sign-ins"}'), _answered("<html/>"),
+                  _answered('["Bad credentials"]'), _answered('{"error":"Bad credentials"}'), _refused_grant(),
+                  HTTPError(f"401 Client Error:  for url: {TOKEN_URL}#password")):
+        assert s._refused_sign_in(other) and not s._bad_credentials(other)
+    assert s._refusal(_answered(BAD_CREDENTIALS_BODY)) == (
+        'HTTP 401 from /SASLogon/oauth/token with error "invalid_client" and error_description "Bad credentials"')
+    assert s._refusal(_answered('{"error_description":"Too\\n many   sign-ins"}')) == (
+        'HTTP 401 from /SASLogon/oauth/token with error_description "Too many sign-ins"')
+    assert s._refusal(_answered("<html/>")) == (
+        "HTTP 401 from /SASLogon/oauth/token (no error_description could be read from the answer)")
+    assert s._refusal(AuthenticationError("Authentication failed for user 'u'."), grant=True) == (
+        "Authentication failed for user 'u' - sasctl says so for an answer whose error_description says "
+        '"Bad credentials"')
+    # of a token, sasctl's error is passed on as it is: no grant was answered
+    assert s._refusal(AuthenticationError("Authentication failed.")) == "Authentication failed"
+
+
+@pytest.mark.parametrize("body, limit, sign_ins, said", [
+    (BAD_CREDENTIALS_BODY, None, 1, 'with error "invalid_client" and error_description "Bad credentials"'),
+    (BAD_CREDENTIALS_BODY, "1", 1, 'with error "invalid_client" and error_description "Bad credentials"'),
+    (BAD_CREDENTIALS_BODY, "5", 1, 'with error "invalid_client" and error_description "Bad credentials"'),
+    ('{"error":"unauthorized","error_description":"Too many sign-ins"}', None, 3,
+     'with error "unauthorized" and error_description "Too many sign-ins"'),
+    ('{"error":"unauthorized","error_description":"Too many sign-ins"}', "5", 5,
+     'with error "unauthorized" and error_description "Too many sign-ins"'),
+    ("<html/>", "1", 1, "(no error_description could be read from the answer)"),
+])
+def test_the_sentence_names_the_answer_and_the_sign_ins_made(env, monkeypatch, body, limit, sign_ins, said):
+    """review-19 / gate-19: the sentence said `asked 3 time(s)` from the
+    setting, whatever was sent, and nothing of what SAS Logon answered. The
+    answer measured for a wrong password is asked once."""
+    asked = []
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            asked.append(args)
+            raise _answered(body)
+
+    monkeypatch.setitem(sys.modules, "sasctl", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    if limit:
+        env.setenv(s.LOGIN_ATTEMPTS_ENV, limit)
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert len(asked) == sign_ins
+    made = "1 sign-in made" if sign_ins == 1 else f"{sign_ins} sign-ins made"
+    assert str(caught.value).startswith(
+        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD ({made}): HTTP 401 from "
+        f"/SASLogon/oauth/token {said}. Check the credentials")
+    assert "s3cret-p" not in str(caught.value)
+
+
+def test_a_refusal_that_changes_is_judged_by_the_answer_of_each_sign_in(env):
+    """A refusal that is not "Bad credentials", then the answer to a wrong
+    password: the second sign-in is the last. The other way round the first
+    is."""
+    def answers(*bodies):
+        left = list(bodies)
+
+        def make():
+            asked.append(1)
+            raise _answered(left.pop(0))
+        return make
+    other = '{"error":"unauthorized","error_description":"Too many sign-ins"}'
+    asked = []
+    with pytest.raises(HTTPError) as caught:
+        s._sign_in(answers(other, BAD_CREDENTIALS_BODY, other), sleep=lambda seconds: None)
+    assert len(asked) == 2 == getattr(caught.value, s.SIGN_INS_MADE)
+    del asked[:]
+    with pytest.raises(HTTPError) as caught:
+        s._sign_in(answers(BAD_CREDENTIALS_BODY, other, other), sleep=lambda seconds: None)
+    assert len(asked) == 1 == getattr(caught.value, s.SIGN_INS_MADE)
+
+
+def test_sasctl_itself_hands_the_measured_answer_on_as_mdb_reads_it(env, monkeypatch):
+    """The real sasctl, with the transport of requests replaced: the answer
+    measured for a wrong password arrives as sasctl's AuthenticationError,
+    which carries no response, and any other 401 of the token address as the
+    HTTPError of requests with the response. Skipped where sasctl is not
+    installed (the `viya` extra)."""
+    sasctl = pytest.importorskip("sasctl")
+    import requests
+
+    posted = []
+    answer = {}
+
+    def post(self, url, **kwargs):
+        posted.append(url)
+        response = requests.Response()
+        response.status_code, response.url = 401, url
+        response._content = answer["body"].encode("utf-8")
+        response.headers["Content-Type"] = "application/json"
+        return response
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    monkeypatch.setitem(sys.modules, "sasctl", sasctl)
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "s3cret-p")
+    env.setenv("SAS_VIYA_VERIFY_SSL", "false")
+
+    answer["body"] = BAD_CREDENTIALS_BODY
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert type(caught.value.__cause__).__name__ == "AuthenticationError"
+    assert getattr(caught.value.__cause__, "response", None) is None
+    assert posted == [f"{TOKEN_URL}#password"]
+    assert str(caught.value).startswith(
+        f"SAS Viya at {URL} refused the sign-in of u with SAS_VIYA_USER + SAS_VIYA_PASSWORD (1 sign-in made): "
+        "Authentication failed for user 'u' - sasctl says so for an answer whose error_description says "
+        '"Bad credentials". Check the credentials')
+
+    del posted[:]
+    answer["body"] = '{"error":"unauthorized","error_description":"Too many sign-ins"}'
+    with pytest.raises(s.ViyaSignInError) as caught:
+        s.create_session()
+    assert type(caught.value.__cause__).__name__ == "HTTPError" and len(posted) == 3
+    assert ('(3 sign-ins made): HTTP 401 from /SASLogon/oauth/token with error "unauthorized" and error_description '
+            '"Too many sign-ins". Check the credentials') in str(caught.value)
+    assert "s3cret-p" not in str(caught.value)

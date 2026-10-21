@@ -37,7 +37,7 @@ metadata:
     - the cheapest hosted decision model measured. Caution: like every model measured, it drops on the
     hard JevBench tier (long policies, multi-hop, traps). Measured 2026-10-05/06 on about 50 examples
     per dataset, three runs each: a shortlist, not a ranking.'
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: openrouter (static snapshot 2026-10-07)

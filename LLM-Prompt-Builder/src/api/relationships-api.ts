@@ -6,8 +6,7 @@
  * referenced by other SAS Viya resources before it is deleted.
  */
 
-import { viyaGet, viyaPost } from './http-client';
-import type { SasApiCollection } from '../types/models';
+import { viyaGet, viyaGetAll, viyaPost, type CollectionPage } from './http-client';
 import type { RelationshipItem, DependentDecision } from '../types/relationships';
 
 const DECISION_FLOW_PREFIX = '/decisions/flows/';
@@ -19,7 +18,7 @@ const DECISION_FLOW_PREFIX = '/decisions/flows/';
  * keeps the `Dependent` entries that point at a decision flow. The same flow
  * can be reported multiple times (`/decisions/flows/<id>` and
  * `/decisions/flows/<id>/revisions/<rev>`), so the results are deduplicated
- * by flow id. A single page of 1000 relationships is assumed to be enough.
+ * by flow id. Every page of the answer is read (see viyaGetAll).
  *
  * Throws when the relationship query itself fails, so callers can tell
  * "no usage found" apart from "usage could not be verified".
@@ -27,17 +26,20 @@ const DECISION_FLOW_PREFIX = '/decisions/flows/';
 export async function getModelDependentDecisions(
   modelID: string
 ): Promise<DependentDecision[]> {
-  const data = await viyaPost<SasApiCollection<RelationshipItem>>(
-    '/relationships/relationships?limit=1000',
-    {
-      resourceURI: [`/modelRepository/models/${modelID}`],
-      direction: 'from',
-    },
-    'application/vnd.sas.relationship.query+json'
-  );
+  const items = await viyaGetAll<RelationshipItem>('/relationships/relationships?limit=1000', {
+    read: (pagePath) =>
+      viyaPost<CollectionPage<RelationshipItem>>(
+        pagePath,
+        {
+          resourceURI: [`/modelRepository/models/${modelID}`],
+          direction: 'from',
+        },
+        'application/vnd.sas.relationship.query+json'
+      ),
+  });
 
   const flowIDs = new Set<string>();
-  for (const item of data?.items ?? []) {
+  for (const item of items) {
     if (item?.type !== 'Dependent') continue;
     const resourceUri = item?.resourceUri ?? '';
     if (!resourceUri.startsWith(DECISION_FLOW_PREFIX)) continue;

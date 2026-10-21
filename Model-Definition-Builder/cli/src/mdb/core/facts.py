@@ -16,7 +16,7 @@ import io
 import time
 from pathlib import Path
 
-from .manifest import ModelManifest
+from .manifest import ModelManifest, described
 
 # Fact-sheet columns per kind, in order
 COLUMNS_BY_KIND = {
@@ -70,7 +70,7 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
         "model_id": manifest.model_id,
         "model": manifest.display_name,
         "provider": manifest.tags.provider_tag,
-        "description": md.description,
+        "description": described(manifest),
         "size": _fmt_number(md.size),
         "deployment_type": md.deployment_type,
         "license": manifest.tags.license_class,
@@ -103,6 +103,13 @@ def row_values(manifest: ModelManifest) -> dict[str, str]:
         "max_tokens": _option_default(manifest, "max_tokens"),
         "knowledge_cut_off": md.knowledge_cutoff or NULL,
     }
+
+
+def empty_sheet(kind: str) -> bytes:
+    """A fact sheet of `kind` without rows: its header line only. `mdb
+    load-facts` loads it for a kind the site has no definition of, so the
+    table the monitoring report reads exists with its columns."""
+    return (",".join(COLUMNS_BY_KIND[kind]) + "\n").encode("utf-8")
 
 
 def _write_bytes_retrying(path: Path, data: bytes) -> None:

@@ -7,6 +7,9 @@
 # Replace before applying:
 #   {{ MODEL-ID }}   - must match model_id in definition.yaml; the scorer looks
 #                      for /pybox/model/mount/{{ MODEL-ID }}
+#   {{ JOB-NAME }}   - the model_id with every _ replaced by -, e.g. qwen-25-7b
+#                      for qwen_25_7b: a Kubernetes name takes no underscore, so
+#                      a Job named after the model_id itself is refused
 #   {{ HF-REPO }}    - Hugging Face repository, e.g. Qwen/Qwen2.5-7B-Instruct
 #
 # The Hugging Face token is only needed for GATED repositories. For a public
@@ -17,7 +20,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: stage-weights-{{ MODEL-ID }}
+  name: stage-weights-{{ JOB-NAME }}
   namespace: llm
 spec:
   backoffLimit: 2

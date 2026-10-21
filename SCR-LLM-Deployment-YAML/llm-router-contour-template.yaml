@@ -1,0 +1,154 @@
+---
+# One NGINX router for a cluster whose ingress controller is Contour.
+#
+# The Python SCR runtime answers only POST /<model_id>. The per-model Ingress of
+# deploy-modelName-template.yaml rewrites /llm/<model_id>/<model_id> to that
+# with an NGINX Ingress annotation; Contour has no rewrite on a plain Ingress.
+# So a single Contour Ingress sends every /llm call to this router, which
+# forwards /llm/<model_id>/<model_id> to the model's Service as /<model_id>.
+# Nothing of SAS Viya changes: Contour merges an Ingress for the same host.
+#
+# Every placeholder in this file is filled in by:
+#   mdb deploy --all --ingress contour --registry <your-registry>
+# which writes llm-router.yaml next to the deploy-<model_id>.yaml files (those
+# then carry no Ingress of their own).
+#
+# The router routes exactly the models of one render: render all of them
+# (--all) whenever one is added, or applying the file drops the others' routes.
+# nginx resolves each model's Service per request through the cluster DNS
+# (kube-dns), so the router starts before the models and follows a recreated
+# Service. The annotation conf-models lists the routed models: a changed list
+# rolls the router, since nginx reads its configuration only at start.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-router
+  namespace: llm
+  labels:
+    app.kubernetes.io/part-of: sas-agentic-ai-accelerator
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        resolver kubeDnsIp valid=30s ipv6=off;
+        client_max_body_size 64m;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        location = /llm/healthz { return 200 "ok\n"; }
+        location = /llm/model_name/model_name { set $u http://llmname.llm.svc.cluster.local:443/model_name; proxy_pass $u; }
+        location / { return 404; }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-router
+  namespace: llm
+  labels:
+    app.kubernetes.io/part-of: sas-agentic-ai-accelerator
+spec:
+  selector:
+    matchLabels:
+      app: llm-router
+  template:
+    metadata:
+      labels:
+        app: llm-router
+      annotations:
+        llm-router/conf-models: "routedModelIds"
+    spec:
+      containers:
+      - name: nginx
+        image: nginxinc/nginx-unprivileged:1.27-alpine
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "32Mi"
+          limits:
+            memory: "128Mi"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /llm/healthz
+            port: 8080
+        volumeMounts:
+        - name: conf
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: conf
+        configMap:
+          name: llm-router
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - llm
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                - key: "kubernetes.azure.com/scalesetpriority"
+                  operator: In
+                  values:
+                  - spot
+      tolerations:
+      - key: app
+        operator: Equal
+        value: llm
+        effect: NoSchedule
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: Equal
+        value: spot
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-router
+  namespace: llm
+  labels:
+    app.kubernetes.io/part-of: sas-agentic-ai-accelerator
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-router
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+---
+kind: Ingress
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: llm-router
+  namespace: llm
+  labels:
+    app.kubernetes.io/part-of: sas-agentic-ai-accelerator
+  annotations:
+    projectcontour.io/response-timeout: 300s
+spec:
+  ingressClassName: contour
+  tls:
+  - hosts:
+    - host
+    secretName: llm-tls-certs
+  rules:
+    - host: host
+      http:
+        paths:
+          - path: /llm
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-router
+                port:
+                  number: 80

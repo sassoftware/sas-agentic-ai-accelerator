@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { viyaFetch, viyaGet, viyaPost } from './http-client';
+import { statusOf, viyaFetch, viyaGet, viyaGetAll, viyaPost, ViyaRefused, writeOrReadBack } from './http-client';
 import type {
   ModelProject,
   Model,
@@ -11,79 +11,55 @@ import type {
   ModelVariable,
   ModelRepository,
   ModelVersion,
-  SasApiCollection,
   DropdownOption,
 } from '../types/models';
 
 /**
- * Get model projects with optional filter and pagination, shaped for dropdown options.
+ * Get model projects with optional filter, shaped for dropdown options. Every
+ * page of the listing is read (see viyaGetAll).
  */
-export async function getModelProjects(
-  query: string = '',
-  start: number = 0,
-  limit: number = 50
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<ModelProject>>(
-    `/modelRepository/projects?start=${start}&limit=${limit}&filter=${query}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getModelProjects(query, start + limit, limit);
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getModelProjects(query: string = ''): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<ModelProject>(`/modelRepository/projects?limit=50&filter=${query}`);
+  return items.map((item) => ({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy }));
 }
 
 /**
- * Get models within a project.
+ * Get models within a project, shaped for dropdown options. Every page of the
+ * listing is read (see viyaGetAll).
+ *
+ * Each option also carries the model's `algorithm` and `tags` as the listing
+ * returns them. That is what lets a caller tell kinds of model apart from
+ * this one request - the Prompt Builder separates decision templates from
+ * prompt templates by it - instead of asking once more per kind. A filter
+ * that combines the two (`or(contains(tags,…),eq(algorithm,…))`) is not an
+ * alternative: the service answers it with an empty list.
  */
-export async function getModelProjectModels(
-  projectID: string,
-  query: string = '',
-  start: number = 0,
-  limit: number = 50
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<Model>>(
-    `/modelRepository/projects/${projectID}/models?start=${start}&limit=${limit}&filter=${query}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name, createdBy: item.createdBy, modifiedBy: item.modifiedBy });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getModelProjectModels(
-      projectID,
-      query,
-      start + limit,
-      limit
-    );
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getModelProjectModels(projectID: string, query: string = ''): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<Model>(`/modelRepository/projects/${projectID}/models?limit=50&filter=${query}`);
+  return items.map((item) => ({
+    value: item.id,
+    innerHTML: item.name,
+    createdBy: item.createdBy,
+    modifiedBy: item.modifiedBy,
+    algorithm: typeof item.algorithm === 'string' ? item.algorithm : undefined,
+    // A model without tags is listed with `tags: null`.
+    tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+  }));
 }
 
 /**
- * Create a new model project.
+ * Create a new model project. When the creation gets no answer, the project
+ * of that name is looked for in the repository (see writeOrReadBack).
  */
 export async function createModelProject(
   projectDefinition: Record<string, unknown>
 ): Promise<ModelProject> {
-  return viyaPost<ModelProject>(
-    '/modelRepository/projects',
-    projectDefinition
+  return writeOrReadBack(
+    () => viyaPost<ModelProject>('/modelRepository/projects', projectDefinition),
+    async () =>
+      (await viyaGetAll<ModelProject>('/modelRepository/projects?limit=100')).find(
+        (project) => project.name === projectDefinition.name
+      )
   );
 }
 
@@ -99,72 +75,56 @@ export async function getModelRepositoryInformation(
 }
 
 /**
- * Get all model repositories, shaped for dropdown options.
+ * Get all model repositories, shaped for dropdown options, the placeholder
+ * first. Every page of the listing is read (see viyaGetAll).
  */
-export async function getAllModelRepositories(
-  placeholderText: string,
-  start: number = 0,
-  limit: number = 20,
-  first: boolean = true
-): Promise<DropdownOption[]> {
-  const data = await viyaGet<SasApiCollection<ModelRepository>>(
-    `/modelRepository/repositories?start=${start}&limit=${limit}`
-  );
-
-  let options: DropdownOption[] = [];
-  if (first) {
-    options.push({ value: '', innerHTML: placeholderText });
-  }
-
-  if (data?.items) {
-    for (const item of data.items) {
-      options.push({ value: item.id, innerHTML: item.name });
-    }
-  }
-
-  if (data?.items && data.items.length === limit) {
-    const more = await getAllModelRepositories(
-      placeholderText,
-      start + limit,
-      limit,
-      false
-    );
-    options = options.concat(more);
-  }
-
-  return options;
+export async function getAllModelRepositories(placeholderText: string): Promise<DropdownOption[]> {
+  const items = await viyaGetAll<ModelRepository>('/modelRepository/repositories?limit=20');
+  return [{ value: '', innerHTML: placeholderText }, ...items.map((item) => ({ value: item.id, innerHTML: item.name }))];
 }
 
 /**
  * Create a new model.
+ *
+ * Throws when the service refuses the creation (a name that exists in the
+ * project, no permission to write there): the answer is then an error body,
+ * and a caller that read an id from it would go on with the model `undefined`.
+ * When the creation gets no answer, the model of that name is looked for in
+ * its project (see writeOrReadBack).
  */
 export async function createModel(
   modelDefinition: Record<string, unknown>
 ): Promise<Model> {
-  const response = await viyaFetch('/modelRepository/models', {
-    method: 'POST',
-    body: JSON.stringify(modelDefinition),
-    contentType: 'application/vnd.sas.models.model+json',
-  });
-  return response.json();
-}
-
-/**
- * Get contents of a model.
- */
-export async function getModelContents(
-  modelID: string,
-  start: number = 0,
-  limit: number = 100
-): Promise<ModelContent[]> {
-  const data = await viyaGet<SasApiCollection<ModelContent>>(
-    `/modelRepository/models/${modelID}/contents?start=${start}&limit=${limit}`
+  return writeOrReadBack(
+    async () => {
+      const response = await viyaFetch('/modelRepository/models', {
+        method: 'POST',
+        body: JSON.stringify(modelDefinition),
+        contentType: 'application/vnd.sas.models.model+json',
+      });
+      if (!response.ok) throw new ViyaRefused('/modelRepository/models', response.status);
+      return (await response.json()) as Model;
+    },
+    async () =>
+      (await viyaGetAll<Model>(`/modelRepository/projects/${modelDefinition.projectId}/models?limit=100`)).find(
+        (model) => model.name === modelDefinition.name
+      )
   );
-  return data?.items ?? [];
 }
 
 /**
- * Create model content (file upload to a model).
+ * Get contents of a model. Every page of the listing is read (see
+ * viyaGetAll): beside its tracker a prompt-test can hold many contents, the
+ * dataset snapshots of its optimization runs among them.
+ */
+export async function getModelContents(modelID: string): Promise<ModelContent[]> {
+  return viyaGetAll<ModelContent>(`/modelRepository/models/${modelID}/contents?limit=100`);
+}
+
+/**
+ * Create model content (file upload to a model). When the upload gets no
+ * usable answer, the file of that name is read back: the upload was carried
+ * out when it holds what was sent (see writeOrReadBack).
  */
 export async function createModelContent(
   modelID: string,
@@ -173,89 +133,87 @@ export async function createModelContent(
   modelContentRole: string = 'documentation',
   contentType: string = 'application/json'
 ): Promise<{ response: unknown; status_code: number }> {
-  const formData = new FormData();
-
+  let file: Blob;
   if (contentType === 'multipart/form-data' && modelContent instanceof Uint8Array) {
-    formData.append(
-      'files',
-      new Blob([modelContent as BlobPart], { type: 'application/octet-stream' }),
-      modelContentFileName
-    );
+    file = new Blob([modelContent as BlobPart], { type: 'application/octet-stream' });
   } else if (modelContent instanceof Blob) {
-    formData.append(
-      'files',
-      modelContent,
-      modelContentFileName
-    );
+    file = modelContent;
   } else if (contentType === 'text/x-python' || contentType === 'text/plain' || contentType === 'text/markdown') {
-    formData.append(
-      'files',
-      new Blob([modelContent as string], { type: contentType }),
-      modelContentFileName
-    );
+    file = new Blob([modelContent as string], { type: contentType });
   } else {
-    formData.append(
-      'files',
-      new Blob([JSON.stringify(modelContent)], {
-        type: 'application/json',
-      }),
-      modelContentFileName
-    );
+    file = new Blob([JSON.stringify(modelContent)], { type: 'application/json' });
   }
+  const formData = new FormData();
+  formData.append('files', file, modelContentFileName);
 
-  const response = await viyaFetch(
-    `/modelRepository/models/${modelID}/contents?onConflict=update&role=${modelContentRole}`,
-    {
-      method: 'POST',
-      body: formData,
-      contentType: undefined,
+  return writeOrReadBack(
+    async () => {
+      const response = await viyaFetch(
+        `/modelRepository/models/${modelID}/contents?onConflict=update&role=${modelContentRole}`,
+        {
+          method: 'POST',
+          body: formData,
+          contentType: undefined,
+        }
+      );
+      statusOf(response, `/modelRepository/models/${modelID}/contents`);
+      const responseJson = await response.json();
+      return { response: responseJson, status_code: response.status };
+    },
+    async () => {
+      const stored = (await getModelContents(modelID)).find((content) => content.name === modelContentFileName);
+      if (!stored?.fileUri) return undefined;
+      const response = await viyaFetch(`${stored.fileUri}/content`, { accept: '*/*' });
+      if (!response.ok) throw new ViyaRefused(`${stored.fileUri}/content`, response.status);
+      return (await response.text()) === (await file.text()) ? { response: stored, status_code: 200 } : undefined;
     }
   );
-
-  const responseJson = await response.json();
-  return { response: responseJson, status_code: response.status };
 }
 
 /**
- * Delete model content.
+ * Delete model content. When the delete gets no answer, the contents are
+ * read back (see writeOrReadBack).
  */
 export async function deleteModelContent(
   modelID: string,
   contentID: string
 ): Promise<number> {
-  const response = await viyaFetch(
-    `/modelRepository/models/${modelID}/contents/${contentID}`,
-    { method: 'DELETE' }
+  return writeOrReadBack(
+    async () => statusOf(await viyaFetch(`/modelRepository/models/${modelID}/contents/${contentID}`, { method: 'DELETE' }), `/modelRepository/models/${modelID}/contents/${contentID}`),
+    async () => ((await getModelContents(modelID)).some((content) => content.id === contentID) ? undefined : 204)
   );
-  return response.status;
 }
 
 /**
- * Get model variables.
+ * Get model variables. Every page of the listing is read (see viyaGetAll).
  */
-export async function getModelVariables(
-  modelID: string,
-  start: number = 0,
-  limit: number = 1000
-): Promise<ModelVariable[]> {
-  const data = await viyaGet<SasApiCollection<ModelVariable>>(
-    `/modelRepository/models/${modelID}/variables?start=${start}&limit=${limit}`
-  );
-  return data?.items ?? [];
+export async function getModelVariables(modelID: string): Promise<ModelVariable[]> {
+  return viyaGetAll<ModelVariable>(`/modelRepository/models/${modelID}/variables?limit=1000`);
 }
 
 /**
- * Delete a model variable.
+ * Delete a model variable. When the delete gets no answer, the variables are
+ * read back (see writeOrReadBack).
  */
 export async function deleteModelVariable(
   modelID: string,
   variableID: string
 ): Promise<number> {
-  const response = await viyaFetch(
-    `/modelRepository/models/${modelID}/variables/${variableID}`,
-    { method: 'DELETE' }
+  return writeOrReadBack(
+    async () => statusOf(await viyaFetch(`/modelRepository/models/${modelID}/variables/${variableID}`, { method: 'DELETE' }), `/modelRepository/models/${modelID}/variables/${variableID}`),
+    async () => ((await getModelVariables(modelID)).some((variable) => variable.id === variableID) ? undefined : 204)
   );
-  return response.status;
+}
+
+/**
+ * The read back of a delete: 204 when `path` is answered with 404, undefined
+ * when it is still there; any other answer leaves it unknown.
+ */
+async function goneAfterDelete(path: string): Promise<number | undefined> {
+  const response = await viyaFetch(path);
+  if (response.status === 404) return 204;
+  if (response.ok) return undefined;
+  throw new ViyaRefused(path, response.status);
 }
 
 /**
@@ -277,7 +235,9 @@ export async function getModelDetails(
 /**
  * Read a model (for its ETag + body), apply `mutate` to the body in place, then
  * PUT it back with If-Match. Returns the status of the failing GET or of the PUT.
- * Shared by updateModelTags and updateModelAttributes.
+ * Shared by updateModelTags and updateModelAttributes. When the PUT gets no
+ * answer, the model is read back: the update was carried out when `mutate`
+ * changes nothing of what is stored (see writeOrReadBack).
  */
 async function patchModel(
   modelID: string,
@@ -292,13 +252,24 @@ async function patchModel(
   mutate(model);
   const headers: Record<string, string> = {};
   if (etag) headers['If-Match'] = etag;
-  const putResponse = await viyaFetch(`/modelRepository/models/${modelID}`, {
-    method: 'PUT',
-    body: JSON.stringify(model),
-    contentType: 'application/vnd.sas.models.model+json',
-    headers,
-  });
-  return putResponse.status;
+  return writeOrReadBack(
+    async () =>
+      statusOf(
+        await viyaFetch(`/modelRepository/models/${modelID}`, {
+          method: 'PUT',
+          body: JSON.stringify(model),
+          contentType: 'application/vnd.sas.models.model+json',
+          headers,
+        }),
+        `/modelRepository/models/${modelID}`
+      ),
+    async () => {
+      const stored = await viyaGet<Record<string, unknown>>(`/modelRepository/models/${modelID}`, 'application/vnd.sas.models.model+json');
+      const updated = JSON.parse(JSON.stringify(stored)) as Record<string, unknown>;
+      mutate(updated);
+      return JSON.stringify(updated) === JSON.stringify(stored) ? 200 : undefined;
+    }
+  );
 }
 
 /**
@@ -337,23 +308,25 @@ export async function updateModelAttributes(
 }
 
 /**
- * Delete a model.
+ * Delete a model. When the delete gets no answer, the model is read back
+ * (see writeOrReadBack).
  */
 export async function deleteModel(modelID: string): Promise<number> {
-  const response = await viyaFetch(`/modelRepository/models/${modelID}`, {
-    method: 'DELETE',
-  });
-  return response.status;
+  return writeOrReadBack(
+    async () => statusOf(await viyaFetch(`/modelRepository/models/${modelID}`, { method: 'DELETE' }), `/modelRepository/models/${modelID}`),
+    () => goneAfterDelete(`/modelRepository/models/${modelID}`)
+  );
 }
 
 /**
- * Delete a model project.
+ * Delete a model project. When the delete gets no answer, the project is
+ * read back (see writeOrReadBack).
  */
 export async function deleteModelProject(projectID: string): Promise<number> {
-  const response = await viyaFetch(`/modelRepository/projects/${projectID}`, {
-    method: 'DELETE',
-  });
-  return response.status;
+  return writeOrReadBack(
+    async () => statusOf(await viyaFetch(`/modelRepository/projects/${projectID}`, { method: 'DELETE' }), `/modelRepository/projects/${projectID}`),
+    () => goneAfterDelete(`/modelRepository/projects/${projectID}`)
+  );
 }
 
 /**
@@ -369,10 +342,8 @@ export async function deleteModelProject(projectID: string): Promise<number> {
 export async function getModelVersions(
   modelID: string
 ): Promise<Array<{ id: string; label: string; created: string }>> {
-  const data = await viyaGet<SasApiCollection<Record<string, unknown>>>(
-    `/modelRepository/models/${modelID}/modelVersions?limit=100`
-  );
-  return (data?.items ?? [])
+  const items = await viyaGetAll<Record<string, unknown>>(`/modelRepository/models/${modelID}/modelVersions?limit=100`);
+  return items
     .map((item) => ({
       id: String(item.id ?? ''),
       label: String(item.modelVersionName ?? ''),
@@ -401,46 +372,49 @@ export interface TaggedModel {
  * server about each project in turn.
  *
  * A tag nothing carries answers 200 with `count: 0` rather than an error, so
- * an empty result means exactly that and is not a failure to report.
+ * an empty result means exactly that and is not a failure to report. Every
+ * page of the listing is read (see viyaGetAll).
  */
-export async function getTaggedModels(
-  tag: string,
-  start: number = 0,
-  limit: number = 100
-): Promise<TaggedModel[]> {
-  const data = await viyaGet<SasApiCollection<Model>>(
-    `/modelRepository/models?start=${start}&limit=${limit}` +
-      `&filter=${encodeURIComponent(`contains(tags,'${tag}')`)}`
+export async function getTaggedModels(tag: string): Promise<TaggedModel[]> {
+  const items = await viyaGetAll<Model>(
+    `/modelRepository/models?limit=100&filter=${encodeURIComponent(`contains(tags,'${tag}')`)}`
   );
-
-  let models: TaggedModel[] = (data?.items ?? []).map((item) => ({
+  return items.map((item) => ({
     id: String(item.id ?? ''),
     name: String(item.name ?? ''),
     projectId: String(item.projectId ?? ''),
     projectName: String(item.projectName ?? ''),
   }));
-
-  if (data?.items && data.items.length === limit) {
-    models = models.concat(await getTaggedModels(tag, start + limit, limit));
-  }
-
-  return models;
 }
 
 /**
- * Create a new model version.
+ * Create a new model version. Throws when SAS Model Manager refuses it: the
+ * error body of a refusal is JSON as well, and was handed back as if it were
+ * the new version. A version has no name of its own to look for: the
+ * versions are listed before the request, and when it gets no answer a
+ * version that was not listed before is the one it created (see
+ * writeOrReadBack). Without the first listing that cannot be told, and a
+ * request without an answer is left unknown.
  */
 export async function createModelVersion(
   modelID: string,
   versionUpdateType: string = 'minor'
 ): Promise<ModelVersion> {
-  const response = await viyaFetch(
-    `/modelRepository/models/${modelID}/modelVersions`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ Option: versionUpdateType }),
-      contentType: 'application/vnd.sas.models.model.version+json',
+  const before = await viyaGetAll<{ id?: string }>(`/modelRepository/models/${modelID}/modelVersions?limit=100`).catch(() => null);
+  return writeOrReadBack(
+    async () => {
+      const response = await viyaFetch(`/modelRepository/models/${modelID}/modelVersions`, {
+        method: 'POST',
+        body: JSON.stringify({ Option: versionUpdateType }),
+        contentType: 'application/vnd.sas.models.model.version+json',
+      });
+      if (!response.ok) throw new ViyaRefused(`/modelRepository/models/${modelID}/modelVersions`, response.status, `Creating a model version was refused with HTTP ${response.status}`);
+      return (await response.json()) as ModelVersion;
+    },
+    async () => {
+      if (!before) throw new Error('the versions before the request are not known');
+      const after = await viyaGetAll<{ id?: string }>(`/modelRepository/models/${modelID}/modelVersions?limit=100`);
+      return after.find((version) => !before.some((earlier) => earlier.id === version.id)) as ModelVersion | undefined;
     }
   );
-  return response.json();
 }

@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from urllib.parse import quote
 
+from .answer import answer
+
 DEFAULT_SERVER = "cas-shared-default"
 DEFAULT_CASLIB = "Public"
 # Table names the monitoring report already binds to (uppercase, per the SAS script).
@@ -57,7 +59,7 @@ def _drop_table(session, server: str, caslib: str, table: str) -> bool:
     if response.status_code == 404:
         return False
     raise RuntimeError(
-        f"Unloading {table} failed: HTTP {response.status_code} {response.text[:300]}"
+        f"Unloading {table} failed: {answer(response)}"
     )
 
 
@@ -77,7 +79,7 @@ def _upload_table(session, server: str, caslib: str, table: str, csv_path: Path)
     )
     if response.status_code >= 300:
         raise RuntimeError(
-            f"Uploading {table} to CAS failed: HTTP {response.status_code} {response.text[:300]}"
+            f"Uploading {table} to CAS failed: {answer(response)}"
         )
 
 
@@ -95,7 +97,7 @@ def _save_table(session, server: str, caslib: str, table: str) -> None:
     )
     if response.status_code >= 300:
         raise RuntimeError(
-            f"Saving {table} to disk failed: HTTP {response.status_code} {response.text[:300]}"
+            f"Saving {table} to disk failed: {answer(response)}"
         )
 
 

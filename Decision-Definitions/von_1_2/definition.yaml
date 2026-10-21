@@ -39,7 +39,7 @@ metadata:
     at about 0.4 s per call on one CPU core inside the container. Caution: a single small sample; measure
     on your own labelled cases before setting a confidence threshold. Measured 2026-10-05/06 on about
     50 examples per dataset, three runs each: a shortlist, not a ranking.'
-modeler: gerdaw
+modeler: SAS Agentic AI Accelerator
 generation:
   overrides: []
   catalog_provenance: manual entry (self-hosted Von)

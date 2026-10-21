@@ -75,5 +75,5 @@
 %_mgr_repository_pagination();
 
 * Clean up;
-%symdel _mgr_viyaHost;
+%symdel _mgr_viyaHost / nowarn;
 %sysmacdelete _mgr_repository_pagination;

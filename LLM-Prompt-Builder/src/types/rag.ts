@@ -36,6 +36,14 @@ export interface RagBuilderConfig {
   deploymentType: string;
   /** Credential domain holding <BACKEND>_RAG_USER/_RAG_PW entries. */
   credentialDomain: string;
+  /**
+   * Whether a retrieval model manifested from this page verifies the TLS
+   * certificates of its two HTTPS calls (option `sslVerify`, shared with the
+   * prompt side; see `PromptBuilderConfig.sslVerify`). Written as SSL_VERIFY
+   * into the MANIFEST block of retrieve_context.py. The ingestion job and the
+   * retrieval test of this page are not affected.
+   */
+  sslVerify: boolean;
   /** SAS Content root of the deployed RAG runtime (rag_core, jobs, models). */
   contentRoot: string;
   /** CAS server name used when building table references. */
@@ -81,6 +89,25 @@ export interface RagBuilderConfig {
    * index-signature read must narrow before use (see `optionFlag`).
    */
   [key: string]: string | boolean;
+}
+
+/** What the page that hosts the RAG Builder can ask of it once it is built. */
+export interface RagBuilderController {
+  /** Show the Setup step - the one that carries the kind selector. */
+  showSetup(): void;
+}
+
+/**
+ * What the hosting page hands the RAG Builder.
+ *
+ * The builder owns no selection logic: it only places the selector element it
+ * is given, so the page that created it decides what a choice does.
+ */
+export interface RagBuilderHooks {
+  /** The "What are you building?" block, placed at the top of the Setup card. */
+  kindSelector?: HTMLElement;
+  /** Called once, when the builder is complete and can be steered. */
+  onReady?(controller: RagBuilderController): void;
 }
 
 /**

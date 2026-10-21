@@ -8,15 +8,17 @@ import { viyaGetRaw } from './http-client';
 /**
  * Get the content of a file by its URI. Returns the raw Response for the caller
  * to parse (e.g. `.json()`).
+ *
+ * Throws when the file could not be read - no answer, or an answer that is no
+ * success - so that a read that failed is never taken for the file: as a file
+ * without runs, a setup with the defaults, or a job whose code is empty or
+ * the text of an error page.
  */
 export async function getFileContent(
   fileURI: string,
   contentType: string = 'application/json'
 ): Promise<Response> {
-  try {
-    return await viyaGetRaw(`${fileURI}/content`, contentType);
-  } catch {
-    console.log(`The call to ${fileURI}/content was unsuccessful`);
-    return new Response(null, { status: 500 });
-  }
+  const response = await viyaGetRaw(`${fileURI}/content`, contentType);
+  if (!response.ok) throw new Error(`The read of ${fileURI}/content was answered with HTTP ${response.status}`);
+  return response;
 }

@@ -6,23 +6,76 @@ name: Verify generated model definitions
 # managed definition and fails if the committed files differ, and it runs the
 # mdb test suite (generation determinism, fleet fidelity, template-subset lint).
 #
-# It also guards the exported transfer packages under SAS-Viya-Integrations/,
+# It also guards the exported transfer package under SAS-Viya-Integrations/,
 # which is why that path is watched here: an export always reintroduces the
 # exporting deployment's hostname, and all but one occurrence is hidden inside
 # zlib-compressed report content where no diff review will show it.
+#
+# The log parser is tested here as well. Its program lives twice, in
+# Logging-Monitoring/Log-Parser-Code.sas and inside the LLM - Log Parser custom
+# step, and its tests also run the redaction of the collection script printed in
+# the Logging & Monitoring guide against the pod label of the deployment
+# templates - hence those paths.
+#
+# The one transfer package is the content folder, and almost all of it is a
+# second copy of files the repository holds as source. Which files, and where
+# each sits in the package, is listed in SAS-Viya-Integrations/package-manifest.yaml;
+# `mdb package-check` and the mdb test suite compare the package with them:
+# LLM-Prompt-Builder/dist/index.html (and the option names src/va/ddc.ts and
+# src/objects/rag-backends.ts post), RAG/, RAG-Ingestion/, Prompt-Optimization/,
+# Logging-Monitoring/, Setup/, the custom steps and the fact sheets in the
+# definition folders. Each of those is watched so that the change that makes the package
+# stale is the one that says so. CHANGELOG.md is watched because the release
+# table, in CAS and in the package, is built from it. CONTRIBUTING.md is
+# watched because a test of the mdb suite follows the release procedure it
+# describes and reads its steps.
+# The two lists below are the same; tests/test_package_guards.py reads them
+# and the manifest, and fails for a source that no path here covers.
+#
+# The gate is LENIENT on a branch and STRICT on a tag. The package is exported
+# from a SAS Viya system, so between two exports it is the content of an
+# earlier commit: a changelog entry, a fact sheet row, a fix to a program or a
+# rebuilt dist/index.html makes it differ from the checkout. On a push to main
+# and on a pull request such a difference in content is printed as a line
+# starting with "drift:" and does not fail - a contributor has no access to
+# the system the package is exported from. What a package must never be still
+# fails there: an object outside the manifest, a rule, a share, a host, a
+# per-user state, a report default that is not neutral, a missing entry, a
+# user id. A release is tagged with its version, and on a tag the gate is
+# `mdb package-check --release`: every difference is an error, drift included,
+# and the commit release.json names has to be in the history of the tag. The
+# tag itself has to name a commit of main, which a step of its own asks git.
+# The strict form also runs on a branch whose change replaces the package file.
 
 on:
   push:
     branches:
       - main
+    # a release tag (2.3.0): the strict gate. Path filters are not applied to
+    # a pushed tag, so a tag always starts the workflow.
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
     paths:
       - "LLM-Definitions/**"
       - "Embedding-Definitions/**"
       - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/package-manifest.yaml"
       - "SAS-Viya-Integrations/RAG/**"
+      - "SAS-Viya-Integrations/RAG-Ingestion/**"
+      - "SAS-Viya-Integrations/Prompt-Optimization/**"
+      - "SAS-Viya-Integrations/Custom-Steps/**"
       - "SAS-Viya-Integrations/Other/**"
+      - "LLM-Prompt-Builder/dist/index.html"
+      - "LLM-Prompt-Builder/src/va/ddc.ts"
+      - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SAS-Viya-Integrations/Setup/**"
+      - "SCR-LLM-Deployment-YAML/**"
+      - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
   pull_request:
     paths:
@@ -31,8 +84,21 @@ on:
       - "Decision-Definitions/**"
       - "Model-Definition-Builder/**"
       - "SAS-Viya-Integrations/*.json"
+      - "SAS-Viya-Integrations/package-manifest.yaml"
       - "SAS-Viya-Integrations/RAG/**"
+      - "SAS-Viya-Integrations/RAG-Ingestion/**"
+      - "SAS-Viya-Integrations/Prompt-Optimization/**"
+      - "SAS-Viya-Integrations/Custom-Steps/**"
       - "SAS-Viya-Integrations/Other/**"
+      - "LLM-Prompt-Builder/dist/index.html"
+      - "LLM-Prompt-Builder/src/va/ddc.ts"
+      - "LLM-Prompt-Builder/src/objects/rag-backends.ts"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SAS-Viya-Integrations/Logging-Monitoring/**"
+      - "SAS-Viya-Integrations/Setup/**"
+      - "SCR-LLM-Deployment-YAML/**"
+      - "website/docs/Administration-Guide/Logging-&-Monitoring.md"
       - ".github/workflows/verify-model-definitions.yml"
 
 jobs:
@@ -46,6 +112,11 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # the whole history: release.json in the package names the commit
+          # the content folder was deployed from, and the gate of a release
+          # looks it up in the history of the tag
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -55,15 +126,74 @@ jobs:
         run: mdb generate --all --check
       - name: Validate managed definitions
         run: mdb validate --all
-      - name: Transfer packages name no environment
-        run: mdb package-check
+      - name: The transfer package is nothing it must not be
+        # The content gate, lenient: every entry of package-manifest.yaml is
+        # in the package, nothing else is in it, and no report names a host
+        # or carries a user's state. A difference in content against the
+        # checkout is a "drift:" line and does not fail. --allow-missing is
+        # for the time before the package of the release is in the
+        # repository; it goes with the commit that adds the file - and mdb
+        # no longer honours it once the package files of the earlier
+        # releases are gone, which that commit removes.
+        run: mdb package-check --allow-missing
+      - name: A package file that changes equals the checkout
+        # A push or pull request that replaces the package file is held to
+        # the gate of a release: a difference in content inside it - another
+        # program, one more parameter, a host in a form - is drift for the
+        # lenient gate above and would pass until the tag.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          package=SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE=HEAD~1; fi
+          if git diff --quiet "$BASE" HEAD -- "$package"; then
+            echo "$package did not change: the lenient gate above is the check."
+          else
+            mdb package-check --release
+          fi
+      - name: A release tag names a commit of main
+        # CONTRIBUTING.md, step 4: the tag goes on the commit the second
+        # merge made on main. The gate below cannot tell - a tag on the
+        # commit of the branch that added the package file equals its
+        # checkout as well - so git is asked. The checkout above fetched
+        # every branch (fetch-depth: 0); without origin/main the step fails.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "The tag $GITHUB_REF_NAME names a commit that is not in the history of main."
+            echo "A release is tagged on the commit of main that holds the package file (CONTRIBUTING.md, step 4)."
+            exit 1
+          fi
+      - name: The transfer package of a release equals the checkout
+        # The gate of a release, on a tag only: every difference is an
+        # error, and a package that is missing is one.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: mdb package-check --release
       - name: mdb test suite
         run: python -m pytest Model-Definition-Builder/cli/tests -q
       - name: RAG runtime test suite
         # rag_core is pure Python plus pandas; the store adapters skip their
         # tests when the database drivers are absent. pypdfium2 is installed
-        # because one test distinguishes a PDF that FAILS extraction from one
-        # that is SKIPPED for want of an extractor.
+        # so that the test of the PDF text layer runs rather than skips; the
+        # tests of a PDF that FAILS extraction and of one that is SKIPPED for
+        # want of an extractor give the registry what they need themselves.
         run: |
           pip install pandas requests pypdfium2 pytest
           python -m pytest SAS-Viya-Integrations/RAG/tests -q
+      - name: Log parser test suite
+        # The parser's Python runs outside of SAS on made-up logs (pandas is
+        # installed by the step above); the same suite fails when the code file
+        # and the custom step no longer hold the same program.
+        run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q
+      - name: Setup programs test suite
+        # Start-Here.sas and Load-Accelerator-Tables.sas: the Python of the
+        # page runs against a SAS Viya system that is made up, and the columns
+        # of the release table are held against the ones mdb writes - hence
+        # the mdb installed above.
+        run: python -m pytest SAS-Viya-Integrations/Setup/tests -q
+      - name: Prompt optimization job test suite
+        # The Python program of Optimize-Prompt-DSPy.sas runs against stand-ins
+        # for SAS, SAS Viya and dspy: what it checks before its first model
+        # call, and how it writes an HTTP error.
+        run: python -m pytest SAS-Viya-Integrations/Prompt-Optimization/tests -q

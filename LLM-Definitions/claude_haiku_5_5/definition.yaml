@@ -1,0 +1,43 @@
+schema: 1
+kind: llm
+model_id: claude_haiku_5_5
+display_name: Claude Haiku 5.5
+provider:
+  adapter: anthropic
+  model_version: claude-haiku-5-5
+  endpoint: https://api.anthropic.com/v1/messages
+  params:
+    anthropic_version: '2023-06-01'
+  auth:
+    mode: api_key
+    key_name: Anthropic
+runtime:
+  template: anthropic_messages
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options:
+  reasoning_effort:
+    default: medium
+  max_tokens:
+    default: 4000
+    max: 128000.0
+tags:
+  size_class: LLM
+  license_class: Proprietary
+  provider_tag: Anthropic
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Claude Haiku 5.5 by Anthropic, served through the Anthropic API.
+  release_date: '2026-10-07'
+  context_length: 1000000
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.0e-07
+    output_token_price: 5.0e-07
+modeler: SAS Agentic AI Accelerator
+generation:
+  overrides: []
+  catalog_provenance: anthropic (static snapshot 2026-10-19)

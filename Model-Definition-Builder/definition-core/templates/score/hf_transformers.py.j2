@@ -18,12 +18,19 @@ device = get_device()
 os.environ['TRANSFORMERS_CACHE'] = '/pybox/model'
 
 checkpoint = '{{ model_path }}'
-tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-model = AutoModelForCausalLM.from_pretrained(
-    checkpoint,
-    torch_dtype='auto',
-    device_map=device,
-)
+
+{% include "partials/_model_cache.py.j2" %}
+
+def _load_model():
+    loadedTokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    loadedModel = AutoModelForCausalLM.from_pretrained(
+        checkpoint,
+        torch_dtype='auto',
+        device_map=device,
+    )
+    return loadedTokenizer, loadedModel
+
+tokenizer, model = _cached(checkpoint, _load_model)
 
 # Initiate the logger to write output information to the log
 logging.basicConfig(

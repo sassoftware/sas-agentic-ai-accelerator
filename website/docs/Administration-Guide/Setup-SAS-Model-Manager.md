@@ -19,11 +19,11 @@ mdb setup
 
 `mdb setup` reads the SAS Viya server from `SAS_VIYA_URL` and signs in with whichever credential you provide (see [Signing in to SAS Viya](#viyaAuth) - a password is not required), the point of contact from `SAS_RESPONSIBLE_PARTY`, the SCR base URL from `SAS_SCR_ENDPOINT`, and the deployment type from `SAS_DEPLOYMENT_TYPE` (`k8s` by default, or `aca` for Azure Container Apps/Instances). All of these live in your `.env`.
 
-It also loads the **release table** `Public.ACCELERATOR_RELEASES` into CAS (the caslib from `SAS_CAS_LIBRARY`, the name from `SAS_RELEASES_TABLE`) - the accelerator's changelog as one row per release and per change. That is the table you assign to the Prompt Builder and RAG Builder objects in SAS Visual Analytics, see [Deploying the Builder UIs](Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report); reload it after an upgrade with `mdb load-releases`, or skip it here with `--no-releases`.
+It also loads the **release table** `Public.ACCELERATOR_RELEASES` into CAS (the caslib from `SAS_CAS_LIBRARY`, the name from `SAS_RELEASES_TABLE`) - the accelerator's changelog as one row per release and per change, a change to the Prompt Builder as one row for each of its parts (`builder_part`: Prompt, Decision, RAG) that it concerns. That is the table you assign to the Prompt Builder object in SAS Visual Analytics, see [Deploying the Builder UIs](Setup-Additional-UIs.md#5-add-the-object-to-a-visual-analytics-report); `mdb builders-import` reloads it with every import, `mdb load-releases` does it alone, and `--no-releases` skips it here. A first install is this command and then `mdb builders-import`, which imports the content folder - the Prompt Builder, the RAG runtime, the logging programs and the usage report -, and then the page *Start Here* with its installation check: see [Install or upgrade with the transfer package](Setup-Additional-UIs.md#the-transfer-package).
 
-Running it produces two additional json files as outputs, that are required for the steps on the page [Deploying the Builder UIs](Setup-Additional-UIs.md):
-- *llm-prompt-builder.json*, this will enable your users to do No-Code Prompt Engineering.
-- *rag-builder.json*, this will enable your users to do No-Code RAG pipeline setups.
+Running it produces two files as outputs:
+- *llm-prompt-builder.json*, the seed for the Prompt Builder - the one object behind No-Code Prompt Engineering, decision templates and No-Code RAG pipeline setups. It holds the five values that differ per environment, each under the name of the option it belongs to: `modelRepositoryID`, `llmProjectID`, `embeddingProjectID`, `SCREndpoint` and `deploymentType`. `mdb builders-import` writes the same values into the report by itself, so the file is only needed to fill the options in by hand - see the page [Deploying the Builder UIs](Setup-Additional-UIs.md).
+- *sas-viya-cli-commands.txt*, the authorization commands described [below](#authorizing-the-repository).
 
 Use `--out <dir>` to write those files somewhere other than the current directory, or `--no-files` to create only the repository and projects. Run `mdb setup --help` for the full list.
 

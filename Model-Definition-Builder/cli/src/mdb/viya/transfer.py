@@ -13,6 +13,12 @@ and can do the two things the CLI cannot on its own:
 * strip the exporting environment's hostname from a fresh export before it is
   written into the repository (core/packages.py does the rewriting).
 
+`mdb builders-import` hands this service the REPORTS of a package only (with
+the files that are children of a report and the folders they sit in): files,
+custom steps and job definitions are brought in place by viya/content.py. And
+it reads the tasks of an import job to the end (`job_tasks`,
+`task_problems`), because a job ends `completed` with tasks that did not.
+
 Request shapes are the ones the service records on its own jobs
 (`GET /transfer/importJobs` shows `request`): export request version 1 with
 `items` and `options`, import request version 2 with `packageUri` and an
@@ -27,6 +33,7 @@ from typing import Callable, Optional
 from urllib.parse import quote, urlparse
 
 from ..core.packages import PLACEHOLDER_HOST
+from .answer import answer, one_line
 
 EXPORT_REQUEST = "application/vnd.sas.transfer.export.request+json"
 IMPORT_REQUEST = "application/vnd.sas.transfer.import.request+json"
@@ -37,7 +44,7 @@ DEFAULT_TIMEOUT = 600
 
 
 def _failure(what: str, response) -> RuntimeError:
-    return RuntimeError(f"{what}: HTTP {response.status_code} {response.text[:300]}")
+    return RuntimeError(f"{what}: {answer(response)}")
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +96,44 @@ def job_messages(session, job: dict) -> list[str]:
     return lines
 
 
+def job_tasks(session, job: dict) -> list[dict]:
+    """Every task of a finished job, read page by page to the end.
+
+    A job tells in its own state only whether it ran: an import job was seen
+    to end `completed` with `errorCount` 0 while three of its tasks had ended
+    `completedWithWarnings` - an object the service had written into no
+    folder. So the tasks are what says whether an import did what it was
+    for, and a job whose tasks cannot be read is not known to have."""
+    self_uri = job_uri(job)
+    tasks, start = [], 0
+    while True:
+        response = session.get(f"{self_uri}/tasks", params={"start": start, "limit": 100})
+        if not response.ok:
+            raise _failure(f"Reading the tasks of the job {self_uri} failed", response)
+        page = response.json()
+        items = page.get("items") or []
+        tasks.extend(items)
+        start += len(items)
+        if not items or start >= int(page.get("count") or 0):
+            return tasks
+
+
+def task_problems(tasks: list) -> list[str]:
+    """One line per task that did not end `completed`: its object, the state
+    it ended in and what the service says about it. A warning counts - it is
+    how the service reports an object it could not put where it belongs."""
+    lines = []
+    for task in tasks:
+        state = str(task.get("state") or "")
+        if state.lower() == "completed":
+            continue
+        message = " / ".join(part.strip() for part in str(task.get("message") or "").splitlines() if part.strip())
+        kind = str(task.get("resourceType") or "").rsplit(".", 1)[-1].replace("+json", "")
+        name = task.get("name") or task.get("resourceName") or task.get("id")
+        lines.append(f"{kind + ' ' if kind else ''}'{name}': {state or 'no state'}" + (f" - {message}" if message else ""))
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
@@ -111,7 +156,37 @@ def download_package(session, package_uri: str) -> str:
 
 
 def delete_package(session, package_uri: str) -> None:
-    session.delete(package_uri)
+    """Delete a package of the transfer service. A refusal, and no answer,
+    are a RuntimeError: the caller says the package is left and how to
+    delete it. The pass of 2026-10-12 saw DELETE /transfer/packages/{id}
+    answered 204."""
+    _delete(session, package_uri, "the package")
+
+
+def delete_job(session, job_uri: str) -> None:
+    """Delete the record of an export job (DELETE /transfer/exportJobs/{id},
+    answered 204 in the clean-up of 2026-10-12). Failures as for
+    `delete_package`."""
+    _delete(session, job_uri, "the job record")
+
+
+def _delete(session, uri: str, what: str) -> None:
+    try:
+        response = session.delete(uri)
+    except Exception as exc:                                   # a timeout, a dropped connection
+        raise RuntimeError(f"no answer to the delete of {what} {uri} ({type(exc).__name__}: {one_line(str(exc))})") from exc
+    if response is not None and not getattr(response, "ok", True):
+        raise RuntimeError(f"deleting {what} {uri} was refused: {answer(response)}")
+
+
+def leftover_line(uri: str, what: str = "package") -> str:
+    """How an administrator deletes a transfer object mdb could not delete."""
+    object_id = uri.rstrip("/").rsplit("/", 1)[-1]
+    if what == "package":
+        how = f"`sas-viya transfer delete --id {object_id}`, or DELETE {uri}"
+    else:
+        how = f"DELETE {uri}"
+    return f"the transfer {what} {object_id} is left on the server - delete it with {how}"
 
 
 # ---------------------------------------------------------------------------
@@ -119,13 +194,20 @@ def delete_package(session, package_uri: str) -> None:
 # ---------------------------------------------------------------------------
 def upload_package(session, path: Path) -> dict:
     """Upload a package file; returns the package summary (id, name)."""
+    return upload_package_bytes(session, path.name, path.read_bytes())
+
+
+def upload_package_bytes(session, name: str, data: bytes) -> dict:
+    """Upload a package that is not a file - the part of one that
+    `mdb builders-import` hands to the transfer service; returns the package
+    summary (id, name)."""
     response = session.post(
         "/transfer/packages",
-        files={"file": (path.name, path.read_bytes(), "application/json")},
+        files={"file": (name, data, "application/json")},
         headers={"Accept": "application/json"},
     )
     if not response.ok:
-        raise _failure(f"Uploading {path.name} failed", response)
+        raise _failure(f"Uploading {name} failed", response)
     return response.json()
 
 
@@ -151,14 +233,18 @@ def host_of(url_or_host: str) -> str:
 
 
 def rehost_mapping(mapping: dict, host: str, releases_from: str, releases_to: str,
-                   placeholder: str = PLACEHOLDER_HOST) -> tuple[dict, list[str]]:
+                   placeholder: str = PLACEHOLDER_HOST,
+                   library: Optional[str] = None, server: Optional[str] = None) -> tuple[dict, list[str]]:
     """The import mapping this deployment needs: the placeholder host in every
     substitution becomes `host`, and each table connector whose source names
     the release table (any server or library) is retargeted at `releases_to`.
 
-    Returns (mapping, changes) - the changes as sentences for the console. Other
-    table connectors are left as exported and reported, because retargeting a
-    report at a table with different columns breaks its data items.
+    Returns (mapping, changes) - the changes as sentences for the console.
+    Every other table connector is left as exported and reported, unless
+    `library` is given: then it is pointed at the table of the SAME NAME in
+    that CAS library (on `server`, or the server it named). The name is never
+    changed, because retargeting a report at a table with different columns
+    breaks its data items.
     """
     changes: list[str] = []
     for entry in mapping.get("substitutions") or []:
@@ -174,6 +260,11 @@ def rehost_mapping(mapping: dict, host: str, releases_from: str, releases_to: st
             if connector.get("target") != releases_to:
                 connector["target"] = releases_to
                 changes.append(f"data source {connector.get('source')} -> {releases_to}")
+        elif library and source.get("table"):
+            target = table_spec(server or source.get("server", ""), library, source["table"])
+            if connector.get("target") != target:
+                connector["target"] = target
+                changes.append(f"data source {connector.get('source')} -> {target}")
         else:
             changes.append(f"data source {connector.get('source')} left as exported "
                            "(not the release table)")

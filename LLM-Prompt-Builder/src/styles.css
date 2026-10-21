@@ -19,12 +19,16 @@
 }
 
 /* The step shell runs edge to edge; anything mounted outside it (the
-   configuration and load alerts) keeps its own margin. */
+   configuration and load alerts, directly under the page root or in the area
+   of one flow) keeps its own margin. The flow areas themselves get no layout:
+   the step header inside them is sticky, which an ancestor with overflow,
+   transform or containment would break. */
 body {
   padding: 0;
   background-color: #eef0f3;
 }
-#app > .alert {
+#app > .alert,
+.pb-shell-area > .alert {
   margin: 1rem;
 }
 
@@ -542,11 +546,17 @@ a[role='button'] {
   font-variant-numeric: tabular-nums;
 }
 
-/* The kind of template, chosen first on the Setup card: two options with a
-   sentence each, side by side where there is room. */
+/* "What are you building?", chosen first on a Setup card: one card per kind
+   with a sentence each, side by side where there is room. The minimum width
+   lets three cards share one row in a 1024 px wide report object. */
+.pb-kind-heading {
+  /* A sub-heading of the card it sits in, never larger than the card's title */
+  font-size: 1rem;
+  font-weight: 600;
+}
 .pb-kind-options {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr));
   gap: 0.75rem;
   margin-bottom: 0.5rem;
 }
@@ -580,6 +590,33 @@ a[role='button'] {
 .pb-kind-description {
   font-size: 0.875rem;
   color: #5b6472;
+}
+/* A kind this object has but cannot use: the card stays readable and says why */
+.pb-kind-option.is-disabled {
+  cursor: not-allowed;
+  background: var(--pb-surface-muted);
+}
+.pb-kind-reason {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #7a4b00;
+}
+/* A kind that is being loaded: a spinner beside its title, and no card can be
+   chosen until it is there */
+.pb-kind-options[aria-busy='true'] .pb-kind-option {
+  cursor: progress;
+}
+.pb-kind-option.is-busy {
+  border-color: var(--bs-primary, #0766d1);
+}
+.pb-kind-spinner {
+  margin-left: 0.4rem;
+  color: var(--pb-primary);
+  vertical-align: -0.125em;
+}
+.pb-kind-notice {
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
 }
 
 /* Decision templates, guidance: the lint under a question or the state, the
@@ -649,6 +686,8 @@ a[role='button'] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Beside a text field in a flex row the circle would be squeezed to a sliver. */
+  flex-shrink: 0;
 }
 .pb-help {
   display: block;

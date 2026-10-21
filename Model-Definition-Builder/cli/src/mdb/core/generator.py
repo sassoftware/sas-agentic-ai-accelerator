@@ -10,15 +10,16 @@ and tests all share one code path.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .. import __version__
-from .manifest import ModelManifest, OptionSpec
+from .manifest import ModelManifest, OptionSpec, described, key_name_refusal
 
 SCORE_TEMPLATE_SUFFIX = ".py.j2"
 # Score templates that address a model by Azure DEPLOYMENT NAME and build their
@@ -29,10 +30,68 @@ SCORE_TEMPLATE_SUFFIX = ".py.j2"
 AZURE_TEMPLATES = ("azure_openai_v1", "azure_openai_env", "emb_azure_openai_v1")
 AZURE_ENV_TEMPLATE = "azure_openai_env"
 AZURE_EMBEDDING_TEMPLATE = "emb_azure_openai_v1"
+# Score templates that send the provider key a call carries in the API_KEY
+# option - the ones `auth.mode: env` can feed from the container's environment
+# instead (partials/_env_api_key.py.j2). In the other modes they read the option
+# through partials/_option_api_key.py.j2, which fails naming API_KEY when a call
+# carries none. The others take no key (self-hosted
+# weights), read their own token variable (OpenAI-compatible servers) or the
+# AWS credential chain (sigv4), or already read the key from the environment
+# (azure_openai_env).
+KEY_OPTION_TEMPLATES = (
+    "openai_chat", "anthropic_messages", "gemini_generate", "bedrock_converse", "azure_openai_v1",
+    "dec_systemone_api", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
+    "emb_bedrock_cohere", "emb_azure_openai_v1",
+)
 
 
 class GenerationError(RuntimeError):
     pass
+
+
+class OptionError(GenerationError):
+    """An option the score template cannot take as the manifest declares it:
+    one outside the vocabulary without an inline type, one its score template
+    family does not support, two that exclude each other. `mdb import` names
+    the options.json of the folder as the place to repair it."""
+
+
+class OptionRuleError(GenerationError):
+    """An option that breaks the rule of check_options_json. `mdb import`
+    names the options.json of the folder as the place to repair it."""
+
+
+#: The sentence a call of such a score code fails with when it carries no
+#: API_KEY option (partials/_option_api_key.py.j2).
+NO_API_KEY_FAILURE = "No API key: pass the provider key in the API_KEY option of the call."
+
+
+def key_env_var(manifest: ModelManifest) -> str:
+    """The container environment variable an `auth.mode: env` definition
+    reads its key from, '' for any other mode. Refuses env mode on a score
+    template that sends no API_KEY - it would have no key to replace -, and
+    auth.mode none on one that sends it: options.json then has no API_KEY,
+    and every call would fail for an option the model does not declare. A
+    score code kept by hand (generation.overrides, such as the self-hosted
+    Llama and Phi folders of the repository) is not the template's, and
+    is not refused."""
+    auth = manifest.provider.auth
+    if (auth.mode == "none" and manifest.runtime.template in KEY_OPTION_TEMPLATES
+            and effective_score_file(manifest) not in manifest.generation.overrides):
+        raise GenerationError(
+            f"auth.mode 'none' gives an options.json without API_KEY, and the score template "
+            f"'{manifest.runtime.template}' sends the provider key a call carries in the API_KEY option - every call "
+            f"would fail with '{NO_API_KEY_FAILURE}' Set auth.mode 'api_key' with auth.key_name (the entry of the "
+            "credential domain that holds the key, such as OpenAI), or auth.mode 'env' (the key from a container "
+            "environment variable, auth.env_var).")
+    if auth.mode != "env":
+        return ""
+    if manifest.runtime.template not in KEY_OPTION_TEMPLATES:
+        raise GenerationError(
+            "auth.mode 'env' needs a score template that sends a provider key, "
+            f"and '{manifest.runtime.template}' sends none from the API_KEY option - use auth.mode "
+            "'none' (or 'api_key' with a template that takes one).")
+    return auth.env_var or ""
 
 
 @dataclass
@@ -108,7 +167,7 @@ def _trim_number(value: float) -> str:
 def _resolve_option(name: str, spec: OptionSpec, core: CoreAssets) -> dict[str, Any]:
     vocab = core.vocabulary.get(name, {})
     if not vocab and spec.type is None:
-        raise GenerationError(
+        raise OptionError(
             f"Option '{name}' is not in the option vocabulary and declares no inline type. "
             "Add it to definition-core/static/option-vocabulary.json, or declare it inline "
             "with type/description (it then passes through to the provider under its own name)."
@@ -153,6 +212,46 @@ def _legacy_range(name: str, resolved: dict[str, Any], manifest: ModelManifest) 
     return ""
 
 
+def _checked_value_map(name: str, spec: OptionSpec, resolved: dict[str, Any]) -> Optional[dict[str, str]]:
+    """The manifest's own value_map of an option, checked against the
+    option's normalized values: every one of them is a key, and nothing else
+    is - a missing key would send the fallback for a value the UI offers, an
+    extra one names a value no caller can choose. None where there is none."""
+    if spec.value_map is None:
+        return None
+    normalized = list(resolved.get("values") or [])
+    missing = [value for value in normalized if value not in spec.value_map]
+    unknown = [key for key in spec.value_map if key not in normalized]
+    if missing or unknown:
+        problems = []
+        if missing:
+            problems.append(f"no entry for {', '.join(missing)}")
+        if unknown:
+            problems.append(f"{', '.join(unknown)} {'is' if len(unknown) == 1 else 'are'} not a value of the option")
+        raise GenerationError(
+            f"Option '{name}': value_map must map exactly the normalized values "
+            f"{' | '.join(normalized)} to the provider's values - {'; '.join(problems)}."
+        )
+    return {value: spec.value_map[value] for value in normalized}
+
+
+def drop_family_value_maps(manifest: ModelManifest, core: "CoreAssets") -> list[str]:
+    """Take out every option value_map that says what the score-template
+    family's map in the vocabulary says already, so a definition only carries
+    a map where its model differs from its family. Returns the option names
+    whose map was dropped. `mdb add` calls it after an adapter filled the maps
+    from the catalog."""
+    dropped = []
+    for name, spec in manifest.options.items():
+        if spec.value_map is None:
+            continue
+        family_map = core.vocabulary.get(name, {}).get("families", {}).get(manifest.runtime.template, {})
+        if family_map.get("value_map") == spec.value_map:
+            spec.value_map = None
+            dropped.append(name)
+    return dropped
+
+
 CAST_FN = {"float": "float", "int": "int", "str": "str", "bool": "bool"}
 # Python coercion for custom pass-through options, keyed by option type
 TYPE_CAST = {"number": "float", "int": "int", "bool": "bool", "enum": "str", "string": "str"}
@@ -166,10 +265,32 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
     # Options the provider refuses to accept together, keyed by group name. The
     # first member declared in the manifest wins when the caller sets neither.
     exclusive: dict[str, list[tuple[str, str, str]]] = {}
+    # Fields of nested request objects, keyed by the object: {outer: [(field, expression)]}
+    nested: dict[str, list[tuple[str, str]]] = {}
     thinking_block = ""
+
+    if family == "anthropic_messages" and {"reasoning_effort", "thinking_budget"} <= set(manifest.options):
+        # Two thinking controls of two model generations: a budget sends
+        # thinking {type: enabled}, which a model with adaptive thinking
+        # refuses, and reasoning_effort sends output_config.effort, which an
+        # older model refuses.
+        raise OptionError(
+            "Options 'reasoning_effort' and 'thinking_budget' exclude each other: reasoning_effort "
+            "(output_config.effort) is for Claude models with adaptive thinking, thinking_budget "
+            "(thinking type enabled) for older ones - keep the one the model takes."
+        )
 
     for name, spec in manifest.options.items():
         resolved = _resolve_option(name, spec, core)
+        if spec.value_map is not None and (resolved["informational"] or resolved["custom"]):
+            # Checked before either branch skips the translation, so a map
+            # is never silently dropped from what the score code sends
+            reason = ("is informational and never enters the score code" if resolved["informational"]
+                      else "is a custom option outside the vocabulary and is sent as-is under its own name")
+            raise GenerationError(
+                f"Option '{name}' declares a value_map, but it {reason} - nothing translates its "
+                "values; remove value_map (for a custom option, list the provider's own values)."
+            )
         if resolved["informational"]:
             continue  # options.json only - never enters the score script
         defaults_lines.append(f'        "{name}": {_py_literal(spec.default)},')
@@ -189,9 +310,14 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
             continue
         family_map = resolved["families"].get(family)
         if family_map is None:
-            raise GenerationError(
+            raise OptionError(
                 f"Option '{name}' is not supported by score template family '{family}'. "
                 "Remove the option or extend the vocabulary."
+            )
+        if spec.value_map is not None and "value_map" not in family_map:
+            raise GenerationError(
+                f"Option '{name}' declares a value_map, but score template family '{family}' does not "
+                "translate its values - remove value_map."
             )
         if family_map.get("builtin"):
             continue  # the template itself consumes the option (e.g. Embedding_Mode branch)
@@ -199,12 +325,20 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         if "value_map" in family_map and "body_key" in family_map:
             # Normalized enum translated to the provider's own value set, e.g.
             # the 5-level reasoning scale where 'maximum' maps to OpenAI 'high'
-            value_map = family_map["value_map"]
+            # - or to this model's own set where the manifest names one
+            value_map = _checked_value_map(name, spec, resolved) or family_map["value_map"]
             fallback = value_map.get(str(spec.default), next(iter(value_map.values())))
-            body_lines.append(
-                f'        "{family_map["body_key"]}": {json.dumps(value_map)}'
-                f'.get(str(options["{name}"]), "{fallback}"),'
-            )
+            expression = (f'{json.dumps(value_map)}'
+                          f'.get(str(options["{name}"]), {json.dumps(fallback)})')
+            body_key = family_map["body_key"]
+            if "." in body_key:
+                # A field of a nested request object, e.g. Anthropic's
+                # output_config.effort: collected so that several options of
+                # one object render as one entry of the payload literal
+                outer, inner = body_key.split(".", 1)
+                nested.setdefault(outer, []).append((inner, expression))
+            else:
+                body_lines.append(f'        "{body_key}": {expression},')
             continue
         if "body_key" in family_map:
             body_key = family_map["body_key"]
@@ -226,6 +360,10 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
                 body_lines.append(f'        "{body_key}": {cast}(options["{name}"]),')
         elif "generate_key" in family_map:
             generate_lines.append(f"        {family_map['generate_key']}={cast}(options['{name}'])")
+
+    for outer, fields in nested.items():
+        inner = ", ".join(f'"{key}": {expression}' for key, expression in fields)
+        body_lines.append(f'        "{outer}": {{{inner}}},')
 
     return {
         "options_defaults_block": "\n".join(defaults_lines),
@@ -282,6 +420,9 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         "model_version": manifest.provider.model_version,
         "endpoint": manifest.provider.endpoint or "",
         "timeout_s": manifest.runtime.timeout_s,
+        # The NAME of the variable an auth.mode env definition reads its key
+        # from (partials/_env_api_key.py.j2); '' renders nothing.
+        "key_env_var": key_env_var(manifest),
         **_score_blocks(manifest, core),
     }
     if manifest.runtime.template in AZURE_TEMPLATES:
@@ -389,14 +530,193 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
             "range": core.api_key_meta["range"],
             "description": core.api_key_meta["description"].replace("{key_name}", manifest.provider.auth.key_name or ""),
         }
+    check_options_json(entries)
     return json.dumps(entries, indent=4, ensure_ascii=False)
+
+
+def _shown(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+#: The quotes the parser of the score code takes off the ends of a name and
+#: of a value, after the blanks (str.strip()).
+_PARSER_QUOTES = "\"'"
+
+
+def read_by_score_code(text: str) -> Any:
+    """What the parser of a generated score code (_options_parser.py.j2)
+    reads of `text`, a value of the options string a run sends: the blanks
+    and then the quotes off its ends, true and false in any case as true and
+    false, a number where float() reads one that holds a point or int() one
+    that does not, and else the text."""
+    value = text.strip().strip(_PARSER_QUOTES)
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return float(value) if "." in value else int(value)
+    except ValueError:
+        return value
+
+
+def _read_as_written(text: str) -> bool:
+    read = read_by_score_code(text)
+    return isinstance(read, str) and read == text
+
+
+def sent_number(value: Any) -> Optional[str]:
+    """How the Prompt Builder writes the number `value` into the options
+    string where the score code reads it as a text, else None. The page
+    writes a number as JavaScript does (String(n)): in exponent notation for
+    a number below 0.000001 or from 10^21 on, and one of one significant
+    digit there has no point - 1e-7, 1e+21 -, which float() is not tried on
+    and int() does not read."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return "Infinity"  # what JavaScript reads of a JSON number past the largest double
+    if number == 0 or not math.isfinite(number) or 1e-6 <= abs(number) < 1e21:
+        return None
+    mantissa, exponent = repr(number).split("e")
+    if "." in mantissa:
+        return None
+    return f"{mantissa}e{'+' if int(exponent) > 0 else '-'}{abs(int(exponent))}"
+
+
+def check_options_json(entries: Any) -> None:
+    """Refuse an options.json the Prompt Builder would draw or send other
+    than it says, or the score code read other than it says. `generate` (and
+    every command that renders) applies it to the file it writes, `register`
+    to the file it uploads.
+
+    The rule - JSON as the page reads it:
+
+        options.json         object: option name -> option
+        option name          no "," and no ":", and no blank and no quote at
+                             its ends
+        option               object that holds "default", and no NaN or
+                             Infinity (JSON has neither)
+        option.type          text, where given (absent or null: not given)
+        option.label         text, where given (absent or null: not given)
+        option.description   text, where given (absent or null: not given)
+        type "enum"          values: a non-empty list of texts, none with ",",
+                             each read as written
+                             default: one of values
+        type "bool"          default: true or false
+        option "API_KEY"     default: a non-empty text of letters, digits, ".",
+                             "_" and "-" (KEY_NAME_PATTERN)
+        any other option     default: a text without "," read as written, a
+                             number sent as a number, true or false
+
+    A run of the Builder sends the options as one text,
+    {name:value,name:value}, which the score code splits at each "," and each
+    name from its value at the first ":" - so a name holds neither, and a text
+    a run can send of the file (the default of an option, a value of an enum)
+    no ",". The parser of the score code (_options_parser.py.j2) takes the
+    blanks and then the quotes off the ends of a name and of a value, reads
+    true and false in any case as true and false, and reads a value as a
+    number where float() reads one that holds a point or int() one that does
+    not (read_by_score_code). So a name has no blank and no quote at its
+    ends, and a text the run sends is read as written: no blank and no quote
+    at its ends, not true or false in any case, no number - "5", "TRUE", " a "
+    and "'a'" are not. The Builder writes a number as JavaScript does, and the
+    score code reads 1e-7 and 1e+21, which hold no point, as texts
+    (sent_number); a number is one the Builder writes otherwise. The default
+    of API_KEY, which a run does not send, is the name of the provider key.
+
+    Nothing else is checked: not `range`, not `values` of an option that is
+    no enum. The Prompt Builder leaves an empty option of type string out of
+    a run, and the score code then uses its own default.
+
+    Raises OptionRuleError with a sentence naming the first option that
+    breaks the rule.
+    """
+    if not isinstance(entries, dict):
+        raise OptionRuleError(f"options.json is {_shown(entries)}, not an object of options.")
+    for name, option in entries.items():
+        if "," in name or ":" in name:
+            raise OptionRuleError(
+                f"Option '{name}' has a comma or a colon in its name - the Builder sends the options as "
+                "{name:value,name:value}, so a name holds neither.")
+        if name.strip().strip(_PARSER_QUOTES) != name:
+            raise OptionRuleError(
+                f"Option '{name}' has a blank or a quote at an end of its name - the score code takes them "
+                f"off and would read the option as {_shown(name.strip().strip(_PARSER_QUOTES))}.")
+        if not isinstance(option, dict) or "default" not in option:
+            raise OptionRuleError(f"Option '{name}' is {_shown(option)}, not an object that holds a default.")
+        try:
+            json.dumps(option, allow_nan=False, default=str)
+        except ValueError:
+            raise OptionRuleError(f"Option '{name}' holds NaN or Infinity, which JSON does not hold.") from None
+        for field in ("type", "label", "description"):
+            if option.get(field) is not None and not isinstance(option[field], str):
+                raise OptionRuleError(
+                    f"Option '{name}' has the {field} {_shown(option[field])}, which is not a text.")
+        default = option["default"]
+        if option.get("type") == "enum":
+            values = option.get("values")
+            if not (isinstance(values, list) and values and all(isinstance(value, str) for value in values)):
+                raise OptionRuleError(
+                    f"Option '{name}' is an enum option whose values are {_shown(values)} - an enum option "
+                    "needs a non-empty list of texts as its values.")
+            if any("," in value for value in values):
+                raise OptionRuleError(
+                    f"Option '{name}' has the values {_shown(values)} - the Builder sends the options as "
+                    "{name:value,name:value}, so a value of an enum holds no comma.")
+            if default not in values:
+                raise OptionRuleError(
+                    f"Option '{name}' has the default {_shown(default)}, which is not one of its values "
+                    f"{_shown(values)}.")
+            for value in values:
+                if not _read_as_written(value):
+                    raise OptionRuleError(
+                        f"Option '{name}' has the value {_shown(value)} - the score code would read it as "
+                        f"{_shown(read_by_score_code(value))}, not as that text.")
+        if option.get("type") == "bool" and not isinstance(default, bool):
+            raise OptionRuleError(
+                f"Option '{name}' is a bool option with the default {_shown(default)} - the default of a bool "
+                "option is true or false.")
+        if name == "API_KEY" and not (isinstance(default, str) and default):
+            raise OptionRuleError(
+                f"Option 'API_KEY' has the default {_shown(default)} - its default is the name of the "
+                "provider key, a non-empty text.")
+        if name == "API_KEY" and key_name_refusal(default, "Option 'API_KEY' has the default"):
+            raise OptionRuleError(key_name_refusal(default, "Option 'API_KEY' has the default"))
+        if name == "API_KEY" or option.get("type") in ("enum", "bool"):
+            continue
+        if not isinstance(default, (str, int, float)):
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the default of an option is a text, "
+                "a number, true or false.")
+        if isinstance(default, str) and "," in default:
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the Builder sends the options as "
+                "{name:value,name:value}, so a text default holds no comma.")
+        if isinstance(default, str) and not _read_as_written(default):
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the score code would read it as "
+                f"{_shown(read_by_score_code(default))}, not as that text.")
+        if sent_number(default) is not None:
+            raise OptionRuleError(
+                f"Option '{name}' has the default {_shown(default)} - the Builder sends it as "
+                f"{sent_number(default)}, which the score code reads as a text, not as a number.")
+
+
+def check_options_file(path: Path) -> None:
+    """check_options_json for an options.json on disk."""
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GenerationError(f"{path} is not JSON: {exc}") from exc
+    check_options_json(entries)
 
 
 def _render_model_configuration(manifest: ModelManifest, core: CoreAssets) -> str:
     values: dict[str, Any] = {
         "name": manifest.model_id,
         "scoreCodeFile": effective_score_file(manifest),
-        "description": manifest.metadata.description,
+        "description": described(manifest),
         "modeler": manifest.modeler,
         "tags": manifest.tags.as_list(),
         **core.boilerplate["constants"],
@@ -569,6 +889,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
     template = manifest.runtime.template
     params = manifest.provider.params
     lines: list[str] = []
+    # auth.mode env: the key is read from this variable of the container
+    # instead of arriving per call in the API_KEY option.
+    env_var = key_env_var(manifest)
+    from_env = (f"The key comes from the container environment variable `{env_var}` - set it from a "
+                "Kubernetes Secret (`mdb deploy` renders the reference) and never into the image; this "
+                "definition declares no `API_KEY` option, and one a caller passes anyway still wins")
     if template in AZURE_TEMPLATES:
         committed = params.get("resource", "") if params.get("commit_resource") else ""
         version = (params.get("api_version") or "").strip()
@@ -587,6 +913,8 @@ def deployment_notes(manifest: ModelManifest) -> str:
                          "wins) and `AZURE_OPENAI_DEPLOYMENT` the deployment, defaulting to "
                          f"`{manifest.provider.model_version}`. This definition declares no `API_KEY` option: "
                          "the container, not the caller, holds the key.")
+        elif env_var:
+            lines.append(f"- {from_env}.")
         else:
             lines.append("- The key arrives per call in the `API_KEY` option.")
     elif template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
@@ -602,8 +930,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
         lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
                      "`aws_bedrock_region` option overrides it per call.")
     elif "bedrock" in template:
-        lines.append("- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); "
-                     "no AWS SDK is needed in the container.")
+        if env_var:
+            lines.append(f"- {from_env}. It is a Bedrock API key (bearer token); no AWS SDK is needed in "
+                         "the container.")
+        else:
+            lines.append("- The key arrives per call in the `API_KEY` option as a Bedrock API key (bearer token); "
+                         "no AWS SDK is needed in the container.")
         lines.append(f"- `AWS_BEDROCK_REGION` selects the region (default `{params.get('region', '')}`); an "
                      "`aws_bedrock_region` option overrides it per call.")
     elif template in ("hf_transformers", "hf_onnx", "emb_sentence_transformers"):
@@ -628,10 +960,15 @@ def deployment_notes(manifest: ModelManifest) -> str:
                          "provider connection and no key, and never contacts the Hugging Face Hub at run time.")
         lines.append("- Inference runs on the CPU; `VON_DEVICE` selects another device (`cuda`, `openvino`) "
                      "where the node offers one.")
+    elif template == "dec_systemone_api" and env_var:
+        lines.append(f"- {from_env}. The container posts the state and the questions to the provider's "
+                     "System One endpoint and needs network access to it.")
     elif template == "dec_systemone_api":
         lines.append("- The key arrives per call in the `API_KEY` option; the container posts the state and "
                      "the questions to the provider's System One endpoint and needs no environment "
                      "configuration beyond network access to it.")
+    elif env_var:
+        lines.append(f"- {from_env}. Beyond that the container needs network access to the provider.")
     else:
         lines.append("- The key arrives per call in the `API_KEY` option; the container needs no environment "
                      "configuration beyond network access to the provider.")
@@ -659,7 +996,7 @@ def _render_docs(manifest: ModelManifest, core: CoreAssets, options_json: str) -
     context = {
         "model_id": manifest.model_id,
         "display_name": manifest.display_name,
-        "description": manifest.metadata.description,
+        "description": described(manifest),
         "provider_display": manifest.tags.provider_tag,
         "model_version": manifest.provider.model_version,
         "deployment_type": manifest.metadata.deployment_type,

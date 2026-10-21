@@ -51,12 +51,29 @@ export interface DecisionAnswer {
 
 export type DecisionAnswers = Record<string, DecisionAnswer>;
 
-/** The tag that marks a prompt-test as a decision template in SAS Model Manager. */
+/**
+ * The `algorithm` of a prompt-test that is a decision template. This is what
+ * tells the two kinds apart: SAS Model Manager keeps the algorithm sent when
+ * the model is created, and lists it with every model of a project.
+ */
+export const DECISION_TEMPLATE_ALGORITHM = 'Decision-Template';
+/**
+ * The tag a decision template carries as well. Not relied on alone: SAS Model
+ * Manager drops the tags sent with a creation request, so it is written in a
+ * second request that may fail.
+ */
 export const DECISION_TEMPLATE_TAG = 'Decision-Template';
 /** The tag that marks a Prompt-Engineering project as one made for decision templates. */
 export const DECISION_PROJECT_TAG = 'Decision-Engineering';
 /** The Model Manager project mdb registers decision models in (see registry.py). */
 export const DECISION_PROJECT_NAME = 'Decision Model Project';
+/**
+ * The tag of a model that was manifested with TLS verification off (the
+ * option "Verify TLS certificates in manifested models" unticked): a prompt
+ * template with the LLM call included, a decision template, a RAG retrieval
+ * model. It makes such models findable in SAS Model Manager.
+ */
+export const TLS_VERIFICATION_OFF_TAG = 'TLS-Verification-Off';
 /** The outputs a manifested decision model returns beside the per-question pair. */
 export const DEFAULT_DECISION_OUTPUTS = ['answers', 'answer', 'confidence', 'run_time', 'prompt_length'];
 
@@ -97,6 +114,8 @@ export interface LintItem {
   questionId?: string;
   /** A one-click fix the designer offers. */
   fix?: 'escape';
+  /** Set on an item about the question's name: the designer shows it under the name field. */
+  field?: 'name';
 }
 
 /** What a decision model accepts, read from its registration; every field may be absent. */
@@ -116,16 +135,139 @@ const COMPUTE_PATTERN =
 const REASON_PATTERN = /\b(why|explain|reason|justify|justification|describe|warum|erkl[aä]re?n?|begr[uü]nde?n?)\b/i;
 const EXTRACT_PATTERN = /\b(extract|what is the name|which name|list all|find all|what (?:amount|number|value)|extrahiere)\b/i;
 
+/**
+ * The longest name a question can have: the manifested model returns
+ * <name>_confidence beside <name>, and a SAS name ends at 32 characters.
+ */
+export const MAX_QUESTION_ID_LENGTH = 32 - '_confidence'.length;
+
+/** The Python keywords: none of them compiles as the name of a variable. */
+const PYTHON_KEYWORDS = [
+  'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',
+  'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal',
+  'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
+];
+
+/**
+ * Names an input of a manifested model cannot have, in either score code (the
+ * prompt template's and the decision template's). Every prompt variable a
+ * template references becomes a parameter of scoreModel, and the function
+ * reads its inputs only after its first statements have run:
+ *
+ * - a Python keyword does not compile as a parameter;
+ * - llm, endpoint, llmURL, options and systemPrompt are assigned before the
+ *   prompt is built, so the prompt would carry that value instead of the
+ *   input - with `options`, the API key;
+ * - a parameter named like a module or a builtin the function calls (os, str,
+ *   json ...) replaces it, and the call fails;
+ * - API_KEY is the input the function declares itself for a model that needs
+ *   a key.
+ *
+ * Compared as written: Python tells `options` from `Options`. A name the code
+ * only assigns after it has read its inputs (response, state, answers ...) is
+ * not listed - such an input works. The one exception is sslVerifyDefault:
+ * it is the line of the score code that says whether TLS verification is on
+ * by default, the line an administrator reads and may edit, so nothing else
+ * in the function is allowed to carry that name.
+ */
+const SCORE_INPUT_NAMES = new Set([
+  ...PYTHON_KEYWORDS,
+  'os', 'requests', 'json', 'str', 'float', 'isinstance', 'all', 'dict', 'Exception', 'ValueError',
+  'llm', 'endpoint', 'llmURL', 'options', 'systemPrompt', 'API_KEY', '_headline', 'sslVerifyDefault',
+]);
+
+/** Whether a prompt variable of this name would break the manifested model (see SCORE_INPUT_NAMES). */
+export function isReservedScoreInput(name: string): boolean {
+  return SCORE_INPUT_NAMES.has(name);
+}
+
+/**
+ * Names an output variable of a manifested prompt template cannot have: what
+ * an input cannot be called, and the locals the score function assigns or
+ * reads after the output defaults are set. The output would take their place
+ * (llmBody, sslVerify, llmCall ...), or the parsing would read the output
+ * instead of its own value (cleaned, parsed, error). The default outputs are
+ * refused by RESERVED_OUTPUT_NAMES of the builder.
+ */
+const SCORE_OUTPUT_NAMES = new Set([
+  ...SCORE_INPUT_NAMES,
+  'llmBody', 'sslVerify', 'llmCall', 'llmJson', 'llmData', 'cleaned', 'parsed', 'key', 'error', 'userPrompt',
+]);
+
+/** Whether an output variable of this name would break the manifested model (see SCORE_OUTPUT_NAMES). */
+export function isReservedScoreOutput(name: string): boolean {
+  return SCORE_OUTPUT_NAMES.has(name);
+}
+
+/**
+ * Names a question cannot take because the manifested score code uses them
+ * itself, compared in lower case (SAS names do not distinguish case). A Python
+ * keyword does not compile as a variable; one of the score function's own
+ * names - a local, a module, a builtin it calls - compiles, but the question's
+ * output then replaces what the code relies on. The keywords that are DS2
+ * reserved words as well are already refused as names.
+ */
+const SCORE_CODE_NAMES = new Set(
+  [
+    ...PYTHON_KEYWORDS,
+    // The modules, functions and locals of the generated score code
+    'os', 'requests', 'json', '_headline', 'scoreModel', 'llm', 'endpoint', 'llmURL', 'options', 'state', 'questions',
+    'llmBody', 'answers', 'answer', 'confidence', 'run_time', 'prompt_length', 'sslVerifyDefault', 'sslVerify',
+    'llmCall', 'llmJson', 'llmData', 'parsedAnswers', 'error', 'API_KEY',
+    // The builtins the score function calls
+    'str', 'float', 'isinstance', 'dict', 'Exception',
+  ].map((name) => name.toLowerCase())
+);
+
+/**
+ * Why a question cannot be called what it is called, as the key of the text
+ * that says so, or null when the name is fine. `stateVariables` are the
+ * variables the state template references: each is an input of the manifested
+ * model, so a question of the same name would be an output of the same name.
+ */
+export function questionIdProblem(question: DecisionQuestion, all: DecisionQuestion[], stateVariables: string[] = []): string | null {
+  const id = question.id;
+  if (id === '') return 'promptBuilderDecisionLintNoName';
+  if (!isValidDS2VariableName(id)) return 'promptBuilderDecisionQuestionIdInvalid';
+  if (id.length > MAX_QUESTION_ID_LENGTH) return 'promptBuilderDecisionQuestionIdTooLong';
+  const name = id.toLowerCase();
+  const confidenceName = `${name}_confidence`;
+  const inputs = stateVariables.map((variable) => variable.toLowerCase());
+  const others = all.filter((other) => other !== question).map((other) => other.id.toLowerCase());
+  if (
+    SCORE_CODE_NAMES.has(name) ||
+    inputs.includes(name) ||
+    inputs.includes(confidenceName) ||
+    // The pair of one question must not be the name of another.
+    others.includes(confidenceName) ||
+    others.some((other) => `${other}_confidence` === name)
+  ) {
+    return 'promptBuilderDecisionQuestionIdReserved';
+  }
+  if (others.includes(name)) return 'promptBuilderDecisionQuestionIdDuplicate';
+  return null;
+}
+
 /** The things to fix, the warnings and the tips for one question. */
-export function lintQuestion(question: DecisionQuestion, all: DecisionQuestion[], bundle: PromptBuilderText): LintItem[] {
+export function lintQuestion(
+  question: DecisionQuestion,
+  all: DecisionQuestion[],
+  bundle: PromptBuilderText,
+  stateVariables: string[] = []
+): LintItem[] {
   const items: LintItem[] = [];
   const add = (severity: LintSeverity, key: string, values: Record<string, string | number> = {}, fix?: 'escape'): void => {
     items.push({ severity, message: fill(text(bundle, key), values), questionId: question.id, fix });
   };
-  if (question.id === '') add('fix', 'promptBuilderDecisionLintNoName');
-  else if (!isValidDS2VariableName(question.id)) add('fix', 'promptBuilderDecisionQuestionIdInvalid');
-  else if (all.filter((other) => other.id.toLowerCase() === question.id.toLowerCase()).length > 1) {
-    add('fix', 'promptBuilderDecisionQuestionIdDuplicate');
+  const nameProblem = questionIdProblem(question, all, stateVariables);
+  if (nameProblem === 'promptBuilderDecisionLintNoName') add('fix', nameProblem);
+  else if (nameProblem) {
+    items.push({
+      severity: 'fix',
+      message: fill(text(bundle, nameProblem), { max: MAX_QUESTION_ID_LENGTH }),
+      questionId: question.id,
+      field: 'name',
+    });
   }
   const words = question.instructions.trim().split(/\s+/).filter(Boolean).length;
   if (words === 0) add('fix', 'promptBuilderDecisionLintNoInstructions');
@@ -188,14 +330,32 @@ export function fitCheck(
   return { status: 'ok', reason: text(bundle, 'promptBuilderDecisionFitOk') };
 }
 
-/** A hint for a failed call, from the HTTP status in its error text. */
-export function decisionErrorHint(error: string, bundle: PromptBuilderText): string {
-  const status = /\b(400|402|403|422|429)\b/.exec(error)?.[1];
+/**
+ * A hint for a failed model call - an LLM's or a decision model's - from its
+ * error text. A response other than 200 is reported as "... failed with
+ * status N", a request that got no response at all as the browser's fetch
+ * error, which carries no status.
+ */
+export function modelCallErrorHint(error: string, bundle: PromptBuilderText): string {
+  const status = /status (\d{3})\b/.exec(error)?.[1];
+  // The ingress answers for a route nothing serves: the model is registered,
+  // but it was never published or its container is not running.
+  if (status === '404' || status === '503') return text(bundle, 'promptBuilderDecisionErrorNotDeployed');
   if (status === '402') return text(bundle, 'promptBuilderDecisionErrorCredits');
   if (status === '429') return text(bundle, 'promptBuilderDecisionErrorRateLimit');
   if (status === '403') return text(bundle, 'promptBuilderDecisionErrorAccess');
   if (status === '400' || status === '422') return text(bundle, 'promptBuilderDecisionErrorShape');
+  // "Failed to fetch" (Chromium), "NetworkError when attempting to fetch
+  // resource" (Firefox), "Load failed" (Safari).
+  if (!status && /failed to fetch|networkerror|load failed/i.test(error)) return text(bundle, 'promptBuilderDecisionErrorUnreachable');
   return '';
+}
+
+/** One line for a model whose call failed: the model, the error, and a hint when there is one. */
+export function describeFailedCall(modelName: string, error: unknown, bundle: PromptBuilderText): string {
+  const message = String(error);
+  const hint = modelCallErrorHint(message, bundle);
+  return `${modelName}: ${message}${hint ? ` - ${hint}` : ''}`;
 }
 
 /** A ready-made decision template: a pattern that worked, to start from. */
@@ -648,6 +808,11 @@ export interface QuestionDesigner {
   stateInput: HTMLTextAreaElement;
   getQuestions(): DecisionQuestion[];
   setQuestions(questions: DecisionQuestion[]): void;
+  /**
+   * The designer as it is on a page that was just loaded: no state template,
+   * no question, no template chosen in the list, every "?" closed.
+   */
+  startAfresh(): void;
   /** Expected answers of the current questions, keyed by question id (empty ones left out). */
   getExpected(): Record<string, string>;
   /** At least one question and nothing left to fix. */
@@ -710,7 +875,9 @@ export function createQuestionDesigner(
   prefix: string,
   bundle: PromptBuilderText,
   attachInsertMenu: (textarea: HTMLTextAreaElement) => void,
-  contextLimit: () => number | null = () => null
+  contextLimit: () => number | null = () => null,
+  /** The names of the variables that can be inserted into the state. */
+  variableNames: () => string[] = () => []
 ): QuestionDesigner {
   const element = document.createElement('div');
   element.id = `${prefix}-decision-designer`;
@@ -997,24 +1164,24 @@ export function createQuestionDesigner(
 
   const rows = (): Element[] => Array.from(list.querySelectorAll('.pb-question-row'));
   const allQuestions = (): DecisionQuestion[] => rows().map(rowQuestion);
+  /** The variables the state references as {{name}}: the inputs of the manifested model. */
+  const stateVariables = (): string[] =>
+    variableNames().filter((name) => new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`).test(stateInput.value));
   let currentLint: LintItem[] = [];
 
   /** Lint every row and the state, show what was found; returns whether nothing is left to fix. */
   function validate(): boolean {
     const questions = allQuestions();
+    const inputs = stateVariables();
     const items: LintItem[] = lintState(stateInput.value, questions, contextLimit(), bundle);
     renderLintItems(stateLint, items, bundle);
     stateInfo.innerText = fill(text(bundle, 'promptBuilderDecisionStateTokens'), { n: estimateTokens(stateInput.value, questions) });
     rows().forEach((row, index) => {
       const question = questions[index];
-      const rowItems = lintQuestion(question, questions, bundle);
+      const rowItems = lintQuestion(question, questions, bundle, inputs);
       items.push(...rowItems);
       const idInput = row.querySelector('.pb-question-id') as HTMLInputElement;
-      const nameProblem = rowItems.find(
-        (item) =>
-          item.severity === 'fix' &&
-          (item.message === text(bundle, 'promptBuilderDecisionQuestionIdInvalid') || item.message === text(bundle, 'promptBuilderDecisionQuestionIdDuplicate'))
-      );
+      const nameProblem = rowItems.find((item) => item.field === 'name');
       (idInput.nextElementSibling as HTMLElement).innerText = nameProblem?.message ?? '';
       idInput.classList.toggle('is-invalid', Boolean(nameProblem));
       const criteriaInput = row.querySelector('.pb-question-criteria') as HTMLTextAreaElement;
@@ -1095,9 +1262,14 @@ export function createQuestionDesigner(
       validate();
       const seen = new Set<string>();
       const questions: DecisionQuestion[] = [];
-      rows().forEach((row) => {
-        const question = rowQuestion(row);
-        if (question.id === '' || !isValidDS2VariableName(question.id) || seen.has(question.id.toLowerCase())) return;
+      const candidates = allQuestions();
+      const inputs = stateVariables();
+      candidates.forEach((question) => {
+        // Of two questions with one name the first is kept; any other problem
+        // with a name leaves the question out.
+        const nameProblem = questionIdProblem(question, candidates, inputs);
+        if (nameProblem && nameProblem !== 'promptBuilderDecisionQuestionIdDuplicate') return;
+        if (seen.has(question.id.toLowerCase())) return;
         if (question.instructions === '') return;
         if (question.type === 'choice' && question.options.length < 2) return;
         if (question.type === 'score' && question.levels.length < 2) return;
@@ -1112,6 +1284,21 @@ export function createQuestionDesigner(
       validate();
       // A restored run is a change like any other: the cards re-price and
       // re-check the request it brought along.
+      changed();
+    },
+    startAfresh: () => {
+      stateInput.value = '';
+      list.innerHTML = '';
+      // The list of templates says beside itself what the chosen one is good
+      // for. A value set by a script sends no change event, so that line is
+      // emptied with the choice.
+      templateSelect.value = '';
+      templateWhy.innerText = '';
+      // The rows took their own help with them; the two "?" of the designer
+      // itself are closed.
+      element.querySelectorAll('.pb-help').forEach((panel) => panel.classList.add('d-none'));
+      element.querySelectorAll('.pb-help-toggle').forEach((toggle) => toggle.setAttribute('aria-expanded', 'false'));
+      validate();
       changed();
     },
     getExpected: () => {
@@ -1307,6 +1494,12 @@ export interface EvaluationRow {
   correct: boolean;
   /** The model chose the escape option: not automated, whatever its confidence. */
   abstained: boolean;
+  /**
+   * The model gave no answer to the question: its call failed, or its answer
+   * does not hold the question. Such a row is neither right nor wrong and has
+   * no confidence: it is not scored and never automated.
+   */
+  unanswered: boolean;
 }
 
 export interface QuestionMetrics {
@@ -1314,13 +1507,17 @@ export interface QuestionMetrics {
   rows: EvaluationRow[];
 }
 
-/** Coverage and accuracy when only answers at or above a confidence threshold stay automatic. */
-export function thresholdStats(rows: EvaluationRow[], threshold: number): { coverage: number; accuracy: number; covered: number } {
-  const covered = rows.filter((row) => !row.abstained && row.confidence >= threshold);
+/**
+ * Coverage and accuracy when only answers at or above a confidence threshold
+ * stay automatic. A case without an answer is never automated. The accuracy
+ * is null where no case stays automatic: there is nothing it could be of.
+ */
+export function thresholdStats(rows: EvaluationRow[], threshold: number): { coverage: number; accuracy: number | null; covered: number } {
+  const covered = rows.filter((row) => !row.abstained && !row.unanswered && row.confidence >= threshold);
   const correct = covered.filter((row) => row.correct).length;
   return {
     coverage: rows.length ? covered.length / rows.length : 0,
-    accuracy: covered.length ? correct / covered.length : 0,
+    accuracy: covered.length ? correct / covered.length : null,
     covered: covered.length,
   };
 }
@@ -1336,13 +1533,20 @@ export interface CalibrationBin {
 }
 
 export interface CalibrationStats {
-  /** Expected calibration error: the count-weighted gap between confidence and accuracy over the bins. */
-  ece: number;
-  /** Brier score of the headline confidence against correctness (0 is perfect). */
-  brier: number;
+  /**
+   * Expected calibration error: the count-weighted gap between confidence
+   * and accuracy over the bins. Null without a scored row.
+   */
+  ece: number | null;
+  /** Brier score of the headline confidence against correctness (0 is perfect). Null without a scored row. */
+  brier: number | null;
   bins: CalibrationBin[];
   /** Rows the model abstained on. */
   abstained: number;
+  /** Rows the model gave no answer to. */
+  unanswered: number;
+  /** Rows that are scored: answered, and not abstained on. */
+  scored: number;
 }
 
 /**
@@ -1352,7 +1556,11 @@ export interface CalibrationStats {
  * before the threshold is chosen.
  */
 export function calibrationStats(rows: EvaluationRow[], binCount = 10): CalibrationStats {
-  const scored = rows.filter((row) => !row.abstained);
+  // A case without an answer has no confidence to calibrate. Counted with a
+  // confidence of 0 and wrong, every failed call looked perfectly calibrated:
+  // a model whose every call failed showed an error of 0% and a Brier score
+  // of 0.000.
+  const scored = rows.filter((row) => !row.abstained && !row.unanswered);
   const bins: CalibrationBin[] = Array.from({ length: binCount }, (_, index) => ({
     low: index / binCount,
     high: (index + 1) / binCount,
@@ -1373,9 +1581,16 @@ export function calibrationStats(rows: EvaluationRow[], binCount = 10): Calibrat
       bin.accuracy /= bin.count;
     }
   });
-  const ece = scored.length ? bins.reduce((sum, bin) => sum + (bin.count / scored.length) * Math.abs(bin.accuracy - bin.confidence), 0) : 0;
-  const brier = scored.length ? scored.reduce((sum, row) => sum + (row.confidence - (row.correct ? 1 : 0)) ** 2, 0) / scored.length : 0;
-  return { ece, brier, bins, abstained: rows.length - scored.length };
+  const ece = scored.length ? bins.reduce((sum, bin) => sum + (bin.count / scored.length) * Math.abs(bin.accuracy - bin.confidence), 0) : null;
+  const brier = scored.length ? scored.reduce((sum, row) => sum + (row.confidence - (row.correct ? 1 : 0)) ** 2, 0) / scored.length : null;
+  return {
+    ece,
+    brier,
+    bins,
+    abstained: rows.filter((row) => row.abstained).length,
+    unanswered: rows.filter((row) => row.unanswered).length,
+    scored: scored.length,
+  };
 }
 
 /** The reliability diagram: accuracy per confidence bin against the diagonal, as inline SVG. */
@@ -1430,12 +1645,14 @@ export function questionRows(
     if (wanted === '') return;
     const answer = answersByCase[index]?.[question.id];
     const answered = comparableAnswer(question, answer);
+    const unanswered = answered === '';
     rows.push({
       expected: wanted,
       answered,
-      confidence: headlineOf(answer).confidence,
-      correct: answered.trim().toLowerCase() === wanted.toLowerCase(),
-      abstained: question.type === 'choice' && answered !== '' && isEscapeKey(answered),
+      confidence: unanswered ? 0 : headlineOf(answer).confidence,
+      correct: !unanswered && answered.trim().toLowerCase() === wanted.toLowerCase(),
+      abstained: question.type === 'choice' && !unanswered && isEscapeKey(answered),
+      unanswered,
     });
   });
   return rows;
@@ -1463,6 +1680,8 @@ export function confusionMatrix(question: DecisionQuestion, rows: EvaluationRow[
 }
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
+/** A share that may not exist, such as the accuracy of no case: a dash then. */
+const percentOrDash = (value: number | null): string => (value === null ? '\u2014' : percent(value));
 
 /** The evaluation of one model: accuracy per question, the confusion of choices, the threshold trade-off. */
 export function renderEvaluation(
@@ -1495,9 +1714,21 @@ export function renderEvaluation(
     title.classList.add('fw-semibold', 'mb-1');
     const correct = rows.filter((row) => row.correct).length;
     const calibration = calibrationStats(rows);
+    // The accuracy is that of the answers: a case the model gave no answer
+    // to - its call failed - is counted apart, not as a wrong answer.
+    const answered = rows.length - calibration.unanswered;
+    if (answered === 0) {
+      // Nothing to score: no accuracy, confusion, threshold or calibration,
+      // each of which would read as a verdict on answers there are none of.
+      title.innerText = `${question.id}: ${fill(text(bundle, 'promptBuilderEvaluateNoAnswers'), { n: rows.length })}`;
+      section.appendChild(title);
+      block.appendChild(section);
+      return;
+    }
     title.innerText =
-      `${question.id}: ${text(bundle, 'promptBuilderEvaluateAccuracy')} ${percent(correct / rows.length)} (${correct}/${rows.length})` +
-      (calibration.abstained > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateAbstained'), { n: calibration.abstained })}` : '');
+      `${question.id}: ${text(bundle, 'promptBuilderEvaluateAccuracy')} ${percent(correct / answered)} (${correct}/${answered})` +
+      (calibration.abstained > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateAbstained'), { n: calibration.abstained })}` : '') +
+      (calibration.unanswered > 0 ? ` · ${fill(text(bundle, 'promptBuilderEvaluateUnanswered'), { n: calibration.unanswered })}` : '');
     section.appendChild(title);
     // Confusion: rows are the expected answers, columns what was answered.
     const { labels, matrix } = confusionMatrix(question, rows);
@@ -1542,7 +1773,7 @@ export function renderEvaluation(
       const threshold = Number(slider.value) / 100;
       const stats = thresholdStats(rows, threshold);
       sliderLabel.innerText = `${text(bundle, 'promptBuilderEvaluateThresholdLabel')} ${percent(threshold)}`;
-      readout.innerText = `${text(bundle, 'promptBuilderEvaluateCoverage')} ${percent(stats.coverage)} (${stats.covered}/${rows.length}) · ${text(bundle, 'promptBuilderEvaluateAccuracyCovered')} ${percent(stats.accuracy)}`;
+      readout.innerText = `${text(bundle, 'promptBuilderEvaluateCoverage')} ${percent(stats.coverage)} (${stats.covered}/${rows.length}) · ${text(bundle, 'promptBuilderEvaluateAccuracyCovered')} ${percentOrDash(stats.accuracy)}`;
     };
     slider.addEventListener('input', update);
     update();
@@ -1560,7 +1791,7 @@ export function renderEvaluation(
       [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percent(thresholdStats(rows, threshold).coverage)}</td>`).join('') +
       '</tr>' +
       `<tr><td>${escapeHtml(text(bundle, 'promptBuilderEvaluateAccuracyCovered'))}</td>` +
-      [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percent(thresholdStats(rows, threshold).accuracy)}</td>`).join('') +
+      [0.5, 0.6, 0.7, 0.8, 0.9, 0.95].map((threshold) => `<td>${percentOrDash(thresholdStats(rows, threshold).accuracy)}</td>`).join('') +
       '</tr>';
     section.appendChild(table);
     // Calibration: whether the confidence means what it says, read before a
@@ -1573,19 +1804,25 @@ export function renderEvaluation(
     calibrationTitle.innerText = text(bundle, 'promptBuilderEvaluateCalibrationTitle');
     const calibrationNumbers = document.createElement('p');
     calibrationNumbers.classList.add('mb-1', 'pb-calibration-numbers');
-    calibrationNumbers.innerText = `${text(bundle, 'promptBuilderEvaluateEce')} ${percent(calibration.ece)} · ${text(bundle, 'promptBuilderEvaluateBrier')} ${calibration.brier.toFixed(3)}`;
+    // Without a scored answer - the model abstained on every case it
+    // answered - there is no calibration: a dash, not 0% and 0.000.
+    calibrationNumbers.innerText =
+      `${text(bundle, 'promptBuilderEvaluateEce')} ${percentOrDash(calibration.ece)} · ` +
+      `${text(bundle, 'promptBuilderEvaluateBrier')} ${calibration.brier === null ? '\u2014' : calibration.brier.toFixed(3)}`;
     const calibrationNote = document.createElement('small');
     calibrationNote.classList.add('text-muted', 'd-block');
     // A verdict needs cases: below a couple of dozen the error is mostly noise.
-    const scored = rows.length - calibration.abstained;
+    const scored = calibration.scored;
     calibrationNote.innerText = fill(
       text(
         bundle,
-        scored < 20
-          ? 'promptBuilderEvaluateCalibrationFewCases'
-          : calibration.ece > 0.1
-            ? 'promptBuilderEvaluateCalibrationPoor'
-            : 'promptBuilderEvaluateCalibrationNote'
+        scored === 0
+          ? 'promptBuilderEvaluateCalibrationNone'
+          : scored < 20
+            ? 'promptBuilderEvaluateCalibrationFewCases'
+            : (calibration.ece ?? 0) > 0.1
+              ? 'promptBuilderEvaluateCalibrationPoor'
+              : 'promptBuilderEvaluateCalibrationNote'
       ),
       { n: scored }
     );
@@ -1593,7 +1830,8 @@ export function renderEvaluation(
     calibrationText.appendChild(calibrationNumbers);
     calibrationText.appendChild(calibrationNote);
     calibrationRow.appendChild(calibrationText);
-    calibrationRow.appendChild(renderReliability(calibration, bundle));
+    // Without a scored answer the diagram would be an empty frame.
+    if (scored > 0) calibrationRow.appendChild(renderReliability(calibration, bundle));
     section.appendChild(calibrationRow);
     block.appendChild(section);
   });
@@ -1627,9 +1865,65 @@ export interface DecisionManifestParams {
   requiresAPIKey: boolean;
   /** Which of DEFAULT_DECISION_OUTPUTS to return. */
   selectedOutputs: string[];
+  /** Whether the model verifies TLS by default (the option of the same name; see scoreCodeTlsDefaultComment). */
+  sslVerify: boolean;
 }
 
-const pythonString = (value: string): string => JSON.stringify(value);
+/**
+ * A text as a Python string literal in double quotes. JSON escapes the quote,
+ * the backslash and the control characters the way Python reads them; the two
+ * line separators JSON leaves alone are harmless inside a Python literal.
+ */
+export const pythonString = (value: string): string => JSON.stringify(value);
+
+/**
+ * A text as the body of a Python """...""" literal that evaluates to exactly
+ * that text. The backslash is escaped first, so a path or a regular
+ * expression stays what was typed instead of becoming an escape sequence, and
+ * every double quote is escaped, so neither three quotes in a row nor one at
+ * the very end closes the literal.
+ */
+export function pythonTripleQuotedBody(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * A template with {{variable}} placeholders as the body of a Python
+ * f"""...""" literal: the text is escaped for the literal, its braces are
+ * doubled so they stay literal braces, and each placeholder of a known
+ * variable becomes the stripped value of the score function's input of that
+ * name. A placeholder of an unknown variable stays as it was typed.
+ */
+export function pythonFStringBody(template: string, variableNames: string[]): string {
+  let body = pythonTripleQuotedBody(template).replace(/\{/g, '{{').replace(/\}/g, '}}');
+  variableNames.forEach((name) => {
+    body = body.replace(new RegExp(`\\{\\{\\{\\{\\s*${name}\\s*\\}\\}\\}\\}`, 'g'), `{str(${name}).strip()}`);
+  });
+  return body;
+}
+
+/**
+ * The lines of a score code that follow its TLS comment and say how the
+ * environment variable and the manifest-time default decide together. Both
+ * score codes (the prompt template's and the decision template's) use these
+ * lines, at the indentation of the function body.
+ *
+ * `verifyByDefault` is the option "Verify TLS certificates in manifested
+ * models" at the time of the manifest; it becomes the one line
+ * `sslVerifyDefault = True|False`. LLMCONTAINERSSLVERIFY wins in both
+ * directions when it holds a recognised word; unset or unrecognised, the
+ * default decides. With the default True the code behaves as it did before
+ * the option existed, for every value of the variable.
+ */
+export function scoreCodeTlsDefaultComment(verifyByDefault: boolean): string {
+  return `    # Setting it to true, yes or 1 enables it. When the variable is unset or
+    # holds another word, sslVerifyDefault decides: the Options pane setting
+    # "Verify TLS certificates in manifested models" when this was manifested.
+    sslVerifyDefault = ${verifyByDefault ? 'True' : 'False'}`;
+}
+/** The two lines after the environment check that apply a default of False (see scoreCodeTlsDefaultComment). */
+export const SCORE_CODE_TLS_DEFAULT_BRANCH = `    elif not sslVerifyDefault and os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() not in ("true", "yes", "1"):
+        sslVerify = False`;
 
 /**
  * The score code, inputs and outputs of a manifested decision template: the
@@ -1684,26 +1978,30 @@ export function buildDecisionManifest(params: DecisionManifestParams): {
       length: 8,
     });
   });
-  // The state template as an f-string: literal braces escaped, each referenced
-  // {{variable}} an input inserted at its position.
-  let stateFString = params.stateTemplate.replace(/\{/g, '{{').replace(/\}/g, '}}');
-  params.variables.forEach((variable) => {
-    stateFString = stateFString.replace(
-      new RegExp(`\\{\\{\\{\\{\\s*${variable.name}\\s*\\}\\}\\}\\}`, 'g'),
-      `{str(${variable.name}).strip()}`
-    );
-  });
+  // The state template as an f-string: each referenced {{variable}} an input
+  // inserted at its position, everything else the text as it was typed.
+  const stateFString = pythonFStringBody(
+    params.stateTemplate,
+    params.variables.map((variable) => variable.name)
+  );
   const scoreInputs = inputs.map((input) => input.name).join(', ');
   const outputNames = outputs.map((output) => output.name);
+  // The options as the body of an f"""...""" literal: the stored text escaped
+  // like a prompt, so a backslash or a quote in an option value neither ends
+  // the literal nor becomes an escape sequence, and the key appended after
+  // the escaping as the one placeholder of the string.
+  const optionsBody = pythonFStringBody(params.options, []);
   const optionsLiteral = params.requiresAPIKey
-    ? params.options.length > 0
-      ? `${params.options},API_KEY:{API_KEY}`
+    ? optionsBody.length > 0
+      ? `${optionsBody},API_KEY:{API_KEY}`
       : 'API_KEY:{API_KEY}'
-    : params.options;
+    : optionsBody;
+  // These lines sit inside the score code's `if llmCall.status_code == 200:`
+  // block, three levels deep; the defaults below sit at the function's level.
   const questionLines = params.questions
     .map(
       (question) =>
-        `    ${question.id}, ${question.id}_confidence = _headline(parsedAnswers.get(${pythonString(question.id)}), ${pythonString(question.type)})`
+        `            ${question.id}, ${question.id}_confidence = _headline(parsedAnswers.get(${pythonString(question.id)}), ${pythonString(question.type)})`
     )
     .join('\n');
   const questionDefaults = params.questions
@@ -1732,13 +2030,13 @@ def _headline(answerObject, questionType):
 def scoreModel(${scoreInputs}):
     "Output: ${outputNames.join(', ')}"
     # The decision model and the target endpoint
-    llm = "${params.model}"
+    llm = ${pythonString(params.model)}
     # Retrieves the endpoint where the containers are hosted - e.g. https://example.com/llm
     # If an environment variable called LLMCONTAINERPATH is set, it will use that instead of the one stored in the prompt builder object
-    endpoint = os.getenv("LLMCONTAINERPATH", "${params.scrEndpoint}")
+    endpoint = os.getenv("LLMCONTAINERPATH", ${pythonString(params.scrEndpoint)})
     llmURL = f"""${params.endpointPattern}"""
     # These are the options that were set for the best run
-    options = f"{{${optionsLiteral}}}"
+    options = f"""{{${optionsLiteral}}}"""
     # The state the questions are asked about, built from the inputs
     state = f"""${stateFString}"""
     # The questions of the decision template, in the System One shape
@@ -1753,11 +2051,13 @@ ${questionDefaults}
     # TLS verification of the container call: trust the CA bundle SAS Viya
     # mounts into every pod, or the one LLMCONTAINERCABUNDLE points to. Setting
     # LLMCONTAINERSSLVERIFY=false disables the verification entirely.
+${scoreCodeTlsDefaultComment(params.sslVerify)}
     sslVerify = os.getenv("LLMCONTAINERCABUNDLE", "/security/trustedcerts.pem")
     if not os.path.isfile(sslVerify):
         sslVerify = True
     if os.getenv("LLMCONTAINERSSLVERIFY", "").strip().lower() in ("false", "no", "0"):
         sslVerify = False
+${SCORE_CODE_TLS_DEFAULT_BRANCH}
     # Call the decision model container and unwrap the SCR response envelope.
     # Failures are reported through the answer output instead of raising, so a
     # failed call cannot abort a whole scoring or SAS Intelligent Decisioning run.

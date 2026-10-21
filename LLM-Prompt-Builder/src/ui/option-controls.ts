@@ -12,8 +12,13 @@
  * This module turns one entry into a form control. Enums with up to five
  * values render as a segmented button group (with a hidden input carrying
  * the selected value under the conventional element id, so value collection
- * stays uniform); larger enums fall back to a select.
+ * stays uniform); larger enums fall back to a select. An entry of no such
+ * type is a number input when its default is a number, and a text input
+ * otherwise, so that its default is shown as it stands (isNumberOption).
+ * The page draws only entries isModelOptions takes.
  */
+
+import { isNumberOption, isTypedTextReadOtherwise } from '../api/stored-json';
 
 export interface TypedOptionMeta {
   default: unknown;
@@ -58,12 +63,23 @@ export function createTypedOptionControl(key: string, meta: TypedOptionMeta, con
     checkbox.checked = meta.default === true || meta.default === 'true';
     return checkbox;
   }
-  if (meta?.type === 'string') {
+  if (meta?.type === 'string' || !isNumberOption(meta)) {
     const textInput = document.createElement('input');
     textInput.type = 'text';
     textInput.id = controlId;
     textInput.className = 'form-control form-control-sm';
     textInput.value = String(meta?.default ?? '');
+    // A run sends the options as {name:value,name:value}, which the score
+    // code splits at each comma: a text with a comma would be read up to
+    // the comma, and a run is not sent with one. Nor is it sent with a text
+    // of a string option the score code reads as something else - blanks or
+    // quotes at its ends, true or false, a number (isTypedTextReadOtherwise).
+    // The field says so while it is typed.
+    textInput.addEventListener('input', () => {
+      const refused = textInput.value.includes(',') || isTypedTextReadOtherwise(meta, textInput.value);
+      textInput.classList.toggle('is-invalid', refused);
+      textInput.setAttribute('aria-invalid', String(refused));
+    });
     return textInput;
   }
   const numberInput = document.createElement('input');

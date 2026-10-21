@@ -14,7 +14,11 @@ Execution job that improves a Prompt Builder prompt with
 
 1. The Prompt Builder saves the prompt, then launches this job through the Job
    Execution REST API with `_contextName` set to the configured compute
-   context.
+   context. That context must run as the user who starts the job: before
+   its first model call the job ends with a message when its session runs
+   as another account (a context with `runServerAs`, such as the stock
+   *SAS Job Execution compute context*), or when it may not add a file to
+   the prompt and remove it again.
 2. The job reads the prompt's `Prompt-Experiment-Tracker.json` from SAS Model
    Manager. Runs with a **Best Response** become the training examples — the
    response the user vouched for is the reference answer.

@@ -318,6 +318,18 @@
                         "high": "high",
                         "maximum": "xhigh"
                     }
+                },
+                "anthropic_messages": {
+                    "_comment": "Claude models with adaptive thinking (Claude 5.5: thinking type 'enabled' is refused) take output_config.effort 'low' | 'medium' | 'high' | 'xhigh' | 'max' and think adaptively when the request names no thinking - verified live against claude-haiku-5-5, claude-sonnet-5-5 and claude-opus-5-5 on 2026-10-19. Older Claude models refuse effort and use thinking_budget; the two options exclude each other.",
+                    "body_key": "output_config.effort",
+                    "cast": "str",
+                    "value_map": {
+                        "minimal": "low",
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "maximum": "max"
+                    }
                 }
             }
         },

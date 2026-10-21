@@ -2,14 +2,16 @@
  * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Shared types for the standalone LLM Prompt Builder.
+ * Shared types for the Prompt Builder.
  */
 
 /**
- * Configuration for a single Prompt Builder instance. In the original SAS
- * Portal Framework these fields came from the portal object definition; here
- * they come from `src/config.ts` (build-time defaults, optionally overridden
- * by URL query parameters at runtime).
+ * Configuration of the prompt side of the page (prompt templates for LLMs and
+ * decision templates for decision models). In the original SAS Portal
+ * Framework these fields came from the portal object definition; here they
+ * come from `src/config.ts` (build-time defaults, optionally overridden by
+ * URL query parameters at runtime). The RAG side has its own object, see
+ * `RagBuilderConfig` in `./rag`.
  */
 export interface PromptBuilderConfig {
   /** DOM id prefix used to namespace generated elements. */
@@ -46,15 +48,12 @@ export interface PromptBuilderConfig {
    */
   API_KEYS?: Record<string, string>;
   /**
-   * Master toggle for DSPy prompt optimization ('true' enables it). When off
-   * (the default) the Optimize section is hidden and none of the optimize
-   * settings below are used.
-   */
-  enableOptimization?: string;
-  /**
    * SAS Compute context the optimization job runs in, passed to Job Execution
    * as `_contextName`. Its Python environment must have `dspy` installed (see
-   * the "Enabling Prompt Optimization" administration guide).
+   * the "Enabling Prompt Optimization" administration guide). Used, like the
+   * two settings below, only while prompt optimization is switched on - the
+   * switch itself is not part of this object but of the page's `features`
+   * (see `src/config.ts`).
    */
   computeContext?: string;
   /**
@@ -71,9 +70,23 @@ export interface PromptBuilderConfig {
    * without an entry are disabled with a note. Defaults to the default of
    * the create-credential-domain scripts and `mdb credentials-apply`
    * (agentic-ai-keys) — a missing domain 404s harmlessly and resolves to
-   * no keys. 'none' disables credential lookups entirely.
+   * no keys. Blank means "no credential lookup": `src/config.ts` turns the
+   * option value `none` into a blank here, so nothing downstream has to know
+   * that word.
    */
   credentialDomain?: string;
+  /**
+   * Whether a model manifested from this page verifies the TLS certificate of
+   * the HTTPS call it makes to a model container itself (option `sslVerify`,
+   * a checkbox, ticked by default). A manifest-time default only: it is
+   * written into the score code of a prompt template manifested with the LLM
+   * call included and of a decision template, where the environment variable
+   * LLMCONTAINERSSLVERIFY of the publishing destination still overrides it.
+   * Nothing the page does in the browser depends on it. Only the literal
+   * `false` switches verification off - `src/config.ts` reads the option so
+   * that an unreadable value stays on.
+   */
+  sslVerify?: boolean;
   [key: string]: unknown;
 }
 

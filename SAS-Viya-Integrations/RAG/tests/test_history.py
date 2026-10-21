@@ -374,3 +374,345 @@ def test_document_events_are_written_in_pages():
     inserts = [s for s, _ in conn.statements
                if s.startswith("INSERT INTO rag_doc_events")]
     assert len(inserts) == 3, "expected 200 + 200 + 50"
+
+
+# ---------------------------------------------------------------------------
+# the schema against a store that checks it
+#
+# FakeConnection above accepts any SQL, so a column that close_run writes but
+# no DDL creates passes every test above and fails on the first real run.
+# StrictConnection keeps the tables' columns and refuses what a database
+# would refuse.
+# ---------------------------------------------------------------------------
+# rag_runs as release 2.2.0 created it - what an upgraded site has on disk
+RAG_RUNS_2_2_0 = [
+    "run_id", "rag_project", "collection", "backend", "started_at",
+    "finished_at", "status", "pipeline_version", "config_id", "embed_model",
+    "embed_dims", "chunker", "input_token_limit", "overlap_tokens",
+    "docs_new", "docs_changed", "docs_unchanged", "docs_deleted",
+    "docs_skipped", "docs_failed", "docs_ingested", "chunks_written",
+    "chunks_retired", "collection_chunks", "embed_calls", "embed_tokens",
+    "embed_seconds", "enrich_model", "enrich_calls", "enrich_input_tokens",
+    "enrich_output_tokens", "enrich_seconds", "enrich_failed", "error_text",
+]
+
+
+def _ddl_columns(statement):
+    """The column names a CREATE TABLE statement declares."""
+    body = statement[statement.index("(") + 1:statement.rindex(")")]
+    names = []
+    for line in body.splitlines():
+        words = line.strip().split()
+        name = words[0].rstrip(",") if words else ""
+        if name and name.upper() not in ("PRIMARY", "SHARD", "KEY"):
+            names.append(name)
+    return names
+
+
+def _insert_columns(sql):
+    return sql.split("(")[1].split(")")[0].replace(" ", "").split(",")
+
+
+class StrictCursor:
+    def __init__(self, connection):
+        self._conn = connection
+        self.description = []
+        self._rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        conn = self._conn
+        text = " ".join(str(sql).split())
+        if conn.aborted:
+            raise RuntimeError("current transaction is aborted, commands "
+                               "ignored until end of transaction block")
+        words = text.split()
+        if text.startswith("CREATE TABLE IF NOT EXISTS"):
+            if words[5] in conn.refuse_create:
+                conn.fail(f"permission denied to create {words[5]}")
+            conn.tables.setdefault(words[5], _ddl_columns(str(sql)))
+        elif text.startswith("ALTER TABLE"):
+            table, column = words[2], words[5]
+            conn.alters.append(column)
+            if conn.refuse_alter:
+                conn.fail(conn.refuse_alter)
+            if column in conn.added_meanwhile:
+                conn.tables[table].append(column)   # another run got there first
+            if column in conn.tables[table]:
+                conn.fail(f"column {column} of relation {table} already exists")
+            conn.tables[table].append(column)
+        elif text.startswith("SELECT column_name FROM information_schema.columns"):
+            if not conn.catalog:
+                conn.fail("permission denied for information_schema")
+            conn.lookups.append(text)
+            self._rows = [(conn.catalog_case(column),)
+                          for column in conn.tables.get(params[0], [])]
+        elif text.startswith("INSERT INTO"):
+            table = words[2]
+            if table in conn.refuse_insert:
+                conn.fail(f"the store refused the write to {table}")
+            for column in _insert_columns(text):
+                if column not in conn.tables[table]:
+                    conn.fail(f"column {column} of relation {table} "
+                              "does not exist")
+            conn.inserts.append((table, _insert_columns(text),
+                                 list(params or [])))
+        elif text.startswith("SELECT"):
+            self.description = [("run_id",)]
+            self._rows = []
+        conn.statements.append(text)
+
+    def fetchall(self):
+        return self._rows
+
+
+class StrictConnection:
+    """A connection that behaves like PostgreSQL where history depends on it:
+    an unknown column and a duplicate ADD COLUMN are errors, and after any
+    error every statement is refused until the transaction is rolled back.
+
+    catalog=False is a store that does not let the role read
+    information_schema; refuse_alter is the message every ALTER is refused
+    with; added_meanwhile names columns a concurrent run adds between the
+    lookup and the ALTER."""
+
+    def __init__(self, rag_runs=None, refuse_insert=(), refuse_create=(),
+                 refuse_alter="", catalog=True, catalog_case=str,
+                 added_meanwhile=()):
+        self.tables = {"rag_runs": list(rag_runs)} if rag_runs else {}
+        self.refuse_insert = set(refuse_insert)
+        self.refuse_create = set(refuse_create)
+        self.refuse_alter = refuse_alter
+        self.catalog = catalog
+        self.catalog_case = catalog_case
+        self.added_meanwhile = set(added_meanwhile)
+        self.alters = []
+        self.lookups = []
+        self.aborted = False
+        self.rollbacks = 0
+        self.statements = []
+        self.inserts = []
+
+    def cursor(self):
+        return StrictCursor(self)
+
+    def fail(self, message):
+        self.aborted = True
+        raise RuntimeError(message)
+
+    def commit(self):
+        # COMMIT on an aborted transaction ends it, as a rollback
+        self.aborted = False
+
+    def rollback(self):
+        self.aborted = False
+        self.rollbacks += 1
+
+
+class DialectAdapter:
+    def __init__(self, connection, dialect):
+        self._conn = connection
+        self.HISTORY_DIALECT = dialect
+
+    def raw_connection(self):
+        return self._conn
+
+
+_RUN_INVENTORY = [{"doc_id": "d1", "status": "ingested", "content_hash": "h1",
+                   "chunk_count": 2, "source_uri": "/a.md"},
+                  {"doc_id": "d2", "status": "excluded",
+                   "source_uri": "/b.py"}]
+_RUN_DISCOVERY = [{"doc_id": "d1", "status": "new"},
+                  {"doc_id": "d2", "status": "excluded"}]
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+def test_every_column_a_run_writes_is_created_by_the_ddl(dialect):
+    """close_run writes one docs_<status> column per status it counts. A
+    status added without its column makes every rag_runs write fail on a
+    fresh store - and since history never fails a load, the only trace is a
+    note in the log."""
+    from rag_core.history import _STATUS_COUNTS
+    history, conn = _history(dialect)
+    history.close_run("run-1",
+                      counts={name: 1 for name in _STATUS_COUNTS},
+                      **{c: 1 for c in RUN_COLUMNS
+                         if c not in ("run_id", "status")})
+    written = _insert_columns(conn.statements[0][0])
+    created = _ddl_columns(history.ddl()[0])
+    assert set(written) <= set(created), \
+        f"written but never created: {sorted(set(written) - set(created))}"
+    assert {"docs_" + name for name in _STATUS_COUNTS} <= set(RUN_COLUMNS), \
+        "a count that is not in RUN_COLUMNS never reaches the CAS publish"
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+def test_a_fresh_store_records_a_run(dialect):
+    from rag_core.steps import record_history
+    conn = StrictConnection()
+    written = record_history(DialectAdapter(conn, dialect), _RUN_INVENTORY, [],
+                             "run-1785488641", "coll", config_id="cfg",
+                             settings={"chunker": "recursive"},
+                             discovery=_RUN_DISCOVERY, log=lambda *_: None)
+    assert written == {"runs": 1, "events": 2}
+    assert not conn.aborted
+
+
+@pytest.mark.parametrize("catalog", [True, False],
+                         ids=["columns known", "columns not readable"])
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+def test_a_store_created_by_2_2_0_is_widened_and_records_a_run(dialect, catalog):
+    """CREATE TABLE IF NOT EXISTS does not widen a table that is already
+    there, so every column added since has to arrive through
+    additive_migrations() - on the site's existing rag_runs, with its rows."""
+    from rag_core.steps import record_history
+    conn = StrictConnection(rag_runs=RAG_RUNS_2_2_0, catalog=catalog)
+    messages = []
+    written = record_history(DialectAdapter(conn, dialect), _RUN_INVENTORY, [],
+                             "run-1785488641", "coll", config_id="cfg",
+                             settings={"chunker": "recursive"},
+                             discovery=_RUN_DISCOVERY, log=messages.append)
+    assert written == {"runs": 1, "events": 2}, messages
+    assert "docs_excluded" in conn.tables["rag_runs"]
+    table, columns, params = [i for i in conn.inserts
+                              if i[0] == "rag_runs"][-1]
+    assert dict(zip(columns, params))["docs_excluded"] == 1
+    assert not conn.aborted
+    if catalog:
+        # only the column the table lacks is added
+        assert conn.alters == ["docs_excluded"]
+    else:
+        # every ALTER is tried; the columns that were already there made
+        # theirs fail, and each of those failures was rolled back, or the
+        # INSERT above was refused
+        assert len(conn.alters) == len(History(conn, dialect).additive_migrations())
+        assert conn.rollbacks >= len(conn.alters) - 1
+
+    # the second run finds every column in place and still records
+    conn.alters.clear()
+    again = record_history(DialectAdapter(conn, dialect), _RUN_INVENTORY, [],
+                           "run-1785488700", "coll", discovery=_RUN_DISCOVERY,
+                           log=lambda *_: None)
+    assert again["runs"] == 1
+    if catalog:
+        assert conn.alters == []
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+def test_a_current_store_is_not_altered(dialect):
+    """ALTER TABLE takes the strongest lock a table has, on PostgreSQL even
+    for a statement that then fails on a duplicate column. A run on a store
+    that already has every column must not issue one."""
+    history = History(StrictConnection(), dialect)
+    history.ensure_tables()                     # a fresh store, current DDL
+    conn = history._conn
+    assert conn.alters == [] and conn.rollbacks == 0
+    history.ensure_tables()
+    assert conn.alters == [] and conn.rollbacks == 0
+    # the lookup is for rag_runs in the schema the connection writes to -
+    # a rag_runs in another schema of the same database says nothing
+    scope = {"postgres": "table_schema = current_schema()",
+             "mysql": "table_schema = DATABASE()"}[dialect]
+    assert conn.lookups and all(
+        "WHERE table_name = %s AND " + scope in text for text in conn.lookups)
+
+
+def test_column_names_are_compared_without_regard_to_case():
+    conn = StrictConnection(rag_runs=RAG_RUNS_2_2_0, catalog_case=str.upper)
+    History(conn, "mysql").ensure_tables()
+    assert conn.alters == ["docs_excluded"]
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+def test_a_refused_migration_is_reported_as_what_it_is(dialect):
+    """On PostgreSQL only the owner of rag_runs may alter it, and the store
+    user comes from a credential domain that can differ per identity. When
+    the ALTER for a missing column is refused the log has to say so. It used
+    to be swallowed as 'already present': the run then failed on the INSERT
+    with 'column docs_excluded of relation rag_runs does not exist' - the
+    message of the defect this column fixes - after the document events had
+    already been written for a run that never got its row."""
+    from rag_core.steps import record_history
+    conn = StrictConnection(rag_runs=RAG_RUNS_2_2_0,
+                            refuse_alter="must be owner of table rag_runs")
+    messages = []
+    written = record_history(DialectAdapter(conn, dialect), _RUN_INVENTORY, [],
+                             "run-1785488641", "coll", config_id="cfg",
+                             settings={"chunker": "recursive"},
+                             discovery=_RUN_DISCOVERY, log=messages.append)
+    assert written == {"runs": 0, "events": 0}
+    assert len(messages) == 1
+    assert "not recorded" in messages[0] and "unaffected" in messages[0]
+    assert "must be owner of table rag_runs" in messages[0]
+    assert "does not exist" not in messages[0]
+    # nothing was written for a run that has no row
+    assert conn.inserts == []
+    assert conn.alters == ["docs_excluded"] and not conn.aborted
+    with conn.cursor() as cursor:            # what the CAS publish does next
+        cursor.execute("SELECT * FROM rag_configs LIMIT %s", [1])
+
+
+def test_a_column_a_concurrent_run_added_is_not_an_error():
+    """Two runs can start on a 2.2.0 store at the same moment: both find the
+    column missing, one ALTER succeeds and the other is told the column
+    exists. That run must record its history like any other."""
+    from rag_core.steps import record_history
+    conn = StrictConnection(rag_runs=RAG_RUNS_2_2_0,
+                            added_meanwhile={"docs_excluded"})
+    messages = []
+    written = record_history(DialectAdapter(conn, "postgres"), _RUN_INVENTORY,
+                             [], "run-1785488641", "coll",
+                             discovery=_RUN_DISCOVERY, log=messages.append)
+    assert written == {"runs": 1, "events": 2}, messages
+    assert conn.rollbacks == 1 and not conn.aborted
+
+
+def test_a_failed_history_write_is_rolled_back():
+    """The connection is the adapter's. PostgreSQL refuses every statement
+    after a failed one until the transaction is rolled back, so a history
+    write that fails and is left as it is also takes down the read that
+    publishes history to CAS."""
+    conn = StrictConnection(refuse_insert={"rag_runs"})
+    history = History(conn, "postgres")
+    history.ensure_tables()
+    before = conn.rollbacks
+    with pytest.raises(RuntimeError, match="refused the write"):
+        history.close_run("run-1", counts={"new": 1})
+    assert conn.rollbacks == before + 1
+    assert history.runs("coll") == []        # the connection still answers
+
+
+@pytest.mark.parametrize("refused", ["rag_doc_events", "rag_configs"])
+def test_every_history_write_rolls_back_its_own_failure(refused):
+    conn = StrictConnection(refuse_insert={refused})
+    history = History(conn, "postgres")
+    history.ensure_tables()
+    before = conn.rollbacks
+    with pytest.raises(RuntimeError, match="refused the write"):
+        if refused == "rag_doc_events":
+            history.record_events("run-1", [{"doc_id": "d", "status": "new"}])
+        else:
+            history.record_config("cfg", {"chunker": "recursive"})
+    assert conn.rollbacks == before + 1 and not conn.aborted
+    assert history.configs() == []
+
+
+def test_record_history_leaves_the_connection_usable_whatever_failed():
+    """Not every failure goes through a history write: a role that may not
+    create tables fails in ensure_tables. The Load step reads history back
+    over the same connection straight afterwards."""
+    from rag_core.steps import record_history
+    conn = StrictConnection(refuse_create={"rag_runs"})
+    messages = []
+    written = record_history(DialectAdapter(conn, "postgres"), _RUN_INVENTORY,
+                             [], "run-1", "coll", log=messages.append)
+    assert written == {"runs": 0, "events": 0}
+    assert any("not recorded" in m and "unaffected" in m for m in messages)
+    assert conn.rollbacks >= 1 and not conn.aborted
+    with conn.cursor() as cursor:            # what the CAS publish does next
+        cursor.execute("SELECT * FROM rag_configs LIMIT %s", [1])

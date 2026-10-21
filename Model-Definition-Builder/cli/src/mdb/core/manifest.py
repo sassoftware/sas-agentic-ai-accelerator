@@ -9,6 +9,7 @@ phase-2 web app consumes.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional, Union
@@ -38,19 +39,133 @@ class OptionSpec(BaseModel):
     range: Optional[str] = None  # overrides the legacy free-text range string
     # Custom options only: documented in options.json but never sent to the provider
     informational: Optional[bool] = None
+    # This model's own translation of a normalized enum (e.g. reasoning_effort
+    # minimal..maximum) to the values its provider accepts, in place of the
+    # score-template family's map in the vocabulary. Keys: every normalized
+    # value of the option (checked against the vocabulary at generation);
+    # values: the provider's words. `mdb add` fills it from the catalog where a
+    # model accepts other values than its family (GPT-6: none / xhigh).
+    value_map: Optional[dict[str, str]] = None
+
+    @field_validator("value_map")
+    @classmethod
+    def _value_map_texts(cls, v):
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("value_map is empty - leave it out to use the family's translation")
+        for key, value in v.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("value_map keys are the option's normalized values - an empty key was given")
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"value_map['{key}'] must be a non-empty text (the provider's value)")
+        return v
+
+
+#: The name of an environment variable as a container and a Kubernetes Secret
+#: key both take it.
+ENV_VAR_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+#: The name of a credential-domain entry (auth.key_name, the default of the
+#: option API_KEY): letters, digits, '.', '_' and '-'. The SAS code an LLM
+#: call is generated as (Create-LLM-Call.sas, the custom steps LLM - Create LLM
+#: Call and LLM - Get Options) writes it with COMPRESS into `%let API_KEY=...;`,
+#: which takes a blank out, and finds the entry with a Perl expression that a
+#: '/' would end; ',', ':', ';', '&', '%' and quotation marks break the options
+#: string, the %LET statement or the JSON of the request.
+KEY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+KEY_NAME_RULE = ("letters, digits, '.', '_' and '-' only, no blank and no '/' - the code writes the name into "
+                 "%let API_KEY=...; and looks the entry up with a Perl expression. Rename the entry of the "
+                 "credential domain (such as AzureOpenAI for 'Azure OpenAI') and set that name")
+
+
+def key_name_refusal(name: Any, what: str) -> Optional[str]:
+    """The sentence that refuses `name` as the name of a credential-domain
+    entry, `what` naming where it stands; None where the name is one."""
+    if isinstance(name, str) and KEY_NAME_PATTERN.fullmatch(name):
+        return None
+    return (f"{what} {json.dumps(name, ensure_ascii=False, default=str)} is no name of a credential-domain entry "
+            f"the SAS code of an LLM call can send: {KEY_NAME_RULE}.")
+
+
+#: The variable an `auth.mode: env` definition reads its key from when it names
+#: none: the name .env.example (and the adapter's own env_key_var) uses for that
+#: provider's key. Every azure* adapter shares AZURE_OPENAI_API_KEY.
+DEFAULT_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "voyage": "VOYAGE_API_KEY",
+    "bedrock": "AWS_BEDROCK_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
+    "typesafe": "TYPESAFE_API_KEY",
+}
+
+
+def default_key_env(adapter: str) -> Optional[str]:
+    """The default key variable of an adapter id, None where it has none."""
+    if adapter.startswith("azure"):
+        return "AZURE_OPENAI_API_KEY"
+    return DEFAULT_KEY_ENV.get(adapter)
+
+
+#: The sentence that says where an `auth.mode: env` definition's key comes
+#: from. The description the fact sheet, modelConfiguration.json and the model
+#: card show ends with it (described()), derived from auth at every generate.
+KEY_ENV_SENTENCE = "The key comes from the container environment variable {env_var}."
+_KEY_ENV_SENTENCE = re.compile(r"\s*The key comes from the container environment variable [A-Z_][A-Z0-9_]*\.")
+
+
+def described(manifest: "ModelManifest") -> str:
+    """metadata.description as the generated files show it: for auth.mode env
+    with the sentence that names the variable at its end; any such sentence
+    the description holds from an earlier mode or variable is taken out. A
+    description without the sentence in any other mode is returned as it is."""
+    text = manifest.metadata.description
+    auth = manifest.provider.auth
+    if auth.mode != "env" and not _KEY_ENV_SENTENCE.search(text):
+        return text
+    text = _KEY_ENV_SENTENCE.sub("", text).strip()
+    if auth.mode == "env" and auth.env_var:
+        text = (text + " " if text else "") + KEY_ENV_SENTENCE.format(env_var=auth.env_var)
+    return text
 
 
 class AuthBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["api_key", "none"] = "api_key"
+    # api_key: the key arrives per call in the API_KEY scoring option, which
+    #          names a credential-domain entry (key_name).
+    # env:     the key is read from an environment variable of the SCR
+    #          container (env_var); options.json has no API_KEY entry.
+    # none:    the model takes no provider key.
+    mode: Literal["api_key", "env", "none"] = "api_key"
     # Must equal the options.json API_KEY default and the LLM_API_KEYS CAS-table KeyName
-    key_name: Optional[str] = None
+    # (KEY_NAME_PATTERN: letters, digits, '.', '_' and '-')
+    key_name: Optional[str] = Field(None, json_schema_extra={"pattern": KEY_NAME_PATTERN.pattern})
+    # auth.mode env only: the container environment variable that holds the
+    # key. Absent, the adapter's default (DEFAULT_KEY_ENV) is used.
+    env_var: Optional[str] = Field(None, json_schema_extra={"pattern": ENV_VAR_PATTERN.pattern})
 
     @model_validator(mode="after")
     def _key_name_required(self) -> "AuthBlock":
         if self.mode == "api_key" and not self.key_name:
             raise ValueError("auth.key_name is required when auth.mode is 'api_key'")
+        if self.key_name and key_name_refusal(self.key_name, "auth.key_name"):
+            raise ValueError(key_name_refusal(self.key_name, "auth.key_name"))
+        if self.mode == "env" and self.key_name:
+            raise ValueError(
+                "auth.key_name is not used when auth.mode is 'env' - the key comes from the container "
+                "environment variable auth.env_var, not from a credential-domain entry; remove key_name")
+        if self.mode != "env" and self.env_var:
+            raise ValueError(f"auth.env_var is only read when auth.mode is 'env' (it is '{self.mode}')")
+        if self.env_var is not None and not ENV_VAR_PATTERN.fullmatch(self.env_var):
+            raise ValueError(
+                f"auth.env_var '{self.env_var}' is not an environment variable name "
+                "(upper-case letters, digits and underscores, not starting with a digit)")
         return self
 
 
@@ -62,6 +177,19 @@ class ProviderBlock(BaseModel):
     endpoint: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)
     auth: AuthBlock = Field(default_factory=lambda: AuthBlock(mode="none"))
+
+    @model_validator(mode="after")
+    def _env_var_resolved(self) -> "ProviderBlock":
+        # An env-mode definition always knows its variable after loading: the
+        # one it names, else its adapter's default.
+        if self.auth.mode == "env" and not self.auth.env_var:
+            default = default_key_env(self.adapter)
+            if not default:
+                raise ValueError(
+                    f"auth.env_var is required when auth.mode is 'env': adapter '{self.adapter}' has no "
+                    "default key variable")
+            self.auth.env_var = default
+        return self
 
 
 class RuntimeBlock(BaseModel):
@@ -168,13 +296,25 @@ class ModelManifest(BaseModel):
     @field_validator("model_id")
     @classmethod
     def _valid_model_id(cls, v: str) -> str:
-        if not MODEL_ID_PATTERN.match(v):
+        if not MODEL_ID_PATTERN.fullmatch(v):      # `match` let a line feed at the end through (`$`)
             raise ValueError(
                 f"model_id '{v}' must be snake_case ([a-z0-9_], starting with a letter or digit) - "
                 "it becomes the folder name, SAS Model Manager model name, fact-sheet key, "
                 "container image name and ingress path."
             )
         return v
+
+    @model_validator(mode="after")
+    def _no_key_option_in_env_mode(self) -> "ModelManifest":
+        # The score code takes a non-empty API_KEY option before the container's
+        # variable, so a declared one - its default lands in options.json and in
+        # the scorer's defaults - would switch env mode off for every call.
+        if self.provider.auth.mode == "env" and "API_KEY" in self.options:
+            raise ValueError(
+                "options.API_KEY is not declared when provider.auth.mode is 'env' - the key comes from the "
+                f"container environment variable {self.provider.auth.env_var}, and an API_KEY default would "
+                "take its place in every call; remove the option")
+        return self
 
     # -- serialization ----------------------------------------------------
 

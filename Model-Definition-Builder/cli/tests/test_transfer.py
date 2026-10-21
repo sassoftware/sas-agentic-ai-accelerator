@@ -166,3 +166,95 @@ def test_job_messages_name_the_failing_task():
     session = FakeSession()
     job = {"links": [{"rel": "self", "href": "/transfer/importJobs/i-1"}]}
     assert transfer.job_messages(session, job) == ["Prompt Builder: failed no such caslib"]
+
+
+def test_the_other_tables_follow_a_library_only_when_one_is_named():
+    """A site that keeps LLM_LOGS and the fact sheets in a library of its own
+    asks for it; the table keeps its name, because a report retargeted at a
+    table with other columns loses its data items."""
+    mapping, changes = transfer.rehost_mapping(
+        MAPPING(), "viya.example.com", "ACCELERATOR_RELEASES",
+        "server=cas-shared-default;library=MyLib;table=RELEASES", library="Monitoring", server="cas-team")
+    targets = {c["source"].split("table=")[1]: c["target"] for c in mapping["connectors"]["table"]}
+    assert targets == {"ACCELERATOR_RELEASES": "server=cas-shared-default;library=MyLib;table=RELEASES",
+                       "HMEQ": "server=cas-team;library=Monitoring;table=HMEQ"}
+    assert "data source server=cas-shared-default;library=Public;table=HMEQ -> " \
+           "server=cas-team;library=Monitoring;table=HMEQ" in changes
+    assert not any("left as exported" in c for c in changes)
+    # without a server the table stays on the server the package names
+    mapping, _ = transfer.rehost_mapping(MAPPING(), "h", "ACCELERATOR_RELEASES", "x", library="Monitoring")
+    assert mapping["connectors"]["table"][1]["target"] == "server=cas-shared-default;library=Monitoring;table=HMEQ"
+    # a second run over a mapping that already points there reports no change
+    again, changes = transfer.rehost_mapping(mapping, "h", "ACCELERATOR_RELEASES", "x", library="Monitoring")
+    assert not [c for c in changes if "HMEQ" in c]
+
+
+# ---- the tasks of a job, read to the end -------------------------------------------
+class _Tasks(FakeSession):
+    """A job with more tasks than one page gives."""
+
+    def __init__(self, tasks, status=200):
+        super().__init__()
+        self._tasks, self._status = tasks, status
+
+    def get(self, path, **kw):
+        if path.endswith("/tasks"):
+            self.calls.append(("GET", path, kw))
+            if self._status != 200:
+                return FakeResponse(self._status, {}, "service unavailable")
+            start, limit = kw["params"]["start"], kw["params"]["limit"]
+            return FakeResponse(200, {"items": self._tasks[start:start + limit], "count": len(self._tasks)})
+        return super().get(path, **kw)
+
+
+WARNING = ("\n/files/files/f4040dc0 was updated but cannot be added to the intended folder\n"
+           "An item named \"tokens.py\" of type \"File\" already exists in the folder \"rag_core\".\n")
+
+
+def test_the_tasks_of_a_job_are_read_to_the_end():
+    """One page is not the job: a task that ended with a warning can stand
+    anywhere, and the measured one stood among 71."""
+    tasks = [{"name": f"object {n}", "state": "completed", "message": "The resource was successfully imported."}
+             for n in range(230)]
+    tasks[217] = {"name": "tokens.py", "resourceType": "application/vnd.sas.file+json",
+                  "state": "completedWithWarnings", "message": WARNING}
+    session = _Tasks(tasks)
+    job = {"id": "i-1", "links": [{"rel": "self", "href": "/transfer/importJobs/i-1"}]}
+    read = transfer.job_tasks(session, job)
+    assert len(read) == 230 and read[217]["name"] == "tokens.py"
+    assert [call[2]["params"]["start"] for call in session.calls] == [0, 100, 200]
+    assert {call[1] for call in session.calls} == {"/transfer/importJobs/i-1/tasks"}
+    # a job without a self link is asked for by its id
+    assert len(transfer.job_tasks(_Tasks(tasks[:3]), {"id": "i-9"})) == 3
+    with pytest.raises(RuntimeError, match="Reading the tasks of the job /transfer/importJobs/i-1 failed: HTTP 503"):
+        transfer.job_tasks(_Tasks(tasks, status=503), job)
+
+
+def test_a_task_that_did_not_end_completed_is_a_line():
+    """`completed` with its message of success is not one; a warning, a
+    failure and a task without a state are."""
+    assert transfer.task_problems([
+        {"name": "rag_core", "resourceType": "folder", "state": "completed",
+         "message": "The resource was successfully imported."},
+        {"name": "tokens.py", "resourceType": "application/vnd.sas.file+json", "state": "completedWithWarnings",
+         "message": WARNING},
+        {"name": "Start Here", "resourceType": "jobDefinition", "state": "failed", "message": ""},
+        {"resourceName": "LLM Usage Report", "state": "Completed"},
+        {"id": "t-9"},
+    ]) == [
+        "file 'tokens.py': completedWithWarnings - /files/files/f4040dc0 was updated but cannot be added to the "
+        "intended folder / An item named \"tokens.py\" of type \"File\" already exists in the folder \"rag_core\".",
+        "jobDefinition 'Start Here': failed",
+        "'t-9': no state"]
+    assert transfer.task_problems([]) == []
+
+
+def test_a_part_of_a_package_is_uploaded_from_memory():
+    """What `mdb builders-import` hands to the transfer service is not a
+    file: the reports of a package, cut out of it."""
+    session = FakeSession()
+    data = json.dumps({"name": "Prompt Builder", "transferDetails": []}).encode("utf-8")
+    assert transfer.upload_package_bytes(session, "SAS-Agentic-AI-Accelerator.json", data)["id"] == "p-9"
+    method, path, kw = session.calls[-1]
+    assert (method, path) == ("POST", "/transfer/packages")
+    assert kw["files"] == {"file": ("SAS-Agentic-AI-Accelerator.json", data, "application/json")}

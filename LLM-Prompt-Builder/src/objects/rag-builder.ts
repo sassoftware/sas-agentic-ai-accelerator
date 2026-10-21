@@ -46,6 +46,8 @@ import {
   updateModelTags,
 } from '../api/models-api';
 import { getFileContent } from '../api/files-api';
+import { readStoredJson, StoredFileUnusable } from '../api/stored-json';
+import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import type { DependentDecision } from '../types/relationships';
 import { resolveDomainSecrets } from '../api/credentials-api';
@@ -65,17 +67,19 @@ import {
 import {
   getJob,
   getJobProgressMessages,
+  getRunningJobOf,
   isTerminalJobState,
   launchJob,
 } from '../api/jobexec-api';
 import { getCasTableRows, getCaslibs } from '../api/cas-api';
-import Modal from 'bootstrap/js/dist/modal';
 import { getAppState } from '../state/app-state';
+import { oneAtATime } from '../util/one-at-a-time';
 import { showToast } from '../ui/toast';
 import { attachCombobox } from '../ui/combobox';
 import { createListFilter, renderFilteredOptions } from '../ui/list-filter';
 import { MODEL_CARD_FIELDS, createDocSection, createInfoIcon } from '../ui/doc-section';
-import { manifestSettings, renderRetrievalModel } from './rag-manifest';
+import { manifestBlockHas, manifestSettings, renderRetrievalModel } from './rag-manifest';
+import { TLS_VERIFICATION_OFF_TAG } from './prompt-decision';
 import { macroSafeQuestion, parseRetrievalLog, type RetrievalTestLog } from './rag-retrieval-log';
 import { buildFlow, enrichSteps, enrichValues, ingestionChain, ingestionSteps } from './rag-flow';
 import {
@@ -93,19 +97,34 @@ import {
   type PromptContract,
 } from './rag-enrich';
 import { readStepSpec, registerFlow, resolveStepIds } from '../api/dataflows-api';
-import { createCreateModal } from '../ui/create-modal';
+import { createCreateModal, type CreateModalDialog, type CreateModalEntry } from '../ui/create-modal';
+import { openExternalLink } from '../ui/external-link';
 import { createStepper } from '../ui/stepper';
+import { createSelectionLock } from '../ui/selection-lock';
 import { createInstructionCard } from '../ui/instruction-card';
 import { showConfirmModal } from '../ui/confirm-modal';
 import type { InterfaceText } from '../types';
 import type { DropdownOption } from '../types/models';
-import type { RagBuilderConfig, RagBuilderText, RagEnrichStep, RagSetup } from '../types/rag';
+import type {
+  RagBuilderConfig,
+  RagBuilderHooks,
+  RagBuilderText,
+  RagEnrichStep,
+  RagSetup,
+} from '../types/rag';
 
 const SETUP_FILE = 'rag-setup.json';
 const PIPELINE_FILE = 'pipeline.yaml';
 /** Written by earlier versions; now removed on save (the model card lives
  *  in the model's attributes). Kept only so the stale copy can be found. */
 const DOCUMENTATION_FILE = 'documentation.md';
+
+/** A rag-setup.json that was read and is no setup: reading it again does not change it. */
+class SetupUnusable extends Error {
+  constructor() {
+    super(`${SETUP_FILE} holds no setup`);
+  }
+}
 
 /**
  * A pipeline table prefix: a SAS name, capped at 20 characters.
@@ -155,21 +174,36 @@ function isPersonalCaslib(name: string): boolean {
 /**
  * Set a picker to a saved value, keeping it even when the live listing does
  * not carry it (a model retired from the project, a caslib the user can no
- * longer see). The alternative is a select silently snapping to its first
- * option, which is how a saved corpus starts writing somewhere else.
+ * longer see, a vector database the deployment no longer offers). The
+ * alternative is a select silently snapping to its first option, which is
+ * how a saved corpus starts writing somewhere else.
+ *
+ * The kept value belongs to the setup being shown and to no other: its option
+ * is marked, and the mark is what lets the next call take it out again.
+ * Without that, every setup opened in a session would leave its retired
+ * model behind as a choice for all the setups opened after it. The option
+ * goes below the placeholder, so an empty picker still reads as "choose one".
+ *
+ * `label` is what a person sees for the value when the two differ.
  */
 function keepUnlisted(
   field: HTMLSelectElement | HTMLInputElement,
   value: string,
-  missingNote: string
+  missingNote: string,
+  label: string = value
 ): void {
-  if (field instanceof HTMLSelectElement && value) {
+  if (field instanceof HTMLSelectElement) {
+    field
+      .querySelectorAll<HTMLOptionElement>('option[data-unlisted]')
+      .forEach((kept) => kept.remove());
     const listed = Array.from(field.options).some((option) => option.value === value);
-    if (!listed) {
+    if (value && !listed) {
       const option = document.createElement('option');
       option.value = value;
-      option.textContent = `${value} — ${missingNote}`;
-      field.insertBefore(option, field.firstChild);
+      option.textContent = `${label} — ${missingNote}`;
+      option.dataset.unlisted = 'true';
+      const placeholder = field.options[0]?.value === '' ? field.options[0] : null;
+      field.insertBefore(option, placeholder ? placeholder.nextSibling : field.firstChild);
     }
   }
   field.value = value;
@@ -187,20 +221,38 @@ function offeredBackends(config: RagBuilderConfig): ReadonlyArray<RagBackend> {
   return offered.length ? offered : RAG_BACKENDS;
 }
 
-/** The retrieval model's fixed in/out contract (owner requirement: the model
- * page must show clear variable definitions like manifested prompts do). */
+/**
+ * The retrieval model's fixed in/out contract (owner requirement: the model
+ * page must show clear variable definitions like manifested prompts do).
+ *
+ * EVERY variable carries a length, the outputs as much as the inputs. SAS
+ * Model Manager stores 99 for a string variable that comes without one, and
+ * SAS Intelligent Decisioning declares the model in the code it generates
+ * for a decision with what is stored: `in_out varchar(100)
+ * "context_envelope"`. The lengths say what the model takes and returns;
+ * nothing was found to depend on them. Measured live with both context
+ * outputs at 99: an envelope of 1969 characters came back complete from SAS
+ * Micro Analytic Service, and a test of SAS Intelligent Decisioning returned
+ * the longer values complete as well. The variables are written by every
+ * save, so a manifest of a setup from before the lengths brings them to its
+ * model.
+ *
+ * The same list is in rag_core/registration.py (RETRIEVAL_INPUTS and
+ * RETRIEVAL_OUTPUTS), which registers the model from SAS Studio.
+ * test_manifest_parity.py compares the two, entry by entry.
+ */
 const INPUT_VARIABLES = [
   { name: 'question', role: 'input', type: 'string', length: 32000, description: 'The user question to retrieve context for' },
-  { name: 'k', role: 'input', type: 'decimal', description: 'Number of chunks to return (0 = manifested default)' },
+  { name: 'k', role: 'input', type: 'decimal', length: 8, description: 'Number of chunks to return (0 = the manifested default)' },
   { name: 'filter_json', role: 'input', type: 'string', length: 4000, description: 'Optional JSON object of allow-listed column equality filters' },
   { name: 'retrieval_mode', role: 'input', type: 'string', length: 32, description: 'vector (hybrid arrives with a later release)' },
-  { name: 'options', role: 'input', type: 'string', length: 4000, description: 'Optional JSON connection overrides for callers managing their own secrets' },
+  { name: 'options', role: 'input', type: 'string', length: 4000, description: 'Optional JSON overrides: connection settings, and API_KEY for an API-backed embedding model (a decision has no session to resolve one)' },
 ];
 const OUTPUT_VARIABLES = [
-  { name: 'context_dg', role: 'output', type: 'string', description: 'Context datagrid as JSON: document_id, chunk_id, filename, ingestion_timestamp, distance, document' },
-  { name: 'context_envelope', role: 'output', type: 'string', description: 'JSON envelope: query, hits[], graph_context, retrieval_mode, collection, ingestion_run_id' },
+  { name: 'context_dg', role: 'output', type: 'string', length: 32000, description: 'Retrieved context as a datagrid (JSON string)' },
+  { name: 'context_envelope', role: 'output', type: 'string', length: 32000, description: 'JSON envelope: query, hits[], graph_context, retrieval_mode, collection, ingestion_run_id' },
   { name: 'retrieval_status', role: 'output', type: 'string', length: 512, description: 'ok or the failure message - retrieval never raises' },
-  { name: 'run_time', role: 'output', type: 'decimal', description: 'Total seconds spent' },
+  { name: 'run_time', role: 'output', type: 'decimal', length: 8, description: 'Total seconds spent' },
 ];
 
 function defaultSetup(config: RagBuilderConfig): RagSetup {
@@ -223,9 +275,13 @@ function defaultSetup(config: RagBuilderConfig): RagSetup {
       scrEndpoint: '',
     },
     store: {
-      backend: 'pgvector',
+      // No backend, and so no port, until one is chosen: which store a corpus
+      // lands in decides where the data physically lives, so it is never
+      // inherited from a default. collectSetup resolves host, port and
+      // database from the credential domain once a backend is selected.
+      backend: '',
       host: '',
-      port: 5432,
+      port: 0,
       database: '',
       // admin-set: see RagBuilderConfig.storeSslmode
       sslmode: config.storeSslmode || 'prefer',
@@ -327,10 +383,22 @@ function renderPipelineYaml(setup: RagSetup): string {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Build the RAG Builder and return it detached.
+ *
+ * `hooks` is how a page that hosts more than this builder ties it in: the
+ * kind selector it hands over is placed at the top of the Setup card, and
+ * `onReady` receives the controller once everything below exists.
+ *
+ * The promise resolves even when SAS Model Manager cannot list the RAG
+ * projects - the page then carries an alert with a retry instead of the
+ * project list - so a host can always show what was built.
+ */
 export async function buildRagBuilder(
   config: RagBuilderConfig,
   paneID: string,
-  interfaceText: InterfaceText
+  interfaceText: InterfaceText,
+  hooks: RagBuilderHooks = {}
 ): Promise<HTMLElement> {
   const text = (interfaceText.ragBuilder ?? {}) as RagBuilderText;
   const str = (key: string, fallback: string): string => {
@@ -342,8 +410,34 @@ export async function buildRagBuilder(
   let selectedProjectID = '';
   let selectedSetupID = '';
   let selectedSetupName = '';
+  /**
+   * Counts the times the steps after Setup were started for a setup (or for
+   * none). Whatever is asked of the server for the setup on the page - its
+   * stored configuration, the prompts of its enrichment, a retrieval test,
+   * the state of an ingestion, its ledger - takes `whileSetupShown()` before
+   * it waits, and draws its answer only while that still says yes.
+   *
+   * Without it an answer was drawn whichever setup was open by then
+   * (issue #47): the chunks of a retrieval test waited in the test panel of
+   * the setup opened next, a finished ingestion opened its ledger there, and
+   * the stored configuration of a setup that answered late was put into the
+   * editor of another one - a new one included.
+   */
+  let shownSetup = 0;
+  const whileSetupShown = (): (() => boolean) => {
+    const mine = shownSetup;
+    return () => mine === shownSetup;
+  };
   /** Tags of the loaded setup that this builder manages (removed on re-save). */
   let managedTags: string[] = [];
+  /**
+   * What the last registration of the retrieval model did about TLS
+   * verification: written on, written off, or the option was off and the
+   * template under the content root had no SSL_VERIFY to write it to.
+   */
+  let tlsOutcome: 'on' | 'off' | 'templatePredatesOption' = 'on';
+  /** Whether the tag of that registration could be set or removed. */
+  let tlsTagWritten = true;
   /** URI of the setup's generated ingestion job definition ('' = none yet). */
   let currentJobUri = '';
   // the operational policy of the setup currently open. Authored centrally in
@@ -364,8 +458,28 @@ export async function buildRagBuilder(
   let runTicker: number | null = null;
   let runStartedAt = 0;
   let runActive = false;
+  // How many questions to SAS Job Execution for a running ingestion are out,
+  // by setup. A count, not the one setup last asked for: a setup opened twice
+  // has two questions out, and the answer to the first must not end the wait
+  // for the second.
+  const askingForRunOf = new Map<string, number>();
+  /**
+   * The ingestion runs this page follows and has not yet seen end, by setup:
+   * the id of the job and the time of its launch. A job goes on in SAS Viya
+   * when its setup is left, and the setup shows its run again when it is
+   * opened again (see followIngestion). Before this, a setup that was opened
+   * again showed no run and offered Launch, with the first run still writing
+   * its collection. The id of a job is not stored with the setup: a run this
+   * page did not launch - after a reload, or one started elsewhere - is asked
+   * of SAS Job Execution when its setup is opened (see loadSetup).
+   */
+  const ingestionRuns = new Map<string, { jobId: string; startedAt: number }>();
 
+  // The root carries the id every other id here starts with, as the Prompt
+  // Builder's root does, so a stylesheet or a test can address this builder
+  // alone when both are in the document.
   const container = document.createElement('div');
+  container.id = `${paneID}-obj-${config.id}`;
 
   // ---- steps ----------------------------------------------------------------
   // The page is a four-step flow, the same shell the Prompt Builder uses. The
@@ -390,8 +504,10 @@ export async function buildRagBuilder(
 
   // ---- header ---------------------------------------------------------------
   // The heading stays for the document outline only - the embedding report
-  // already titles the page; the description opens the first card.
-  const heading = document.createElement('h1');
+  // already titles the page; the description opens the first card. A second
+  // level heading, because the page this builder is mounted in has its own
+  // first-level one and a document carries a single h1.
+  const heading = document.createElement('h2');
   heading.className = 'visually-hidden';
   heading.textContent = str('ragBuilderHeading', 'RAG Builder');
   const subtitle = document.createElement('p');
@@ -410,8 +526,28 @@ export async function buildRagBuilder(
   // Success is transient, failure is not. A confirmation the user has already
   // seen should not sit on the page competing with the next one, so it goes
   // through the same toast the Prompt Builder uses; anything the user still
-  // has to act on stays in the inline alert until it is resolved.
-  const showStatus = (variant: 'success' | 'danger' | 'info', message: string): void => {
+  // has to act on stays in the inline alert until it is resolved. `action`
+  // puts the way out into the alert itself, for a failure the user can do
+  // something about from here.
+  /**
+   * What the last failure said, whichever of the two places showed it (the
+   * banner above, or the list beside the Save and Manifest buttons). A
+   * manifest reads it after a stage that did not go through, to say beside
+   * its button why it stopped.
+   */
+  let lastFailure: string[] = [];
+  /**
+   * Whether the stage that failed last may have written what it was writing
+   * all the same: the upload of the score code got no usable answer. A
+   * manifest that stops there cannot say "The setup is not manifested".
+   */
+  let lastFailureLeavesItOpen = false;
+  const showStatus = (
+    variant: 'success' | 'danger' | 'warning' | 'info',
+    message: string,
+    action?: { id: string; label: string; run: () => void }
+  ): void => {
+    if (variant === 'danger') lastFailure = [message];
     if (variant === 'success') {
       status.replaceChildren();
       showToast(message);
@@ -421,6 +557,16 @@ export async function buildRagBuilder(
     alert.className = `alert alert-${variant} py-2 mb-0`;
     alert.setAttribute('role', 'alert');
     alert.textContent = message;
+    if (action) {
+      alert.classList.add('d-flex', 'flex-wrap', 'align-items-center', 'gap-2');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = action.id;
+      button.className = `btn btn-sm btn-outline-${variant}`;
+      button.textContent = action.label;
+      button.addEventListener('click', action.run);
+      alert.appendChild(button);
+    }
     status.replaceChildren(alert);
   };
   const clearStatus = (): void => status.replaceChildren();
@@ -548,7 +694,17 @@ export async function buildRagBuilder(
     'A RAG project groups related setups in SAS Model Manager; a setup is one document corpus wired to one vector-store collection.'
   );
   const selectionCard = createInstructionCard(selectionHeading, instructionsTitle, [subtitle, selectionHint]);
-  const selectionSection = selectionCard.controls;
+  // While a write to SAS Model Manager is out - a save, the documentation, a
+  // manifest, a delete - nothing that changes which setup is open can be used
+  // (see createSelectionLock): the controls of this card stand in its block.
+  const selectionLock = createSelectionLock(idOf('selection'));
+  const selectionSection = selectionLock.block;
+  selectionCard.controls.appendChild(selectionSection);
+  // What is being built is chosen before which project it goes into, so the
+  // kind selector of the hosting page opens the controls column - the place
+  // it has on the Prompt Builder's Setup card. Its behaviour stays with the
+  // page that made it; a builder running on its own has none to place.
+  if (hooks.kindSelector) selectionSection.appendChild(hooks.kindSelector);
 
   const filterLabels = {
     namePlaceholder: str('ragBuilderFilterNamePlaceholder', 'Filter by name…'),
@@ -597,8 +753,10 @@ export async function buildRagBuilder(
       descriptionLabel: str('ragBuilderNewProjectDescriptionLabel', 'Description'),
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
+      nameRequiredText: str('ragBuilderProjectNameRequired', 'A project name is required.'),
+      failedText: str('ragBuilderCreateUnexpected', 'The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.'),
     },
-    () => void createProjectFromModal()
+    createProjectFromModal
   );
   createCreateModal(
     selectionButtons,
@@ -613,8 +771,10 @@ export async function buildRagBuilder(
       descriptionLabel: str('ragBuilderNewSetupDescriptionLabel', 'Description'),
       closeButtonText: str('ragBuilderModalClose', 'Cancel'),
       saveButtonText: str('ragBuilderModalSave', 'Create'),
+      nameRequiredText: str('ragBuilderSetupNameRequired', 'A setup name is required.'),
+      failedText: str('ragBuilderCreateUnexpected', 'The creation did not finish: an unexpected error occurred. Check in SAS Model Manager whether it was created before you try again.'),
     },
-    () => void createSetupFromModal()
+    createSetupFromModal
   );
 
   // Open in SAS Model Manager: the setup IS a Model Manager model, and its
@@ -625,6 +785,13 @@ export async function buildRagBuilder(
   openInMMButton.rel = 'noopener noreferrer';
   openInMMButton.setAttribute('aria-disabled', 'true');
   openInMMButton.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+  openInMMButton.id = idOf('open-in-mm');
+  // A new tab where the browser allows one, the copied link where the
+  // sandboxed iframe of a report does not.
+  openInMMButton.addEventListener('click', (event) => {
+    if (!openInMMButton.getAttribute('href')) return;
+    openExternalLink(event, openInMMButton, linkCopiedText());
+  });
   selectionButtons.appendChild(openInMMButton);
 
   // Destructive actions sit apart from the rest, right-aligned.
@@ -632,11 +799,13 @@ export async function buildRagBuilder(
   destructive.className = 'd-flex flex-wrap align-items-center gap-2 ms-auto';
   const deleteSetupButton = document.createElement('button');
   deleteSetupButton.type = 'button';
+  deleteSetupButton.id = idOf('delete-setup');
   deleteSetupButton.className = 'btn btn-danger';
   deleteSetupButton.disabled = true;
   deleteSetupButton.textContent = str('ragBuilderDeleteSetupButton', 'Delete setup');
   const deleteProjectButton = document.createElement('button');
   deleteProjectButton.type = 'button';
+  deleteProjectButton.id = idOf('delete-project');
   deleteProjectButton.className = 'btn btn-danger';
   deleteProjectButton.disabled = true;
   deleteProjectButton.textContent = str('ragBuilderDeleteProjectButton', 'Delete project');
@@ -740,6 +909,7 @@ export async function buildRagBuilder(
   // governance fields end up empty.
   const docSaveButton = document.createElement('button');
   docSaveButton.type = 'button';
+  docSaveButton.id = idOf('save-documentation');
   docSaveButton.classList.add('btn', 'btn-outline-primary', 'btn-sm');
   docSaveButton.textContent = str('ragBuilderSaveDocumentationButton', 'Save documentation');
   docSaveButton.disabled = true;
@@ -771,10 +941,10 @@ export async function buildRagBuilder(
     sasserver: str('ragBuilderSourceKindServer', 'Compute server file system'),
     sascontent: str('ragBuilderSourceKindContent', 'SAS Content'),
   });
-  labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-4',
+  labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-5',
     str('ragBuilderSourceKindInfo', 'Where the corpus lives. The compute server file system is a path on the SAS Compute server (not your workstation) and suits large corpora already staged on disk. SAS Content is the governed folder tree you see in SAS Drive, read over the Files API - convenient, permission-aware, and slower per document.'), true);
   const sourcePathField = textInput('', '/data/documents');
-  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-8',
+  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-7',
     str('ragBuilderSourcePathInfo', 'The folder to crawl, walked recursively, with every readable file treated as a candidate document. A path the ingestion cannot see yields a run that finds nothing rather than one that fails loudly, so check it against the location type on the left.'), true);
   const sourcePlaceholder = (): void => {
     sourcePathField.placeholder =
@@ -783,14 +953,14 @@ export async function buildRagBuilder(
   sourceKindField.addEventListener('change', sourcePlaceholder);
   sourcePlaceholder();
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
-  labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-4',
+  labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-5',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
   // Source files are their own decision, not an extractor choice: the
   // question is whether they belong in the corpus at all, and the answer is
   // usually no. Off by default, and never a silent exclusion - a skipped file
   // is listed in the ledger and the run log with its reason.
   const includeCodeWrap = document.createElement('div');
-  includeCodeWrap.className = 'col-md-8 d-flex align-items-center';
+  includeCodeWrap.className = 'col-md-7 d-flex align-items-center';
   const includeCodeCheck = document.createElement('div');
   includeCodeCheck.className = 'form-check mb-0';
   const includeCodeField = document.createElement('input');
@@ -1392,7 +1562,6 @@ export async function buildRagBuilder(
           contents.find((item) => String(item.name ?? '').toLowerCase().endsWith('.py'));
         if (!score?.fileUri) return;
         const response = await getFileContent(String(score.fileUri), 'text/plain');
-        if (!response.ok) return;
         contract = readPromptContract(await response.text());
       } catch (error) {
         console.debug('RAG Builder: reading the prompt score code failed', error);
@@ -1568,8 +1737,12 @@ export async function buildRagBuilder(
       : setup.enrich
         ? [setup.enrich as RagEnrichStep]
         : [];
+    const shown = whileSetupShown();
     for (const block of enrichBlocks.splice(0)) block.root.remove();
     for (const step of stored.length > 0 ? stored : [null]) {
+      // Another setup was opened while a prompt of this one was read back:
+      // the form holds the enrichment of that one by now.
+      if (!shown()) return;
       const block = addEnrichBlock();
       if (step) await block.restore(step);
     }
@@ -1650,7 +1823,10 @@ export async function buildRagBuilder(
       .replace('{entries}', missing.join(' / '))
       .replace('{domain}', credentialDomain);
   }
-  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-3',
+  // A wide column: an option can carry a note after the name ("not offered
+  // for new setups", "no credential"), and the closed dropdown has to show
+  // the chosen one in full - in German too, in a narrow report object.
+  labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-8',
     str('ragBuilderBackendInfo', 'Where the chunks and their vectors are stored. Both backends carry the same features, but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.'), true);
   if (!usable.length) {
     const warning = document.createElement('div');
@@ -1799,25 +1975,30 @@ export async function buildRagBuilder(
   };
   const saveActions = buttonRow();
   const operateActions = buttonRow();
+  // Each action carries an id: the labels are translated, so a script that
+  // has to press one cannot find it by its text.
   const actionButton = (
     row: HTMLElement,
+    id: string,
     label: string,
     style = 'btn-outline-secondary'
   ): HTMLButtonElement => {
     const button = document.createElement('button');
     button.type = 'button';
+    button.id = idOf(id);
     button.className = `btn ${style}`;
     button.textContent = label;
     row.appendChild(button);
     return button;
   };
-  const saveButton = actionButton(saveActions, str('ragBuilderSaveButton', 'Save setup'));
+  const saveButton = actionButton(saveActions, 'save', str('ragBuilderSaveButton', 'Save setup'));
   // ONE button for "make this setup real", because the four it replaces had
   // to be pressed in an order the UI never stated: a flow generated against a
   // setup whose score code was never registered is a half-built thing, and
   // nothing said so. Save stays separate for the still-editing case.
   const manifestButton = actionButton(
     saveActions,
+    'manifest',
     str('ragBuilderManifestButton', 'Manifest setup'),
     'btn-primary'
   );
@@ -1825,13 +2006,47 @@ export async function buildRagBuilder(
     'ragBuilderManifestTitle',
     'Save the setup, generate the ingestion job and the Studio flow, register the retrieval model, and record a new model version.'
   );
-  const launchButton = actionButton(operateActions, str('ragBuilderLaunchButton', 'Launch ingestion'));
+  /**
+   * The three buttons that write the open setup - Save setup, Manifest setup
+   * and Save documentation - are usable only while a setup is open, what is
+   * stored of it is on the page, and no write is out (see createSelectionLock).
+   * A click while the stored setup was still being read wrote the fields as
+   * they stood: the defaults, which every new setup starts from.
+   */
+  let setupReading = false;
+  // The open setup was read and what is stored of it could not be read (see
+  // loadSetup): its three buttons stay off until it is read.
+  let setupUnread = false;
+  const updateSetupWrites = (): void => {
+    const off = !selectedSetupID || setupReading || selectionLock.busy;
+    saveButton.disabled = off;
+    manifestButton.disabled = off;
+    docSaveButton.disabled = off;
+  };
+  selectionLock.onChange(updateSetupWrites);
+  const launchButton = actionButton(operateActions, 'launch', str('ragBuilderLaunchButton', 'Launch ingestion'));
   launchButton.disabled = true;
   launchButton.title = str('ragBuilderLaunchNeedsJob', 'Manifest the setup first.');
-  const ledgerButton = actionButton(operateActions, str('ragBuilderLedgerButton', 'Browse ledger'));
-  const testButton = actionButton(operateActions, str('ragBuilderTestButton', 'Test retrieval'));
+  const ledgerButton = actionButton(operateActions, 'ledger', str('ragBuilderLedgerButton', 'Browse ledger'));
+  const testButton = actionButton(operateActions, 'test', str('ragBuilderTestButton', 'Test retrieval'));
   testButton.disabled = true;
   testButton.title = str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
+  // With the option "Verify TLS certificates in manifested models" unticked a
+  // retrieval model manifested here does not verify the certificates of its
+  // two HTTPS calls. That is said above the button, before the click, with
+  // the way back named.
+  const tlsVerificationOn = config.sslVerify !== false;
+  if (!tlsVerificationOn) {
+    const tlsWarning = document.createElement('div');
+    tlsWarning.id = idOf('manifest-tls-warning');
+    tlsWarning.className = 'alert alert-warning py-2 px-3 mb-3';
+    tlsWarning.setAttribute('role', 'note');
+    tlsWarning.textContent = str(
+      'ragBuilderTlsOffWarning',
+      'TLS verification is off for the retrieval model. The option "Verify TLS certificates in manifested models" of this report is not ticked, so a retrieval model manifested now calls the embedding container and the credentials service without verifying their certificates, and is tagged TLS-Verification-Off in SAS Model Manager. To turn verification back on where the model runs, set RAGEMBED_SSLVERIFY=true and RAGSTORE_SSLVERIFY=true on the publishing destination. The ingestion job and Test retrieval on this page are not affected.'
+    );
+    saveBody.appendChild(tlsWarning);
+  }
   saveBody.appendChild(saveActions);
   operateBody.appendChild(operateActions);
   storeEditor.appendChild(saveCard);
@@ -1841,10 +2056,12 @@ export async function buildRagBuilder(
   // top of a long editor is off-screen by the time anyone reaches Save, so
   // the message arrives where the user is not looking.
   const saveResult = document.createElement('div');
+  saveResult.id = idOf('save-result');
   saveResult.className = 'mt-3';
   saveBody.appendChild(saveResult);
   const clearSaveResult = (): void => saveResult.replaceChildren();
   const showSaveErrors = (problems: string[]): void => {
+    lastFailure = problems;
     const alert = document.createElement('div');
     alert.className = 'alert alert-danger py-2 px-3 mb-0';
     alert.setAttribute('role', 'alert');
@@ -1866,9 +2083,13 @@ export async function buildRagBuilder(
     saveResult.replaceChildren(alert);
     saveResult.scrollIntoView({ block: 'nearest' });
   };
-  const showSaveSuccess = (message: string): void => {
+  /**
+   * What was written, beside the button. `variant` is 'warning' for an
+   * outcome that went through and still needs a second look.
+   */
+  const showSaveSuccess = (message: string, variant: 'success' | 'warning' = 'success'): void => {
     const alert = document.createElement('div');
-    alert.className = 'alert alert-success py-2 px-3 mb-0';
+    alert.className = `alert alert-${variant} py-2 px-3 mb-0`;
     alert.setAttribute('role', 'status');
     alert.append(`${message} `);
     // The saved artifact is a Model Manager model, and its versions, history
@@ -1880,7 +2101,44 @@ export async function buildRagBuilder(
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.textContent = str('ragBuilderOpenInMM', 'Open in SAS Model Manager');
+      // A new tab where the browser allows one, the copied link where the
+      // sandboxed iframe of a report does not.
+      link.addEventListener('click', (event) => openExternalLink(event, link, linkCopiedText()));
       alert.appendChild(link);
+    }
+    saveResult.replaceChildren(alert);
+    saveResult.scrollIntoView({ block: 'nearest' });
+  };
+  /**
+   * A save or a manifest that did not go through, beside the button that
+   * started it: what stopped, why, and what had been written by then. The
+   * banner at the top of the page may say the reason too, but that is out of
+   * view from down here, and a line that still said "saved" would be read as
+   * the outcome.
+   */
+  const showSaveFailure = (heading: string, reasons: string[], written = ''): void => {
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-danger py-2 px-3 mb-0';
+    alert.setAttribute('role', 'alert');
+    const title = document.createElement('div');
+    title.className = 'fw-semibold mb-1';
+    title.textContent = heading;
+    alert.appendChild(title);
+    if (reasons.length > 0) {
+      const list = document.createElement('ul');
+      list.className = 'mb-1 ps-3';
+      for (const reason of reasons) {
+        const item = document.createElement('li');
+        item.textContent = reason;
+        list.appendChild(item);
+      }
+      alert.appendChild(list);
+    }
+    if (written) {
+      const note = document.createElement('div');
+      note.className = 'rag-save-written';
+      note.textContent = written;
+      alert.appendChild(note);
     }
     saveResult.replaceChildren(alert);
     saveResult.scrollIntoView({ block: 'nearest' });
@@ -1888,10 +2146,12 @@ export async function buildRagBuilder(
 
   // ---- ingestion run panel --------------------------------------------------
   const [runCard, runBody] = card(str('ragBuilderRunHeading', 'Ingestion run'));
+  runCard.id = idOf('ingestion-run');
   runCard.style.display = 'none';
   const runState = document.createElement('p');
   runState.className = 'fw-bold mb-1 d-flex align-items-center gap-2';
   const runBadge = document.createElement('span');
+  runBadge.id = idOf('run-state');
   runBadge.className = 'badge text-bg-secondary';
   const runStateText = document.createElement('span');
   const runClock = document.createElement('span');
@@ -1903,6 +2163,7 @@ export async function buildRagBuilder(
   const runNote = document.createElement('p');
   runNote.className = 'small text-body-secondary mb-2';
   const runMilestones = document.createElement('ul');
+  runMilestones.id = idOf('run-milestones');
   runMilestones.className = 'small mb-0';
   runBody.appendChild(runState);
   runBody.appendChild(runNote);
@@ -1911,6 +2172,7 @@ export async function buildRagBuilder(
 
   // ---- ledger panel ---------------------------------------------------------
   const [ledgerCard, ledgerBody] = card(str('ragBuilderLedgerHeading', 'Ingestion ledger'));
+  ledgerCard.id = idOf('ledger-panel');
   ledgerCard.style.display = 'none';
   const ledgerContent = document.createElement('div');
   ledgerContent.className = 'table-responsive';
@@ -1928,6 +2190,7 @@ export async function buildRagBuilder(
       'Ask the live collection a question and see the chunks it returns. This is how you tell whether the chunk size and embedding model suit the corpus - the chunks below are exactly what a retrieval would hand an LLM.'
     )
   );
+  testCard.id = idOf('test-panel');
   testCard.style.display = 'none';
   const testRow = document.createElement('div');
   testRow.className = 'row g-3 align-items-end';
@@ -1947,13 +2210,16 @@ export async function buildRagBuilder(
   testRunColumn.className = 'col-md-2 d-grid';
   const testRunButton = document.createElement('button');
   testRunButton.type = 'button';
+  testRunButton.id = idOf('test-run');
   testRunButton.className = 'btn btn-primary';
   testRunButton.textContent = str('ragBuilderTestRunButton', 'Run test');
   testRunColumn.appendChild(testRunButton);
   testRow.appendChild(testRunColumn);
   const testStatus = document.createElement('p');
+  testStatus.id = idOf('test-status');
   testStatus.className = 'small text-body-secondary mb-2 mt-3';
   const testResults = document.createElement('div');
+  testResults.id = idOf('test-results');
   testResults.className = 'table-responsive';
   testBody.appendChild(testRow);
   testBody.appendChild(testStatus);
@@ -1962,8 +2228,11 @@ export async function buildRagBuilder(
 
   // ---- data plumbing --------------------------------------------------------
 
+  /** The enrichment that applySetup put back last, settled once it is drawn. */
+  let enrichmentRestored: Promise<void> = Promise.resolve();
   const applySetup = (setup: RagSetup): void => {
-    ragDoc.setValues(setup.documentation);
+    // A stored null is a field that is not there (see isRagSetup).
+    ragDoc.setValues(setup.documentation ?? {});
     const storedPath = String(setup.source.path || '');
     const scheme = storedPath.toLowerCase().startsWith('sascontent:')
       ? 'sascontent'
@@ -1992,7 +2261,22 @@ export async function buildRagBuilder(
     capTokenWindow(false);
     followChunker(false);
     boundOverlap();
-    backendField.value = setup.store.backend;
+    // The note under the overlap says what share of the window it is: read
+    // again for this setup's two numbers, or it keeps the reading of the
+    // setup before (and stays empty after one whose chunker has no overlap).
+    judgeOverlap();
+    // A setup built on a vector database this deployment has since stopped
+    // offering keeps naming it. The corpus is still there, so the setup can
+    // be read, re-saved, manifested, launched and tested as before; what the
+    // deployment withdrew is the choice for NEW setups, and the option says
+    // so. It stays selectable for this setup only - opening another one
+    // removes it again.
+    keepUnlisted(
+      backendField,
+      setup.store.backend,
+      str('ragBuilderUnlistedBackend', 'not offered for new setups'),
+      RAG_BACKENDS.find((backend) => backend.key === setup.store.backend)?.label
+    );
     // a setup saved before policies existed carries none
     currentPolicies = setup.policies ?? policiesFrom(config);
     showStoreLocation();
@@ -2006,11 +2290,15 @@ export async function buildRagBuilder(
     updateLaunchState();
     // The enrichment has to read the prompt's score code back before it can
     // draw its inputs, so it settles a round trip after the rest of the form.
-    void restoreEnrichment(setup);
+    enrichmentRestored = restoreEnrichment(setup);
   };
 
   const updateLaunchState = (): void => {
-    launchButton.disabled = !currentJobUri;
+    // Not while a run of this setup is followed here, or asked for: a second
+    // launch would write the same collection beside it. Not while a write is
+    // out either: a manifest rewrites the job definition the launch runs.
+    launchButton.disabled =
+      !currentJobUri || runActive || (askingForRunOf.get(selectedSetupID) ?? 0) > 0 || selectionLock.busy;
     launchButton.title = currentJobUri
       ? ''
       : str('ragBuilderLaunchNeedsJob', 'Generate the ingestion job first.');
@@ -2026,6 +2314,16 @@ export async function buildRagBuilder(
         )
       : str('ragBuilderTestNeedsManifest', 'Manifest the setup first.');
   };
+  // Run test runs a job of the setup and writes a job definition to SAS
+  // Content: not while a test is out, nor while a write is. The button and
+  // every other way to the test (Enter in the question field) ask this one
+  // condition.
+  let retrievalTestOut = false;
+  const testRunRefused = (): boolean => retrievalTestOut || selectionLock.busy;
+  selectionLock.onChange(() => {
+    updateLaunchState();
+    testRunButton.disabled = testRunRefused();
+  });
 
   const stopPolling = (): void => {
     if (pollTimer !== null) {
@@ -2049,9 +2347,9 @@ export async function buildRagBuilder(
     );
   };
 
-  const startRunClock = (): void => {
+  const startRunClock = (startedAt = Date.now()): void => {
     stopRunClock();
-    runStartedAt = Date.now();
+    runStartedAt = startedAt;
     runActive = true;
     paintClock();
     // One second, because this is the only moving thing on the page while a
@@ -2068,14 +2366,70 @@ export async function buildRagBuilder(
     runActive = false;
   };
 
-  const setRunBadge = (state: string, failed = false): void => {
+  const setRunBadge = (state: string, failed = false, warned = false): void => {
     const done = isTerminalJobState(state as never);
-    runBadge.className = `badge text-bg-${!done ? 'primary' : failed || state !== 'completed' ? 'danger' : 'success'}`;
+    runBadge.className = `badge text-bg-${!done ? 'primary' : failed || state !== 'completed' ? 'danger' : warned ? 'warning' : 'success'}`;
     runBadge.textContent = state;
+  };
+
+  /**
+   * How a finished ingestion went, read from the job state and its milestones.
+   *
+   * The job never raises a SAS error, so its state alone says little: a run
+   * that could not do its work completes too, and says so in the one line
+   * "Ingestion failed: <reason>". That line, or a job that did not complete,
+   * is a failed run. Documents that could not be ingested are something else:
+   * the run did its work, the collection and the ledger are written, and the
+   * summary counts them ("documents failed=1, ingested=2"). The word "failed"
+   * by itself decides nothing - every step reports "0 failed" on a clean run.
+   */
+  const ingestionOutcome = (state: string, messages: string[]): { failed: boolean; failedDocuments: number } => {
+    const lines = messages.map((message) => message.replace(/^RAGINGEST\s+/, ''));
+    const failed = state !== 'completed' || lines.some((line) => /^Ingestion failed\b/i.test(line));
+    let failedDocuments = 0;
+    // The summary is the line that counts the documents per ledger status
+    // ("... documents failed=1, ingested=2, skipped=4"). It is found by those
+    // counts, not by the separator before them: a semicolon does not survive
+    // the way into the SAS log.
+    for (const line of lines) {
+      const counts = /\bdocuments\s+(\w+=\d+(?:,\s*\w+=\d+)*)/.exec(line);
+      if (!counts) continue;
+      const count = /(?:^|,\s*)failed=(\d+)/.exec(counts[1]);
+      failedDocuments = count ? Number(count[1]) : 0;
+    }
+    return { failed, failedDocuments };
   };
 
   /** The documentation block as the form currently has it. */
   const collectDocumentation = (): RagSetup['documentation'] => ({ ...ragDoc.values() });
+
+  /**
+   * A write SAS Model Manager refused is a write that failed. The service
+   * answers a refusal with a status and a JSON body, and the calls that
+   * upload a file or update a model hand that status back instead of
+   * throwing: a save that went on over it said "saved" for a file, an
+   * attribute or a tag that was not written.
+   */
+  const written = (status: number, what: string): void => {
+    if (status >= 300) throw new ViyaRefused(what, status, `${what} was refused with HTTP ${status}`);
+  };
+
+  /**
+   * What a write that got no answer comes to once what SAS Viya holds was
+   * read back (see writeOrReadBack): it was not carried out, or that is not
+   * known - for a launch whose job is not among the running jobs, or as
+   * what SAS Viya holds could not be read back. '' for any other failure -
+   * a refusal, which is an answer.
+   */
+  const noAnswerText = (error: unknown): string => {
+    if (!(error instanceof UnansweredWrite)) return '';
+    if (error.done === false) {
+      return str('ragBuilderNoAnswerNotDone', 'A request to SAS Viya got no usable answer, and reading back what SAS Viya holds shows that it was not carried out.');
+    }
+    return error.jobNotRunning
+      ? str('ragBuilderNoAnswerJobNotRunning', 'A request to SAS Viya got no usable answer, and the job it was to launch is not among the jobs that are running: whether it was launched is not known, as it may have ended already.')
+      : str('ragBuilderNoAnswerUnknown', 'A request to SAS Viya got no usable answer, and what SAS Viya holds could not be read back: whether it was carried out is not known.');
+  };
 
   /**
    * Save the documentation ALONE.
@@ -2093,33 +2447,42 @@ export async function buildRagBuilder(
     const documentation = collectDocumentation();
     clearStatus();
     const previous = docSaveButton.textContent;
-    docSaveButton.disabled = true;
     docSaveButton.innerHTML =
       '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
     try {
       const stored = await readStoredSetup();
       if (stored) {
-        await createModelContent(
+        const upload = await createModelContent(
           selectedSetupID,
           { ...stored, documentation },
           SETUP_FILE,
           'documentation'
         );
+        written(upload.status_code, SETUP_FILE);
       }
       // The model's own attributes ARE the documentation - the same fields a
       // prompt records, so one governance query reads both kinds of artifact
       // and there is no second copy to drift.
-      await updateModelAttributes(selectedSetupID, {
+      const updated = await updateModelAttributes(selectedSetupID, {
         ...Object.fromEntries(MODEL_CARD_FIELDS.map((field) => [field, documentation[field]])),
       });
+      written(updated, 'the model card');
       await removeStaleDocumentation();
       showStatus('success', str('ragBuilderDocSaved', 'Documentation saved to the Model Manager model.'));
     } catch (error) {
       console.error('Saving the RAG documentation failed.', error);
-      showStatus('danger', str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.'));
+      // A write that got no answer was read back; a stored setup that is no
+      // setup is named; the rest is a refusal.
+      showStatus(
+        'danger',
+        noAnswerText(error)
+          ? `${str('ragBuilderSaveDocumentationButton', 'Save documentation')}: ${noAnswerText(error)}`
+          : error instanceof SetupUnusable
+            ? str('ragBuilderDocSaveSetupUnusable', 'Saving the documentation failed: SAS Model Manager answered with a rag-setup.json that is no setup this page can read, so nothing was written. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.')
+            : str('ragBuilderDocSaveFailed', 'Saving the documentation failed - check your Model Manager permissions.')
+      );
     } finally {
       docSaveButton.textContent = previous;
-      docSaveButton.disabled = !selectedSetupID;
     }
   }
 
@@ -2142,14 +2505,22 @@ export async function buildRagBuilder(
     }
   }
 
-  /** The setup as it is stored on the model, or null when never saved. */
+  /**
+   * The setup as it is stored on the model, or null when never saved. Throws
+   * when it cannot be read, and SetupUnusable when it was read and is no
+   * setup.
+   */
   async function readStoredSetup(): Promise<RagSetup | null> {
     const contents = await getModelContents(selectedSetupID);
     const setupItem = contents.find((item) => item.name === SETUP_FILE);
     if (!setupItem?.fileUri) return null;
-    const response = await getFileContent(setupItem.fileUri);
-    if (!response.ok) return null;
-    return { ...defaultSetup(config), ...(await response.json()) } as RagSetup;
+    let stored: RagSetup;
+    try {
+      stored = await readStoredJson<RagSetup>(setupItem.fileUri, SETUP_FILE);
+    } catch (error) {
+      throw error instanceof StoredFileUnusable ? new SetupUnusable() : error;
+    }
+    return { ...defaultSetup(config), ...stored } as RagSetup;
   }
 
   const collectSetup = (): RagSetup => ({
@@ -2312,13 +2683,23 @@ export async function buildRagBuilder(
   let allProjects: DropdownOption[] = [];
   let allSetups: DropdownOption[] = [];
 
+  // The first entry of each picker says what the picker is for. The list
+  // helper gives that entry its own text as its value, so the entry can be
+  // chosen like any other - and is then no project and no setup: its text
+  // went to SAS Model Manager as an id (a 404, and the editor of the later
+  // steps open on nothing). `chosenIn` reads a picker with that in mind.
+  const projectPlaceholder = str('ragBuilderProjectPlaceholder', 'Select a RAG project…');
+  const setupPlaceholder = str('ragBuilderSetupPlaceholder', 'Select a RAG setup…');
+  const chosenIn = (picker: HTMLSelectElement, placeholder: string): string =>
+    picker.value === placeholder ? '' : picker.value;
+
   function renderProjectOptions(): void {
     renderFilteredOptions(
       projectSelect,
       allProjects,
       projectFilter.nameInput,
       projectFilter.userSelect,
-      str('ragBuilderProjectPlaceholder', 'Select a RAG project…')
+      projectPlaceholder
     );
   }
 
@@ -2328,7 +2709,7 @@ export async function buildRagBuilder(
       allSetups,
       setupFilter.nameInput,
       setupFilter.userSelect,
-      str('ragBuilderSetupPlaceholder', 'Select a RAG setup…')
+      setupPlaceholder
     );
   }
 
@@ -2358,6 +2739,21 @@ export async function buildRagBuilder(
     }
   }
 
+  /** What a link shows for a moment when a new tab could not be opened. */
+  const linkCopiedText = (): string =>
+    str('ragBuilderLinkCopied', 'Popups are blocked here — link copied, open it in a new tab.');
+
+  /** A link to a decision in SAS Intelligent Decisioning. */
+  function decisionLink(decision: DependentDecision): HTMLAnchorElement {
+    const link = document.createElement('a');
+    link.href = `${viyaHost()}/SASDecisionManager/decisions/${decision.id}`;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = decision.name;
+    link.addEventListener('click', (event) => openExternalLink(event, link, linkCopiedText()));
+    return link;
+  }
+
   /** The usage paragraph of a delete dialog, with links to what it names. */
   function usageBody(decisions: DependentDecision[] | null,
                      prefix = ''): (HTMLElement | string)[] {
@@ -2374,12 +2770,7 @@ export async function buildRagBuilder(
     const list = document.createElement('ul');
     for (const decision of decisions) {
       const item = document.createElement('li');
-      const link = document.createElement('a');
-      link.href = `${viyaHost()}/SASDecisionManager/decisions/${decision.id}`;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = decision.name;
-      item.appendChild(link);
+      item.appendChild(decisionLink(decision));
       list.appendChild(item);
     }
     return [
@@ -2389,12 +2780,6 @@ export async function buildRagBuilder(
       list,
     ];
   }
-
-  /** Dismiss a Bootstrap modal we opened declaratively. */
-  const hideModal = (id: string): void => {
-    const element = document.getElementById(id);
-    if (element) Modal.getInstance(element)?.hide();
-  };
 
   /** Reflect the current selection on the buttons that act on it. */
   function updateSelectionActions(): void {
@@ -2411,16 +2796,35 @@ export async function buildRagBuilder(
     }
   }
 
-  async function createProjectFromModal(): Promise<void> {
-    const name = (document.getElementById(`${idOf('create-project')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
-    const description = (document.getElementById(`${idOf('create-project')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+  // What a create dialog has to say - a name that is missing, a refusal of
+  // SAS Model Manager - is said inside the dialog. The banner at the top of
+  // the page lies behind the dialog's backdrop, and out of view once the page
+  // is scrolled down to the Create buttons: the click then seemed to do
+  // nothing. The dialog also keeps its button disabled until the function
+  // has ended, so a double click creates one project or setup, not two.
+  // A name that shows nothing never gets here - the dialog refuses it itself
+  // (see createCreateModal); the checks below stay for a name that is missing
+  // for any other reason. The name and the description are the ones the
+  // dialog read at the click, not the fields as they stand now.
+  //
+  // Both functions keep two outcomes apart. Until SAS Model Manager has
+  // answered the creation with an id nothing exists: whatever fails up to
+  // there - the repository that cannot be read, the creation that throws or
+  // is refused - is said in the dialog, which stays open. From the id on the
+  // thing exists: the dialog is closed (`dialog.close()`, the only closing a
+  // pending creation lets by), and a request that fails after it is reported
+  // on the page as "created, but ...", never as a creation that failed.
+  async function createProjectFromModal(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
+    const name = entry.name.trim();
+    const description = entry.description.trim();
     if (!name) {
-      showStatus('danger', str('ragBuilderProjectNameRequired', 'A project name is required.'));
+      dialog.showError(str('ragBuilderProjectNameRequired', 'A project name is required.'));
       return;
     }
+    let project: { id?: string; name?: string; createdBy?: string; modifiedBy?: string };
     try {
       const repository = await getModelRepositoryInformation(config.modelRepositoryID);
-      const project = await createModelProject({
+      project = await createModelProject({
         name,
         description: description || str('ragBuilderProjectDescription', 'RAG setups of the SAS Agentic AI Accelerator'),
         function: 'RAG',
@@ -2429,30 +2833,74 @@ export async function buildRagBuilder(
         properties: [{ name: 'Origin', value: 'SAS Agentic AI Accelerator', type: 'string' }],
         tags: ['LLM', 'RAG-Engineering'],
       });
-      selectedProjectID = project?.id ?? '';
-      selectedSetupID = '';
-      await refreshProjects();
-      await refreshSetups();
-      await loadSetup();
-      hideModal(`${idOf('create-project')}Modal`);
-      showStatus('success', str('ragBuilderProjectCreated', 'RAG project created.'));
+      if (!project?.id) throw new Error('the service answered without a project id');
     } catch (error) {
       console.error('Creating the RAG project failed.', error);
-      showStatus('danger', str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
+      // A creation without an answer was read back (see createModelProject).
+      dialog.showError(noAnswerText(error) || str('ragBuilderProjectCreateFailed', 'Creating the RAG project failed - check your Model Manager permissions.'));
+      return;
+    }
+    // From here on the project exists. A listing that fails now is a list
+    // that could not be refreshed, not a project that was not created - and
+    // saying "failed" would have the person create it a second time.
+    const projectID = String(project.id);
+    selectedProjectID = projectID;
+    selectedSetupID = '';
+    selectedSetupName = '';
+    dialog.close();
+    try {
+      await loadSetup();
+      await refreshProjects();
+      await refreshSetups();
+      showStatus('success', str('ragBuilderProjectCreated', 'RAG project created.'));
+    } catch (error) {
+      console.error('Listing the RAG projects after creating one failed.', error);
+      // The new project is put into the list as it was created, so it is
+      // selected and can be worked in; it has no setups yet.
+      if (selectedProjectID === projectID) {
+        const user = getAppState().userName ?? undefined;
+        if (!allProjects.some((entry) => entry.value === projectID)) {
+          allProjects = [
+            ...allProjects,
+            { value: projectID, innerHTML: project.name ?? name, createdBy: project.createdBy ?? user, modifiedBy: project.modifiedBy ?? user },
+          ];
+        }
+        projectFilter.setUsers(allProjects);
+        renderProjectOptions();
+        projectSelect.value = projectID;
+        allSetups = [];
+        setupFilter.setUsers(allSetups);
+        renderSetupOptions();
+        updateSelectionActions();
+      }
+      // A warning, not a failure: what was asked for has happened.
+      showStatus(
+        'warning',
+        str(
+          'ragBuilderProjectCreatedListFailed',
+          'The RAG project "{name}" was created, but the project list could not be refreshed from SAS Model Manager. The project exists - do not create it again.'
+        ).replace('{name}', name),
+        {
+          id: idOf('retry-projects'),
+          label: str('ragBuilderProjectsRetry', 'Try again'),
+          run: () => void loadSelectionLists(),
+        }
+      );
     }
   }
 
-  async function createSetupFromModal(): Promise<void> {
-    const name = (document.getElementById(`${idOf('create-setup')}Name`) as HTMLInputElement | null)?.value.trim() ?? '';
-    const description = (document.getElementById(`${idOf('create-setup')}Description`) as HTMLInputElement | null)?.value.trim() ?? '';
+  async function createSetupFromModal(dialog: CreateModalDialog, entry: CreateModalEntry): Promise<void> {
+    const name = entry.name.trim();
+    const description = entry.description.trim();
     if (!selectedProjectID) {
-      showStatus('danger', str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
+      dialog.showError(str('ragBuilderSetupNeedsProject', 'Select a RAG project before creating a setup.'));
       return;
     }
     if (!name) {
-      showStatus('danger', str('ragBuilderSetupNameRequired', 'A setup name is required.'));
+      dialog.showError(str('ragBuilderSetupNameRequired', 'A setup name is required.'));
       return;
     }
+    let createdID = '';
     try {
       const created = (await createModel({
         name,
@@ -2469,16 +2917,74 @@ export async function buildRagBuilder(
       // createModel answers with either the model or a collection holding it,
       // depending on the SAS Viya release - taking only `.id` silently yields
       // an empty selection on the releases that wrap it.
-      selectedSetupID = created?.items?.[0]?.id ?? created?.id ?? '';
-      selectedSetupName = name;
-      await refreshSetups();
-      await loadSetup();
-      hideModal(`${idOf('create-setup')}Modal`);
-      showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
+      createdID = created?.items?.[0]?.id ?? created?.id ?? '';
+      if (!createdID) throw new Error('the service answered without a model id');
     } catch (error) {
       console.error('Creating the RAG setup failed.', error);
-      showStatus('danger', str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      // A creation without an answer was read back (see createModel).
+      dialog.showError(noAnswerText(error) || str('ragBuilderSetupCreateFailed', 'Creating the RAG setup failed - check your Model Manager permissions.'));
+      return;
     }
+    // From here on the setup exists. A listing or a reading that fails now is
+    // a setup that could not be read back, not one that was not created.
+    // Reported as "Creating the RAG setup failed", it had the person create
+    // the setup a second time; and when it was the listing that failed, the
+    // new setup was the selected one while the picker and the editor still
+    // showed what had been there before.
+    selectedSetupID = createdID;
+    selectedSetupName = name;
+    let readBack = true;
+    // The setup itself could not be read: its three buttons stay off.
+    let setupNotRead = false;
+    try {
+      await refreshSetups();
+    } catch (error) {
+      console.error('Listing the RAG setups after creating one failed.', error);
+      readBack = false;
+      // The new setup is put into the list as it was created, so it is the
+      // selected one in the picker as well.
+      const user = getAppState().userName ?? undefined;
+      if (!allSetups.some((setup) => setup.value === createdID)) {
+        allSetups = [...allSetups, { value: createdID, innerHTML: name, createdBy: user, modifiedBy: user }];
+      }
+      setupFilter.setUsers(allSetups);
+      renderSetupOptions();
+      setupSelect.value = createdID;
+      updateSelectionActions();
+    }
+    try {
+      // Opens the editor on the new setup, with the defaults; what it then
+      // asks SAS Model Manager for is what a new setup does not have yet.
+      if (!(await loadSetup())) setupNotRead = true;
+    } catch (error) {
+      console.error('Reading the new RAG setup failed.', error);
+      setupNotRead = true;
+    }
+    dialog.close();
+    if (readBack && !setupNotRead) {
+      showStatus('success', str('ragBuilderSetupCreated', 'RAG setup created. Author it below and save.'));
+      return;
+    }
+    // A warning, not a failure: what was asked for has happened. Try again
+    // lists again and reads the setup again (see loadSelectionLists): its
+    // buttons follow what that read gets.
+    showStatus(
+      'warning',
+      [
+        str(
+          'ragBuilderSetupCreatedReadFailed',
+          'The RAG setup "{name}" was created, but it could not be read back from SAS Model Manager (the setup list, or the setup itself). The setup exists - do not create it again.'
+        ).replace('{name}', name),
+        ...(setupNotRead
+          ? [str('ragBuilderSetupCreatedWritesOff', 'Save setup, Manifest setup and Save documentation stay off until the setup is read: Try again reads it.')]
+          : []),
+      ].join(' '),
+      {
+        id: idOf('retry-projects'),
+        label: str('ragBuilderProjectsRetry', 'Try again'),
+        run: () => void loadSelectionLists(),
+      }
+    );
   }
 
   async function refreshProjects(): Promise<void> {
@@ -2489,49 +2995,283 @@ export async function buildRagBuilder(
   }
 
   async function refreshSetups(): Promise<void> {
-    allSetups = selectedProjectID ? await getModelProjectModels(selectedProjectID) : [];
+    // The listing belongs to the project that was selected when it was asked
+    // for. An answer that arrives after another project was chosen is dropped:
+    // it would put the setups of one project under the name of another.
+    const projectID = selectedProjectID;
+    const setups = projectID ? await getModelProjectModels(projectID) : [];
+    if (projectID !== selectedProjectID) return;
+    allSetups = setups;
     setupFilter.setUsers(allSetups);
     renderSetupOptions();
     if (selectedSetupID) setupSelect.value = selectedSetupID;
     updateSelectionActions();
   }
 
-  async function loadSetup(): Promise<void> {
-    stopPolling();
+  /**
+   * After a Delete project that stopped part of the way: the lists show what
+   * SAS Model Manager holds now, the setup that is open leaves the page when
+   * it was deleted, and the banner says what was deleted and what was not.
+   * Answers true when the project is gone after all (a request that got no
+   * answer may still have been carried out); the caller then ends the delete
+   * as one that went through. Where nothing can be read back, the setups
+   * whose delete was answered with 204 leave the lists, and the banner says
+   * that the rest could not be read.
+   */
+  async function showWhatIsLeftOfProject(
+    projectID: string,
+    projectName: string,
+    setups: DropdownOption[],
+    deletedIDs: string[],
+    failure: unknown
+  ): Promise<boolean> {
+    let left: DropdownOption[] | null = null;
+    try {
+      await refreshProjects();
+      if (!allProjects.some((project) => project.value === projectID)) return true;
+      left = await getModelProjectModels(projectID);
+    } catch (error) {
+      console.error('Reading the RAG project back after a delete failed.', error);
+    }
+    const there = left ?? allSetups.filter((setup) => !deletedIDs.includes(setup.value));
+    const deleted = setups.filter((setup) => !there.some((kept) => kept.value === setup.value));
+    deleted.forEach((setup) => ingestionRuns.delete(setup.value));
+    allSetups = there;
+    setupFilter.setUsers(allSetups);
+    if (selectedSetupID && !there.some((setup) => setup.value === selectedSetupID)) {
+      selectedSetupID = '';
+      selectedSetupName = '';
+      renderSetupOptions();
+      await loadSetup();
+    } else {
+      renderSetupOptions();
+      if (selectedSetupID) setupSelect.value = selectedSetupID;
+    }
+    const names = (list: DropdownOption[]): string => list.map((setup) => String(setup.innerHTML ?? setup.value)).join(', ');
+    showStatus(
+      'danger',
+      [
+        // Whether the project is still there is known only where it was read.
+        // A delete that got no answer was read back: no word of permissions.
+        noAnswerText(failure)
+          ? `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${noAnswerText(failure)}`
+          : left === null
+            ? str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
+            : str('ragBuilderDeleteProjectStopped', 'Deleting failed - check your Model Manager permissions. The project {project} is still there.').replace('{project}', () => projectName),
+        ...(deleted.length ? [str('ragBuilderDeleteProjectDeletedPart', 'Deleted from it: {names}.').replace('{names}', () => names(deleted))] : []),
+        ...(left === null
+          ? [str('ragBuilderDeleteProjectNotRead', 'What is left in it could not be read from SAS Model Manager, so the list may still name a setup that was deleted.')]
+          : there.length
+            ? [str('ragBuilderDeleteProjectLeftPart', 'Still in it: {names}.').replace('{names}', () => names(there))]
+            : []),
+      ].join(' ')
+    );
+    return false;
+  }
+
+  /**
+   * The steps after Setup as the page showed them when it was loaded, before
+   * the setup that was chosen is drawn into them.
+   *
+   * The editor fields are set from the setup, or from the defaults of a new
+   * one, right after this (applySetup). What no setup carries stayed where
+   * the setup before had left it (issue #47): the question that was asked of
+   * its collection, the number of chunks, the chunks that came back and the
+   * open test panel, the state and the milestones of its ingestion run, its
+   * ledger, the note of its last save or manifest, and the line under the
+   * SAS Content folder that names the job or flow its manifest generated.
+   */
+  const startLaterStepsAfresh = (): void => {
+    // What is still on its way for the setup before is not drawn any more.
+    shownSetup += 1;
+    // A model, a database or a caslib that the lists no longer offer was
+    // kept in its list for the setup before, and leaves with it - before the
+    // fields are put back, because that entry may be the chosen one.
+    [embedModelField, backendField, caslibField].forEach((field) => {
+      field.querySelectorAll('option[data-unlisted]').forEach((kept) => kept.remove());
+    });
+    // Every field back to its first value, the two of the retrieval test
+    // among them. Nothing is derived here: applySetup does that for the
+    // setup it draws, showEmptyEditor where there is none.
+    stepper.restoreFreshState();
+    // The run of the setup before: its clock stops (the ledger of a setup
+    // asks it whether a run is in flight), and its card is emptied, not only
+    // hidden.
+    stopRunClock();
     runCard.style.display = 'none';
+    runBadge.className = 'badge text-bg-secondary';
+    runBadge.textContent = '';
+    runStateText.textContent = '';
+    runClock.textContent = '';
+    runNote.textContent = '';
+    runMilestones.replaceChildren();
     ledgerCard.style.display = 'none';
+    ledgerContent.replaceChildren();
+    testCard.style.display = 'none';
+    testStatus.textContent = '';
+    testResults.replaceChildren();
+    clearSaveResult();
+    artifactsNote.textContent = '';
+  };
+
+  /**
+   * The editor with no setup in it, as on the page that was just loaded. Its
+   * parts are hidden and its fields were just put back; this is the rest: the
+   * documentation of the setup that was open - which stands on the Setup
+   * step, where it stayed readable under a picker that named no setup - and
+   * what the fields say beside themselves or carry for one setup.
+   */
+  const showEmptyEditor = (): void => {
+    ragDoc.clear();
+    sourcePlaceholder();
+    followEmbeddingModel();
+    capTokenWindow(false);
+    followChunker(false);
+    judgeOverlap();
+    showStoreLocation();
+    for (const block of enrichBlocks.splice(0)) block.root.remove();
+    addEnrichBlock();
+    managedTags = [];
+    currentPolicies = null;
+    currentJobUri = '';
+    updateLaunchState();
+  };
+
+  /**
+   * Open the selected setup in the editor. Answers whether what is stored of
+   * it was read - also true with no setup selected, or when another one was
+   * opened meanwhile.
+   */
+  async function loadSetup(): Promise<boolean> {
+    stopPolling();
+    startLaterStepsAfresh();
+    // The banner says something about the setup or the project that was on
+    // the page - a run that failed, a delete that was refused - and goes with
+    // it. What this change of selection has to say is said after this line.
+    clearStatus();
+    // Whether this setup is still the one on the page: asked after every
+    // wait, before anything of it is drawn.
+    const shown = whileSetupShown();
     editorParts.forEach((part) => {
       part.style.display = selectedSetupID ? '' : 'none';
     });
     setupNotices.forEach((notice) => {
       notice.style.display = selectedSetupID ? 'none' : '';
     });
-    // set before the early return: deselecting must disable the button too
-    docSaveButton.disabled = !selectedSetupID;
-    if (!selectedSetupID) return;
-    applySetup(defaultSetup(config));
-    const contents = await getModelContents(selectedSetupID);
-    const setupItem = contents.find((item) => item.name === SETUP_FILE);
-    if (setupItem?.fileUri) {
-      try {
-        const response = await getFileContent(setupItem.fileUri);
-        if (response.ok) {
-          applySetup({ ...defaultSetup(config), ...(await response.json()) } as RagSetup);
-        }
-      } catch {
-        showStatus('danger', str('ragBuilderLoadSetupError', 'The stored rag-setup.json could not be read - starting from defaults.'));
-      }
-    } else {
-      // No stored setup yet, but documentation may already have been saved on
-      // its own. The attributes are then the only copy, so read them back
-      // rather than showing empty fields over text that exists.
-      try {
-        const details = await getModelDetails(selectedSetupID);
-        if (details) ragDoc.setValues(details as Record<string, unknown>);
-      } catch (error) {
-        console.debug('RAG Builder: reading documentation attributes failed', error);
-      }
+    // Set before the early return: deselecting must disable the buttons too.
+    // A setup is read before its buttons can write it.
+    setupReading = Boolean(selectedSetupID);
+    updateSetupWrites();
+    if (!selectedSetupID) {
+      showEmptyEditor();
+      return true;
     }
+    const setupID = selectedSetupID;
+    // What is stored of the setup could not be read - its contents, its
+    // rag-setup.json or the attributes that hold its documentation. Its
+    // buttons then stay off: they would write the fields shown over it.
+    let unread = false;
+    // Of those: rag-setup.json was read, and is no setup this page can read -
+    // opened again it is the same file.
+    let unusable = false;
+    setupUnread = false;
+    try {
+      applySetup(defaultSetup(config));
+      const contents = await getModelContents(setupID);
+      if (!shown()) return true;
+      const setupItem = contents.find((item) => item.name === SETUP_FILE);
+      if (setupItem?.fileUri) {
+        let fileRead = false;
+        try {
+          let stored: RagSetup;
+          try {
+            stored = await readStoredJson<RagSetup>(setupItem.fileUri, SETUP_FILE);
+          } catch (error) {
+            fileRead = error instanceof StoredFileUnusable;
+            throw error;
+          }
+          if (!shown()) return true;
+          fileRead = true;
+          applySetup({ ...defaultSetup(config), ...stored } as RagSetup);
+        } catch (error) {
+          console.error('RAG Builder: reading the stored setup failed', error);
+          unread = true;
+          unusable = fileRead;
+        }
+      } else {
+        // No stored setup yet, but documentation may already have been saved on
+        // its own. The attributes are then the only copy, so read them back
+        // rather than showing empty fields over text that exists.
+        try {
+          const details = await getModelDetails(setupID);
+          if (!details) throw new Error('The setup was answered with an error');
+          if (shown()) ragDoc.setValues(details as Record<string, unknown>);
+        } catch (error) {
+          console.error('RAG Builder: reading documentation attributes failed', error);
+          unread = true;
+        }
+      }
+    } catch (error) {
+      console.error('RAG Builder: listing the contents of the setup failed', error);
+      unread = true;
+    } finally {
+      // Read: the buttons can write the setup once its enrichment is drawn as
+      // well. A setup opened meanwhile is read anew.
+      const read = (): void => {
+        if (!shown() || unread) return;
+        setupReading = false;
+        updateSetupWrites();
+      };
+      void enrichmentRestored.then(read, read);
+    }
+    // The setup is drawn. An ingestion that was launched for it from this
+    // page and has not been seen to end is shown again, and followed.
+    if (!shown()) return true;
+    setupUnread = unread;
+    if (unread) {
+      showStatus(
+        'danger',
+        unusable
+          ? str(
+              'ragBuilderLoadSetupUnusable',
+              'The stored setup cannot be used: SAS Model Manager answered with a rag-setup.json that is no setup this page can read. Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over that file. Repair or remove the file in SAS Model Manager, then choose another entry in the list and then this setup again.'
+            )
+          : str(
+              'ragBuilderLoadSetupError',
+              'The stored setup could not be read from SAS Model Manager, so Save setup, Manifest setup and Save documentation stay off: they would write the fields shown here over it. Choose another entry in the list and then this setup again to read it.'
+            )
+      );
+    }
+    // One this page does not know of - the page was loaded again after the
+    // launch, or the job was started elsewhere - is asked of SAS Job
+    // Execution: the newest job of the setup's job definition that has not
+    // ended. A second launch beside it would write the same collection.
+    if (!ingestionRuns.has(setupID) && currentJobUri) {
+      const definitionUri = currentJobUri;
+      // Launch waits for the answer - for every question out for this setup.
+      askingForRunOf.set(setupID, (askingForRunOf.get(setupID) ?? 0) + 1);
+      updateLaunchState();
+      let running: Awaited<ReturnType<typeof getRunningJobOf>> = null;
+      try {
+        running = await getRunningJobOf(definitionUri);
+      } catch (error) {
+        console.debug('RAG Builder: asking for a running ingestion failed', error);
+      }
+      const stillAsking = (askingForRunOf.get(setupID) ?? 1) - 1;
+      if (stillAsking > 0) askingForRunOf.set(setupID, stillAsking);
+      else askingForRunOf.delete(setupID);
+      if (!shown()) {
+        updateLaunchState();
+        return true;
+      }
+      if (running && !ingestionRuns.has(setupID)) {
+        const created = Date.parse(String(running.creationTimeStamp ?? ''));
+        ingestionRuns.set(setupID, { jobId: String(running.id), startedAt: Number.isNaN(created) ? Date.now() : created });
+      }
+      updateLaunchState();
+    }
+    followIngestion(setupID, false);
+    return !unread;
   }
 
   async function saveSetup(): Promise<boolean> {
@@ -2543,11 +3283,13 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    saveButton.disabled = true;
     try {
       // 1. the two artifacts (onConflict=update keeps one copy each)
-      await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation');
-      await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain');
+      written((await createModelContent(selectedSetupID, setup, SETUP_FILE, 'documentation')).status_code, SETUP_FILE);
+      written(
+        (await createModelContent(selectedSetupID, renderPipelineYaml(setup), PIPELINE_FILE, 'documentation', 'text/plain')).status_code,
+        PIPELINE_FILE
+      );
       // A setup saved before the model card moved into the model's own
       // attributes carries a documentation.md that no longer gets updated.
       // Left alone it would sit beside the attributes disagreeing with them,
@@ -2555,7 +3297,7 @@ export async function buildRagBuilder(
       await removeStaleDocumentation();
       // 2. registration metadata (owner requirements 2026-07-28): description,
       //    trainTable = the ingestion ledger, and the retrieval in/out contract
-      await updateModelAttributes(selectedSetupID, {
+      const attributesStatus = await updateModelAttributes(selectedSetupID, {
         // the model card, under the same attribute names a prompt uses, so
         // one governance query reads both kinds of artifact. The model's own
         // description is authored in the create dialog and left alone here.
@@ -2570,14 +3312,16 @@ export async function buildRagBuilder(
         scoreCodeType: 'python',
         trainCodeType: 'python',
       });
+      written(attributesStatus, 'the model card and the registration');
       // 3. tags: LLM/RAG plus one for the embedding model and one for the
       //    vector database (previously managed stack tags are replaced)
-      await updateModelTags(selectedSetupID, managedTags, [
+      const tagsStatus = await updateModelTags(selectedSetupID, managedTags, [
         'LLM',
         'RAG',
         setup.embedding.model,
         setup.store.backend,
       ]);
+      written(tagsStatus, 'the tags');
       managedTags = [setup.embedding.model, setup.store.backend];
       showSaveSuccess(
         str('ragBuilderSaveSuccess', 'RAG setup saved to Model Manager (rag-setup.json, pipeline.yaml, the model card as model properties, tags, ledger reference and variable definitions).')
@@ -2585,12 +3329,34 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Saving the RAG setup failed.', error);
-      showStatus('danger', str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.'));
+      // A write that got no answer was read back (see writeOrReadBack).
+      const message = noAnswerText(error)
+        ? `${str('ragBuilderSaveButton', 'Save setup')}: ${noAnswerText(error)}`
+        : str('ragBuilderSaveError', 'Saving the RAG setup failed - check the browser console and your Model Manager permissions.');
+      showStatus('danger', message);
+      // Beside the button as well: the banner is at the top of the page, and
+      // what the result box said before this save is gone.
+      showSaveFailure(message, []);
       return false;
-    } finally {
-      saveButton.disabled = false;
     }
   }
+
+  /**
+   * Where a setup embeds: the SCR endpoint option of this object, and
+   * <SAS Viya host>/llm when that is blank.
+   *
+   * Resolved in ONE place and handed, as the same value, to everything a
+   * manifest generates - the ingestion job, the retrieval probe, the Embed
+   * step of the Studio flow and EMBED_ENDPOINT of the retrieval model. The
+   * model searches the collection with the vector of the question, so it has
+   * to embed where the documents were embedded. Left to each of them, the
+   * flow got a blank value whatever the option said (its step then embedded
+   * at the host of the compute session), and with a blank option the job
+   * derived the host from the compute session while the model was manifested
+   * with the host of this page.
+   */
+  const embeddingEndpoint = (setup: RagSetup): string =>
+    setup.embedding.scrEndpoint || String(config.SCREndpoint || '').trim() || `${viyaHost()}/llm`;
 
   /** The launch/parameter values of a setup, shared by the generated job
    *  definition's parameter defaults and the launch-time arguments. */
@@ -2604,7 +3370,7 @@ export async function buildRagBuilder(
     storeDb: setup.store.database,
     storeSslmode: setup.store.sslmode,
     credentialDomain: setup.credentialDomain,
-    scrEndpoint: config.SCREndpoint || '',
+    scrEndpoint: embeddingEndpoint(setup),
     embedModel: setup.embedding.model,
     deploymentType: setup.embedding.deploymentType,
     inputTokenLimit: String(setup.chunking.inputTokenLimit),
@@ -2651,7 +3417,6 @@ export async function buildRagBuilder(
     // function correct on its own.
     if (!(await saveSetup())) return false;
     const setup = collectSetup();
-    manifestButton.disabled = true;
     try {
       // the golden-path job source, exactly as deployed
       const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
@@ -2706,8 +3471,10 @@ export async function buildRagBuilder(
 
       currentJobUri = definitionUri;
       updateLaunchState();
-      // persist the job reference with the setup
-      await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation');
+      // persist the job reference with the setup; a refusal is a stage that
+      // failed (see written): the setup would not know its job when it is
+      // opened again
+      written((await createModelContent(selectedSetupID, collectSetup(), SETUP_FILE, 'documentation')).status_code, SETUP_FILE);
       // Naming the destination matters more than it looks: this job is the
       // artifact a schedule points at, and "somewhere under the content root"
       // is not something a person can act on a month later.
@@ -2724,10 +3491,14 @@ export async function buildRagBuilder(
       return true;
     } catch (error) {
       console.error('Generating the ingestion job failed.', error);
-      showStatus('danger', str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console and your permissions on the content root.'));
+      // A write that got no answer was read back (see writeOrReadBack); the
+      // manifest names the stage beside it.
+      showStatus(
+        'danger',
+        noAnswerText(error) ||
+          str('ragBuilderJobGenerateError', 'Generating the ingestion job failed - check the browser console, your permissions on the content root and your Model Manager permissions on this setup.')
+      );
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
   }
 
@@ -2746,22 +3517,57 @@ export async function buildRagBuilder(
       showStatus('danger', str('ragBuilderRegisterNeedsSetup', 'Select or create a RAG setup first.'));
       return;
     }
-    manifestButton.disabled = true;
+    // The button, Save setup and Save documentation are off from the click
+    // until the last request of the manifest - the new model version - has
+    // ended (see updateSetupWrites): one manifest per click, and no save
+    // between two of its stages.
     try {
-      const stages: Array<[string, () => Promise<boolean>]> = [
-        [str('ragBuilderStageSave', 'saving the setup'), saveSetup],
-        [str('ragBuilderStageJob', 'generating the ingestion job'), generateIngestionJob],
-        [str('ragBuilderStageFlow', 'generating the Studio flow'), generateStudioFlow],
-        [str('ragBuilderStageRegister', 'registering the retrieval model'), registerRetrievalModel],
+      // Each stage with what it is called while it runs and what is true once
+      // it went through.
+      const stages: Array<[string, string, () => Promise<boolean>]> = [
+        [str('ragBuilderStageSave', 'saving the setup'), str('ragBuilderStageSaveDone', 'the setup was saved to SAS Model Manager'), saveSetup],
+        [str('ragBuilderStageJob', 'generating the ingestion job'), str('ragBuilderStageJobDone', 'the ingestion job was generated'), generateIngestionJob],
+        [str('ragBuilderStageFlow', 'generating the Studio flow'), str('ragBuilderStageFlowDone', 'the Studio flow was generated'), generateStudioFlow],
+        [str('ragBuilderStageRegister', 'registering the retrieval model'), str('ragBuilderStageRegisterDone', 'the retrieval model was registered'), registerRetrievalModel],
       ];
-      for (const [label, run] of stages) {
+      const done: string[] = [];
+      for (const [label, doneLabel, run] of stages) {
         manifestButton.textContent = `${str('ragBuilderManifestBusy', 'Manifesting')} — ${label}…`;
-        if (!(await run())) {
-          // The stage that failed has already said why, in the panel beside
-          // this button; repeating it would only push its detail off screen.
+        lastFailure = [];
+        lastFailureLeavesItOpen = false;
+        let passed = false;
+        try {
+          passed = await run();
+        } catch (error) {
+          // A stage reports its own failures; one that throws all the same
+          // must not leave the result of the stage before it standing.
+          console.error(`Manifesting stopped while ${label}.`, error);
+          lastFailure = [noAnswerText(error) || (error instanceof Error ? error.message : String(error))];
+        }
+        if (!passed) {
+          // The outcome of a manifest belongs where its button is. The
+          // stages before this one each left their own "saved" or
+          // "generated" line in this box, and the stage that failed may have
+          // said why in the banner at the top of the page only - which left
+          // a green line here over a manifest that had stopped. So the box
+          // says it in one piece: where it stopped, why, and what is written.
+          // "Not manifested" is said where that is certain. After an upload
+          // of the score code that got no usable answer it is not: the heading
+          // then says only that the manifest was not completed.
+          showSaveFailure(
+            (lastFailureLeavesItOpen
+              ? str('ragBuilderManifestStoppedOpen', 'The manifest stopped while {stage}. It was not completed.')
+              : str('ragBuilderManifestStopped', 'The manifest stopped while {stage}. The setup is not manifested.')
+            ).replace('{stage}', label),
+            lastFailure,
+            done.length > 0
+              ? str('ragBuilderManifestWritten', 'Done before that: {done}.').replace('{done}', done.join('; '))
+              : str('ragBuilderManifestNothingWritten', 'Nothing was written before that.')
+          );
           manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
           return;
         }
+        done.push(doneLabel);
       }
       // A new MINOR version, as manifesting a prompt does. Without it every
       // manifest overwrote the same version and the model carried no history
@@ -2773,22 +3579,33 @@ export async function buildRagBuilder(
         // The artifacts are written and correct; only the version marker is
         // missing. Say so rather than reporting the manifest as failed.
         console.error('Creating the model version failed.', error);
-        showStatus('info', str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.'));
+        // A request that got no answer was read back (see createModelVersion).
+        const message = noAnswerText(error)
+          ? str('ragBuilderVersionNoAnswer', 'Everything was generated and registered. The new model version: {reason}').replace('{reason}', () => noAnswerText(error))
+          : str('ragBuilderVersionFailed', 'Everything was generated and registered, but recording a new model version failed - check your permissions on the setup model.');
+        showStatus('info', message);
+        showSaveSuccess([message, ...tlsOutcomeNotes()].join(' '), 'warning');
         return;
       }
+      // What the manifest did about TLS verification follows the outcome in
+      // the same line; either note makes it a warning.
+      const tlsNotes = tlsOutcomeNotes();
       showSaveSuccess(
-        str('ragBuilderManifested', 'Setup manifested: saved, ingestion job and Studio flow generated in {folder}, retrieval model registered, and a new model version recorded.').replace(
-          '{folder}',
-          artifactsFolder()
-        )
+        [
+          str('ragBuilderManifested', 'Setup manifested: saved, ingestion job and Studio flow generated in {folder}, retrieval model registered, and a new model version recorded.').replace(
+            '{folder}',
+            artifactsFolder()
+          ),
+          ...tlsNotes,
+        ].join(' '),
+        tlsNotes.length > 0 ? 'warning' : 'success'
       );
     } finally {
       manifestButton.textContent = str('ragBuilderManifestButton', 'Manifest setup');
-      manifestButton.disabled = false;
     }
   }
 
-  /** Launch the generated job and poll its state + milestones until done. */
+  /** Launch the generated job, and follow it until it has ended. */
   async function launchIngestion(): Promise<void> {
     if (!currentJobUri) return;
     clearStatus();
@@ -2800,6 +3617,13 @@ export async function buildRagBuilder(
       return;
     }
     stopPolling();
+    // The run belongs to the setup it was launched for. When another one is
+    // opened the job goes on in SAS Viya, and nothing of it - a state, a
+    // milestone, the ledger it writes, the word that it ended - is drawn on
+    // the setup that is on the page by then. Its own setup shows it again
+    // when it is opened again (see ingestionRuns).
+    const shown = whileSetupShown();
+    const setupID = selectedSetupID;
     const setup = collectSetup();
     const args: Record<string, string> = { ...jobArguments(setup) };
     if (config.computeContext) args._contextName = String(config.computeContext);
@@ -2811,80 +3635,160 @@ export async function buildRagBuilder(
     runClock.textContent = '';
     runMilestones.replaceChildren();
     startRunClock();
+    const startedAt = runStartedAt;
     try {
       const job = await launchJob(currentJobUri, `RAG Ingest - ${selectedSetupName}`, args);
-      const jobId = String(job.id ?? '');
-      const renderMilestones = (messages: string[]): void => {
-        runMilestones.replaceChildren();
-        for (const message of messages) {
-          const item = document.createElement('li');
-          item.textContent = message.replace(/^RAGINGEST\s+/, '');
-          runMilestones.appendChild(item);
-        }
-      };
-      const poll = async (): Promise<void> => {
-        try {
-          const current = await getJob(jobId);
-          const state = String(current.state ?? 'running');
-          setRunBadge(state);
-          runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
-          const progress = await getJobProgressMessages(current);
-          if (progress.messages.length > 0) {
-            renderMilestones(progress.messages);
-            // The last milestone is the answer to "what is it doing right
-            // now", so it belongs where the eye already is.
-            runNote.textContent = str('ragBuilderRunLatest', 'Latest: {message}').replace(
-              '{message}',
-              progress.messages[progress.messages.length - 1].replace(/^RAGINGEST\s+/, '')
-            );
-          } else if (!isTerminalJobState(state as never)) {
-            runNote.textContent =
-              progress.liveStatus === 'no-milestones' || progress.liveStatus === 'no-session-refs'
-                ? str('ragBuilderRunLogWaiting', 'The job has started but has not reported a milestone yet. Embedding runs one call per chunk, so a large corpus can take several minutes before the first line appears.')
-                : str('ragBuilderRunLogPending', 'Live log streaming is unavailable here ({status}) - the full log appears when the run finishes.').replace(
-                    '{status}',
-                    String(progress.liveStatus)
-                  );
-          }
-          if (isTerminalJobState(state as never)) {
-            stopPolling();
-            stopRunClock();
-            launchButton.disabled = false;
-            const failed = progress.messages.some((message) => message.toLowerCase().includes('failed'));
-            const ok = state === 'completed' && !failed;
-            setRunBadge(state, failed);
-            runClock.textContent = str('ragBuilderRunTook', 'took {time}').replace(
-              '{time}',
-              formatElapsed(Date.now() - runStartedAt)
-            );
-            if (ok) {
-              // The ledger is written by the run's last step, so the moment
-              // it becomes readable is exactly now. Showing it unprompted
-              // spares the round trip that started this whole confusion.
-              runNote.textContent = str('ragBuilderRunDoneNote', 'Run finished. The ingestion ledger is below.');
-              void browseLedger();
-            }
-            showStatus(
-              ok ? 'success' : 'danger',
-              ok
-                ? str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.')
-                : str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.')
-            );
-          }
-        } catch (error) {
-          console.debug('RAG Builder: ingestion poll failed', error);
-        }
-      };
-      pollTimer = window.setInterval(() => void poll(), 5000);
-      void poll();
+      ingestionRuns.set(setupID, { jobId: String(job.id ?? ''), startedAt });
+      // Followed where its setup is on the page - also when that setup was
+      // left and opened again while the job was being launched.
+      if (selectedSetupID === setupID) followIngestion(setupID, true);
     } catch (error) {
       console.error('Launching the ingestion job failed.', error);
+      if (!shown()) return;
       stopRunClock();
       runClock.textContent = '';
-      setRunBadge('failed', true);
-      launchButton.disabled = false;
-      showStatus('danger', str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.'));
+      // A launch that got no answer was read back (see launchJob): one that
+      // is running did not get here, and no run of it is shown - the read
+      // back found none running, or could not read the running jobs.
+      if (noAnswerText(error)) {
+        runCard.style.display = 'none';
+        runStateText.textContent = '';
+      } else {
+        setRunBadge('failed', true);
+      }
+      updateLaunchState();
+      showStatus(
+        'danger',
+        noAnswerText(error)
+          ? `${str('ragBuilderLaunchButton', 'Launch ingestion')}: ${noAnswerText(error)}`
+          : str('ragBuilderRunLaunchError', 'Launching the ingestion job failed - check the browser console.')
+      );
     }
+  }
+
+  /**
+   * Show the ingestion run of a setup and follow it until it has ended: the
+   * state of the job, its milestones, the time it has been running, and the
+   * ledger once it is written. Does nothing for a setup without a run in
+   * ingestionRuns.
+   *
+   * `launched` says that the job was launched just now. Otherwise the run is
+   * picked up for a setup that is opened: the clock goes on from the launch,
+   * and a job that ended meanwhile is shown as ended, without a time - how
+   * long it took was not seen from here.
+   */
+  function followIngestion(setupID: string, launched: boolean): void {
+    const run = ingestionRuns.get(setupID);
+    if (!run) return;
+    stopPolling();
+    const shown = whileSetupShown();
+    const { jobId } = run;
+    // Whether the job was seen running since it was launched.
+    let watched = launched;
+    runCard.style.display = '';
+    startRunClock(run.startedAt);
+    updateLaunchState();
+    const renderMilestones = (messages: string[]): void => {
+      runMilestones.replaceChildren();
+      for (const message of messages) {
+        const item = document.createElement('li');
+        item.textContent = message.replace(/^RAGINGEST\s+/, '');
+        runMilestones.appendChild(item);
+      }
+    };
+    // Polls that failed one after the other. A job whose state cannot be read
+    // - its record is gone, the service refuses it - would keep Launch off
+    // for this setup until the page is reloaded; after the third such poll
+    // the run is no longer followed, and the card says why and what to do.
+    let failedPolls = 0;
+    const poll = async (): Promise<void> => {
+      try {
+        const current = await getJob(jobId);
+        if (!shown()) return;
+        failedPolls = 0;
+        const state = String(current.state ?? 'running');
+        setRunBadge(state);
+        runStateText.textContent = `${str('ragBuilderRunStateLabel', 'State:')} ${state}`;
+        const progress = await getJobProgressMessages(current);
+        if (!shown()) return;
+        if (progress.messages.length > 0) {
+          renderMilestones(progress.messages);
+          // The last milestone is the answer to "what is it doing right
+          // now", so it belongs where the eye already is.
+          runNote.textContent = str('ragBuilderRunLatest', 'Latest: {message}').replace(
+            '{message}',
+            progress.messages[progress.messages.length - 1].replace(/^RAGINGEST\s+/, '')
+          );
+        } else if (!isTerminalJobState(state as never)) {
+          runNote.textContent =
+            progress.liveStatus === 'no-milestones' || progress.liveStatus === 'no-session-refs'
+              ? str('ragBuilderRunLogWaiting', 'The job has started but has not reported a milestone yet. Embedding runs one call per chunk, so a large corpus can take several minutes before the first line appears.')
+              : str('ragBuilderRunLogPending', 'Live log streaming is unavailable here ({status}) - the full log appears when the run finishes.').replace(
+                  '{status}',
+                  String(progress.liveStatus)
+                );
+        }
+        if (!isTerminalJobState(state as never)) watched = true;
+        if (isTerminalJobState(state as never)) {
+          stopPolling();
+          stopRunClock();
+          if (ingestionRuns.get(setupID) === run) ingestionRuns.delete(setupID);
+          updateLaunchState();
+          const { failed, failedDocuments } = ingestionOutcome(state, progress.messages);
+          const ok = !failed;
+          setRunBadge(state, failed, failedDocuments > 0);
+          runClock.textContent = watched
+            ? str('ragBuilderRunTook', 'took {time}').replace('{time}', formatElapsed(Date.now() - runStartedAt))
+            : '';
+          if (ok) {
+            // The ledger is written by the run's last step, so the moment
+            // it becomes readable is exactly now. Showing it unprompted
+            // spares the round trip that started this whole confusion.
+            runNote.textContent =
+              failedDocuments > 0
+                ? str(
+                    'ragBuilderRunDoneWithFailuresNote',
+                    'Run finished; {count} document(s) failed. The ingestion ledger below names each of them with its error.'
+                  ).replace('{count}', String(failedDocuments))
+                : str('ragBuilderRunDoneNote', 'Run finished. The ingestion ledger is below.');
+            void browseLedger();
+          }
+          if (!ok) {
+            showStatus('danger', str('ragBuilderRunFailed', 'The ingestion run did not succeed - see the milestones/log for the reason.'));
+          } else if (failedDocuments > 0) {
+            // Completed, with a warning that stays on the page: the corpus
+            // is usable, and it lacks the documents the count names.
+            showStatus(
+              'warning',
+              str(
+                'ragBuilderRunDoneWithFailures',
+                'Ingestion run completed, but {count} document(s) failed and are not in the collection - the ledger names each of them with its error.'
+              ).replace('{count}', String(failedDocuments))
+            );
+          } else {
+            showStatus('success', str('ragBuilderRunDone', 'Ingestion run completed - see the milestones and browse the ledger.'));
+          }
+        }
+      } catch (error) {
+        console.debug('RAG Builder: ingestion poll failed', error);
+        if (!shown()) return;
+        failedPolls += 1;
+        if (failedPolls < 3) return;
+        stopPolling();
+        stopRunClock();
+        runClock.textContent = '';
+        if (ingestionRuns.get(setupID) === run) ingestionRuns.delete(setupID);
+        updateLaunchState();
+        runNote.textContent = str(
+          'ragBuilderRunLost',
+          'The state of this run could not be read from SAS Job Execution three times in a row, so it is no longer followed here. It may still be running: look at the job in SAS Job Execution before you launch the ingestion again.'
+        );
+      }
+    };
+    // No poll while the one before is out (oneAtATime).
+    const pollOnce = oneAtATime(poll);
+    pollTimer = window.setInterval(() => void pollOnce(), 5000);
+    void pollOnce();
   }
 
   /**
@@ -2904,7 +3808,6 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    manifestButton.disabled = true;
     try {
       // Resolved fresh: a redeploy of the custom steps mints new ids, and a
       // flow holding a stale one fails at code generation, far from the cause.
@@ -2948,9 +3851,10 @@ export async function buildRagBuilder(
       const flow = buildFlow(
         specs,
         stepIds,
-        ingestionChain(setup, corePath),
+        ingestionChain(setup, corePath, embeddingEndpoint(setup)),
         flowName,
-        String(config.userName || 'RAG Builder'),
+        // Who generated it: the signed-in user where the page knows one.
+        String(getAppState().userName || config.userName || 'RAG Builder'),
         new Date().toISOString(),
         enrichPositions
       );
@@ -2958,9 +3862,12 @@ export async function buildRagBuilder(
       // …and onto the model itself, so the setup carries the pipeline it
       // generated. The registered flow is what SAS Studio opens; this copy is
       // the ASSET - it travels with the model through versions, export and
-      // promotion, which the Content folder's copy does not.
-      await createModelContent(selectedSetupID, flow, `${flowName}.flw`,
-                               'documentation', 'application/json');
+      // promotion, which the Content folder's copy does not. A refusal is a
+      // stage that failed (see written).
+      written(
+        (await createModelContent(selectedSetupID, flow, `${flowName}.flw`, 'documentation', 'application/json')).status_code,
+        `${flowName}.flw`
+      );
       artifactsNote.textContent = str('ragBuilderFlowGeneratedAt', 'Studio flow: {name} in {folder}')
         .replace('{name}', flowName)
         .replace('{folder}', destination);
@@ -2976,12 +3883,11 @@ export async function buildRagBuilder(
       showSaveErrors([
         str('ragBuilderFlowFailed', 'Generating the Studio flow failed: {reason}').replace(
           '{reason}',
-          error instanceof Error ? error.message : String(error)
+          // A write that got no answer was read back (see writeOrReadBack).
+          noAnswerText(error) || (error instanceof Error ? error.message : String(error))
         ),
       ]);
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
   }
 
@@ -3007,7 +3913,6 @@ export async function buildRagBuilder(
       showSaveErrors(problems);
       return false;
     }
-    manifestButton.disabled = true;
     try {
       const modelsFolder = await getFolderByPath(`${config.contentRoot}/models`);
       const templateFile = modelsFolder
@@ -3022,9 +3927,74 @@ export async function buildRagBuilder(
       const template = await (
         await getFileContent(String(templateFile.uri), 'text/plain')
       ).text();
-      const endpoint = setup.embedding.scrEndpoint || `${viyaHost()}/llm`;
-      const code = renderRetrievalModel(template, manifestSettings(setup, endpoint));
-      await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      // The endpoint the ingestion job and the Studio flow embed at (see
+      // embeddingEndpoint). A retrieval model that embedded its question
+      // somewhere else would search the collection with vectors of another
+      // container.
+      const endpoint = embeddingEndpoint(setup);
+      // TLS verification: the option is written as SSL_VERIFY where the
+      // template has that constant. A content root deployed before the option
+      // existed holds a template without it - and without the code that reads
+      // it. That template is manifested as it is, the model keeps verifying,
+      // and the outcome line says that the option did not take effect.
+      const templateHasTlsSetting = manifestBlockHas(template, 'SSL_VERIFY');
+      const code = renderRetrievalModel(template, manifestSettings(setup, endpoint, '', tlsVerificationOn));
+      // The upload answers with a status instead of throwing. A score code
+      // that was not stored is a stage that failed: going on would set or
+      // remove TLS-Verification-Off for code the model does not hold, and
+      // report the setup as manifested.
+      //
+      // A refusal with an answer is certain: the setup keeps the score code
+      // it had. An upload that gets no usable answer - the connection dropped,
+      // or an ingress answered with its error page in place of the service -
+      // is read back (see createModelContent): the setup holds this score
+      // code, and the stage goes on, or it does not, and the stage stops.
+      // When the read back fails too, the service may have stored the code,
+      // and the page cannot know: the stage stops, and says exactly that.
+      let stored: Awaited<ReturnType<typeof createModelContent>>;
+      try {
+        stored = await createModelContent(selectedSetupID, code, 'retrieve_context.py', 'score', 'text/x-python');
+      } catch (error) {
+        console.error('The upload of retrieve_context.py got no usable answer.', error);
+        if (error instanceof UnansweredWrite && error.done === false) {
+          showSaveErrors([
+            str('ragBuilderScoreCodeNoAnswer', 'The upload of retrieve_context.py got no usable answer from SAS Model Manager, and reading it back shows that the setup does not hold this score code. The setup keeps the score code and the tags it had.'),
+          ]);
+          return false;
+        }
+        showSaveErrors([
+          str('ragBuilderScoreCodeUnknown', 'It is not known whether SAS Model Manager stored retrieve_context.py: the upload failed or got no usable answer ({reason}), and the service may have stored the file all the same. The tag TLS-Verification-Off of the setup was not updated and may not say what the stored score code does. Manifest the setup again.').replace(
+            '{reason}',
+            error instanceof Error ? error.message : String(error)
+          ),
+        ]);
+        lastFailureLeavesItOpen = true;
+        return false;
+      }
+      if (stored.status_code >= 300) {
+        throw new Error(
+          str('ragBuilderScoreCodeNotStored', 'SAS Model Manager did not store retrieve_context.py (HTTP {status}). The setup keeps the score code and the tags it had.').replace(
+            '{status}',
+            String(stored.status_code)
+          )
+        );
+      }
+      tlsOutcome = tlsVerificationOn ? 'on' : templateHasTlsSetting ? 'off' : 'templatePredatesOption';
+      // The tag says what this score code does, so it is set when verification
+      // is off in it and taken away otherwise (a setup manifested again with
+      // the option ticked). Saving the setup leaves the tag alone.
+      tlsTagWritten = true;
+      try {
+        const tagStatus = await updateModelTags(
+          selectedSetupID,
+          [TLS_VERIFICATION_OFF_TAG],
+          tlsOutcome === 'off' ? [TLS_VERIFICATION_OFF_TAG] : []
+        );
+        tlsTagWritten = tagStatus < 300;
+      } catch (error) {
+        console.error('Updating the TLS tag of the setup failed.', error);
+        tlsTagWritten = false;
+      }
       showSaveSuccess(
         str('ragBuilderRegistered', 'Retrieval model registered: retrieve_context.py written as the score code of this setup, with its collection, backend and embedding model baked in.')
       );
@@ -3038,13 +4008,42 @@ export async function buildRagBuilder(
       showSaveErrors([
         str('ragBuilderRegisterFailed', 'Registering the retrieval model failed: {reason}').replace(
           '{reason}',
-          error instanceof Error ? error.message : String(error)
+          // A write that got no answer was read back (see writeOrReadBack).
+          noAnswerText(error) || (error instanceof Error ? error.message : String(error))
         ),
       ]);
       return false;
-    } finally {
-      manifestButton.disabled = false;
     }
+  }
+
+  /**
+   * The sentences a manifest adds to its outcome line about TLS verification;
+   * none when it is on and the tag is as it should be. A tag update that did
+   * not go through is said in both directions: the tag could not be written
+   * to a model that does not verify, or could not be taken away from one that
+   * does.
+   */
+  function tlsOutcomeNotes(): string[] {
+    const notes: string[] = [];
+    if (tlsOutcome === 'off') {
+      notes.push(str('ragBuilderManifestedTlsOff', 'TLS verification is OFF in this retrieval model (option "Verify TLS certificates in manifested models"); RAGEMBED_SSLVERIFY=true and RAGSTORE_SSLVERIFY=true on the publishing destination turn it back on.'));
+      if (!tlsTagWritten) {
+        notes.push(str('ragBuilderTlsTagFailed', 'The tag TLS-Verification-Off could not be written to the model - add it in SAS Model Manager.'));
+      }
+      return notes;
+    }
+    if (tlsOutcome === 'templatePredatesOption') {
+      notes.push(
+        str('ragBuilderTlsTemplateOld', 'TLS verification is still ON in this retrieval model, although the option "Verify TLS certificates in manifested models" is unticked: retrieve_context.py under {folder} predates the option and has no SSL_VERIFY setting. Run the deploy-rag-content script again and manifest once more for the option to take effect.').replace(
+          '{folder}',
+          `${config.contentRoot}/models`
+        )
+      );
+    }
+    if (!tlsTagWritten) {
+      notes.push(str('ragBuilderTlsTagNotRemoved', 'The tag TLS-Verification-Off could not be removed from the model. This retrieval model verifies TLS: if the model still carries the tag, remove it in SAS Model Manager.'));
+    }
+    return notes;
   }
 
   /** What the ledger means while a run is still in flight. */
@@ -3059,11 +4058,14 @@ export async function buildRagBuilder(
   async function browseLedger(): Promise<void> {
     clearStatus();
     const setup = collectSetup();
+    // The rows are those of the setup that is on the page now.
+    const shown = whileSetupShown();
     ledgerCard.style.display = '';
     ledgerContent.textContent = '…';
     try {
       const table = `${setup.tables.prefix}_LEDGER`;
       const data = await getCasTableRows(setup.tables.caslib, table, config.casServer);
+      if (!shown()) return;
       const preferred = ['doc_id', 'status', 'chunk_count', 'error_text', 'run_id', 'updated_at', 'source_uri'];
       const order = preferred
         .map((name) => data.columns.findIndex((column) => column.toLowerCase() === name))
@@ -3109,6 +4111,7 @@ export async function buildRagBuilder(
       }
     } catch (error) {
       console.debug('RAG Builder: ledger read failed', error);
+      if (!shown()) return;
       // The commonest cause is not a missing table but an unfinished run:
       // the ledger is written by the run's LAST step, so it does not exist
       // until then. Saying "no table was found" here sent the reader looking
@@ -3137,7 +4140,7 @@ export async function buildRagBuilder(
     storeDb: setup.store.database,
     storeSslmode: setup.store.sslmode,
     credentialDomain: setup.credentialDomain,
-    scrEndpoint: config.SCREndpoint || '',
+    scrEndpoint: embeddingEndpoint(setup),
     embedModel: setup.embedding.model,
     deploymentType: setup.embedding.deploymentType,
     ragCorePath: `${config.contentRoot}/rag_core`,
@@ -3237,6 +4240,9 @@ export async function buildRagBuilder(
    * would itself be an artifact of a test that is supposed to have none.
    */
   async function runRetrievalTest(): Promise<void> {
+    // Enter in the question field comes here past the disabled button: it is
+    // refused for what the button is off for.
+    if (testRunRefused()) return;
     const asked = macroSafeQuestion(testQuestionField.value);
     if (!asked.value) {
       testStatus.textContent = str('ragBuilderTestNeedsQuestion', 'Type a question first.');
@@ -3257,12 +4263,18 @@ export async function buildRagBuilder(
       return;
     }
     clearStatus();
+    retrievalTestOut = true;
     testRunButton.disabled = true;
     testResults.replaceChildren();
     testStatus.textContent = asked.changed
       ? str('ragBuilderTestQuestionAdjusted', 'Asking without the ; & % characters - they cannot survive the trip to the job as a parameter.')
       : str('ragBuilderTestStarting', 'Starting…');
     const startedAt = Date.now();
+    // The chunks are those of the collection of this setup. When another
+    // setup is opened before they are back, the wait ends at its next step:
+    // nothing is written to the panel, which belongs to that setup by then,
+    // and the job definition is deleted as after every test.
+    const shown = whileSetupShown();
     let definitionUri = '';
     try {
       const jobsFolder = await getFolderByPath(`${config.contentRoot}/jobs`);
@@ -3271,11 +4283,13 @@ export async function buildRagBuilder(
             (member) => member.name === 'Test-Retrieval.sas'
           )
         : undefined;
+      if (!shown()) return;
       if (!jobFile?.uri) {
         testStatus.textContent = str('ragBuilderTestSourceMissing', 'Test-Retrieval.sas was not found under the content root - run the deploy-rag-content script first.');
         return;
       }
       const source = await (await getFileContent(String(jobFile.uri), 'text/plain')).text();
+      if (!shown()) return;
       const topK = Math.min(25, Math.max(1, Math.round(Number(testTopKField.value) || 5)));
       const args = retrievalArguments(setup, asked.value, topK);
       const jobName = `RAG Test retrieval - ${selectedSetupName}`;
@@ -3290,17 +4304,21 @@ export async function buildRagBuilder(
         description: 'Transient: created by the RAG Builder for one retrieval test and deleted when it ends. Nothing references it.',
       });
       definitionUri = `/jobDefinitions/definitions/${created.id}`;
+      if (!shown()) return;
       const launchArgs: Record<string, string> = { ...args };
       if (config.computeContext) launchArgs._contextName = String(config.computeContext);
       const job = await launchJob(definitionUri, jobName, launchArgs);
+      if (!shown()) return;
       const jobId = String(job.id ?? '');
 
       const deadline = startedAt + 5 * 60 * 1000;
       let parsed = parseRetrievalLog([]);
       for (;;) {
         const current = await getJob(jobId);
+        if (!shown()) return;
         const state = String(current.state ?? 'running');
         parsed = parseRetrievalLog((await getJobProgressMessages(current)).messages);
+        if (!shown()) return;
         if (isTerminalJobState(state as never)) break;
         if (Date.now() > deadline) {
           // The definition still goes, in the finally. The run itself is
@@ -3310,6 +4328,7 @@ export async function buildRagBuilder(
         }
         testStatus.textContent = `${str('ragBuilderTestRunning', 'Asking the collection…')} (${state}, ${formatElapsed(Date.now() - startedAt)})`;
         await pause(3000);
+        if (!shown()) return;
       }
       if (parsed.failure) {
         testResults.replaceChildren();
@@ -3322,51 +4341,101 @@ export async function buildRagBuilder(
       renderRetrievalHits(parsed, Date.now() - startedAt);
     } catch (error) {
       console.error('The retrieval test failed.', error);
-      testStatus.textContent = str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+      if (shown()) {
+        // A write that got no answer was read back (see writeOrReadBack).
+        testStatus.textContent = noAnswerText(error)
+          ? `${str('ragBuilderTestRunButton', 'Run test')}: ${noAnswerText(error)}`
+          : str('ragBuilderTestFailed', 'The retrieval test could not be run - check the browser console and your permissions on the compute context.');
+      }
     } finally {
       // Unconditional: a failed, timed-out or abandoned test has to clean up
       // exactly as a successful one does, or "leaves nothing behind" holds
       // only on the happy path. The finished job's own record and log survive
       // this, so nothing already read is lost by deleting now.
       if (definitionUri) {
+        // A definition that is left is said on the panel: the test promises
+        // to leave nothing behind. A delete that got no answer was read back
+        // (see deleteJobDefinition).
+        let left = '';
         try {
           const status = await deleteJobDefinition(definitionUri);
           if (status !== 204 && status !== 404) {
             console.warn(`RAG Builder: the transient test job definition was not deleted (HTTP ${status}).`);
+            left = `HTTP ${status}`;
           }
         } catch (error) {
           console.warn('RAG Builder: deleting the transient test job definition failed.', error);
+          left = noAnswerText(error) || (error instanceof Error ? error.message : String(error));
+        }
+        if (left && shown()) {
+          testStatus.textContent = [
+            testStatus.textContent,
+            str('ragBuilderTestDefinitionLeft', 'The job definition this test created ({uri}) may be left in SAS Viya, in no folder: {reason}')
+              .replace('{uri}', () => definitionUri)
+              .replace('{reason}', () => left),
+          ]
+            .filter(Boolean)
+            .join(' ');
         }
       }
-      testRunButton.disabled = false;
+      retrievalTestOut = false;
+      testRunButton.disabled = testRunRefused();
     }
   }
 
   // ---- events ---------------------------------------------------------------
   projectSelect.addEventListener('change', () => {
-    selectedProjectID = projectSelect.value;
-    updateSelectionActions();
+    const projectID = chosenIn(projectSelect, projectPlaceholder);
+    selectedProjectID = projectID;
     selectedSetupID = '';
     selectedSetupName = '';
-    void refreshSetups();
+    // The setups listed so far are those of the project shown before. They
+    // leave the picker now, not when the new listing answers - it may answer
+    // late, or not at all.
+    allSetups = [];
+    setupFilter.setUsers(allSetups);
+    renderSetupOptions();
+    updateSelectionActions();
     void loadSetup();
+    refreshSetups().catch((error) => {
+      console.error('Listing the setups of the RAG project failed.', error);
+      if (selectedProjectID !== projectID) return;
+      showStatus(
+        'danger',
+        str(
+          'ragBuilderSetupsLoadError',
+          'The setups of this project could not be listed from SAS Model Manager. Select the project again to retry.'
+        )
+      );
+    });
   });
 
   setupSelect.addEventListener('change', () => {
-    selectedSetupID = setupSelect.value;
-    selectedSetupName = setupSelect.selectedOptions[0]?.textContent ?? '';
+    selectedSetupID = chosenIn(setupSelect, setupPlaceholder);
+    selectedSetupName = selectedSetupID ? (setupSelect.selectedOptions[0]?.textContent ?? '') : '';
     updateSelectionActions();
     void loadSetup();
   });
 
   deleteSetupButton.addEventListener('click', () => {
     void (async () => {
-      if (!selectedSetupID) return;
+      // The setup the click was made on. The pickers stay usable while the
+      // usage is asked, so the selection is not read a second time: the check,
+      // the title and the delete are all about this one setup.
+      const setupID = selectedSetupID;
+      const setupName = selectedSetupName;
+      if (!setupID) return;
       deleteSetupButton.disabled = true;
-      const decisions = await dependentDecisions(selectedSetupID);
+      const decisions = await dependentDecisions(setupID);
+      // Another setup was chosen meanwhile: no dialog about one that is no
+      // longer on the page.
+      if (selectedSetupID !== setupID) {
+        updateSelectionActions();
+        return;
+      }
       deleteSetupButton.disabled = false;
       const confirmed = await showConfirmModal({
-        title: `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${selectedSetupName}`,
+        title: `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${setupName}`,
         body: [
           str(
             'ragBuilderDeleteSetupNote',
@@ -3380,41 +4449,109 @@ export async function buildRagBuilder(
       if (!confirmed) return;
       clearStatus();
       deleteSetupButton.disabled = true;
-      try {
-        const status = await deleteModel(selectedSetupID);
-        if (status !== 204) throw new Error(`HTTP ${status}`);
-        selectedSetupID = '';
-        selectedSetupName = '';
-        await refreshSetups();
-        await loadSetup();
-        showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
-      } catch (error) {
-        console.error('Deleting the RAG setup failed.', error);
-        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
-      } finally {
-        updateSelectionActions();
-      }
+      // Locked from the confirmation until the page shows what is left.
+      await selectionLock.during(async () => {
+        // A delete that gets no answer is read back (see deleteModel): a setup
+        // SAS Model Manager no longer holds was deleted, as after a 204.
+        let status = 0;
+        let failure: unknown = null;
+        try {
+          status = await deleteModel(setupID);
+        } catch (error) {
+          console.error('Deleting the RAG setup failed.', error);
+          failure = error;
+        }
+        try {
+          if (status !== 204) {
+            showStatus(
+              'danger',
+              noAnswerText(failure)
+                ? `${str('ragBuilderDeleteSetupButton', 'Delete setup')}: ${noAnswerText(failure)}`
+                : str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.')
+            );
+            return;
+          }
+          ingestionRuns.delete(setupID);
+          selectedSetupID = '';
+          selectedSetupName = '';
+          // The setup is deleted from here on: a list that cannot be read now
+          // is a list that was not refreshed, not a delete that failed.
+          let listed = true;
+          try {
+            await refreshSetups();
+          } catch (error) {
+            console.error('Listing the RAG setups after a delete failed.', error);
+            listed = false;
+            allSetups = allSetups.filter((setup) => setup.value !== setupID);
+            setupFilter.setUsers(allSetups);
+            renderSetupOptions();
+          }
+          await loadSetup();
+          if (listed) {
+            showStatus('success', str('ragBuilderSetupDeleted', 'RAG setup deleted.'));
+          } else {
+            showStatus(
+              'warning',
+              str('ragBuilderSetupDeletedListFailed', 'The RAG setup was deleted, but the setup list could not be refreshed from SAS Model Manager.'),
+              {
+                id: idOf('retry-projects'),
+                label: str('ragBuilderProjectsRetry', 'Try again'),
+                run: () => void loadSelectionLists(),
+              }
+            );
+          }
+        } finally {
+          updateSelectionActions();
+        }
+      });
     })();
   });
 
   deleteProjectButton.addEventListener('click', () => {
     void (async () => {
-      if (!selectedProjectID) return;
+      // The project the click was made on, and its setups as SAS Model Manager
+      // lists them now. Neither is taken from what the pickers hold: the setup
+      // list on the page is filled a round trip after a project is chosen and
+      // can still be the list of the project shown before.
+      const projectID = selectedProjectID;
+      if (!projectID) return;
+      const projectName =
+        [...projectSelect.options].find((option) => option.value === projectID)?.textContent ?? '';
+      deleteProjectButton.disabled = true;
       // Every setup goes first, explicitly: whether a project DELETE cascades
       // to its models varies by SAS Viya release, and one at a time is
       // deterministic. The count is named so nobody deletes twelve corpora
       // believing they are deleting an empty project.
-      const setups = allSetups;
+      let setups: DropdownOption[];
+      try {
+        setups = await getModelProjectModels(projectID);
+      } catch (error) {
+        console.error('Listing the setups of the RAG project failed.', error);
+        showStatus(
+          'danger',
+          str(
+            'ragBuilderDeleteProjectListFailed',
+            'The setups of the project could not be listed from SAS Model Manager, so nothing was deleted. Try again.'
+          )
+        );
+        updateSelectionActions();
+        return;
+      }
       // Every setup is asked about, not just a sample: a project delete takes
       // them all, so one referenced setup among twelve is exactly the case
       // worth stopping for.
-      deleteProjectButton.disabled = true;
       const perSetup = await Promise.all(
         setups.map(async (setup) => ({
           name: String(setup.innerHTML ?? setup.value),
           decisions: await dependentDecisions(setup.value),
         }))
       );
+      // Another project was chosen meanwhile: no dialog about one that is no
+      // longer on the page.
+      if (selectedProjectID !== projectID) {
+        updateSelectionActions();
+        return;
+      }
       deleteProjectButton.disabled = false;
       const used = perSetup.filter((entry) => entry.decisions && entry.decisions.length);
       const unchecked = perSetup.filter((entry) => entry.decisions === null);
@@ -3425,10 +4562,16 @@ export async function buildRagBuilder(
               '{count} of these setup(s) are referenced by decisions, which will break:'
           ).replace('{count}', String(used.length))
         );
+        // One line per setup: its name, then its decisions as the same links
+        // the dialog of a single setup shows.
         const list = document.createElement('ul');
         for (const entry of used) {
           const item = document.createElement('li');
-          item.textContent = `${entry.name}: ${(entry.decisions ?? []).map((d) => d.name).join(', ')}`;
+          item.append(`${entry.name}: `);
+          (entry.decisions ?? []).forEach((decision, index) => {
+            if (index > 0) item.append(', ');
+            item.appendChild(decisionLink(decision));
+          });
           list.appendChild(item);
         }
         usageLines.push(list);
@@ -3444,7 +4587,7 @@ export async function buildRagBuilder(
         usageLines.push(str('ragBuilderDeleteNoUsage', 'No decision references this.'));
       }
       const confirmed = await showConfirmModal({
-        title: `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${projectSelect.selectedOptions[0]?.textContent ?? ''}`,
+        title: `${str('ragBuilderDeleteProjectButton', 'Delete project')}: ${projectName}`,
         body: [
           setups.length
             ? str(
@@ -3463,32 +4606,79 @@ export async function buildRagBuilder(
       if (!confirmed) return;
       clearStatus();
       deleteProjectButton.disabled = true;
-      try {
-        for (const setup of setups) {
-          const status = await deleteModel(setup.value);
-          if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+      // Locked from the confirmation until the page shows what is left.
+      await selectionLock.during(async () => {
+        // The setups whose delete SAS Model Manager answered with 204 (or which
+        // it no longer held when a delete without an answer was read back).
+        const deletedIDs: string[] = [];
+        let projectGone = false;
+        let failure: unknown = null;
+        try {
+          for (const setup of setups) {
+            const status = await deleteModel(setup.value);
+            if (status !== 204) throw new Error(`setup ${setup.innerHTML}: HTTP ${status}`);
+            deletedIDs.push(setup.value);
+            ingestionRuns.delete(setup.value);
+          }
+          const status = await deleteModelProject(projectID);
+          if (status !== 204) throw new Error(`project: HTTP ${status}`);
+          projectGone = true;
+        } catch (error) {
+          console.error('Deleting the RAG project failed.', error);
+          failure = error;
         }
-        const status = await deleteModelProject(selectedProjectID);
-        if (status !== 204) throw new Error(`project: HTTP ${status}`);
-        selectedProjectID = '';
-        selectedSetupID = '';
-        selectedSetupName = '';
-        await refreshProjects();
-        await refreshSetups();
-        await loadSetup();
-        showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
-      } catch (error) {
-        console.error('Deleting the RAG project failed.', error);
-        showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
-      } finally {
-        updateSelectionActions();
-      }
+        try {
+          // Stopped part of the way: the page shows what SAS Model Manager
+          // holds now, and says what was deleted and what was not.
+          if (!projectGone) projectGone = await showWhatIsLeftOfProject(projectID, projectName, setups, deletedIDs, failure);
+          if (!projectGone) return;
+          selectedProjectID = '';
+          selectedSetupID = '';
+          selectedSetupName = '';
+          // The project is deleted from here on: a list that cannot be read
+          // now is a list that was not refreshed, not a delete that failed.
+          let listed = true;
+          try {
+            await refreshProjects();
+            await refreshSetups();
+          } catch (error) {
+            console.error('Listing the RAG projects after a delete failed.', error);
+            listed = false;
+            allProjects = allProjects.filter((project) => project.value !== projectID);
+            projectFilter.setUsers(allProjects);
+            renderProjectOptions();
+            allSetups = [];
+            setupFilter.setUsers(allSetups);
+            renderSetupOptions();
+          }
+          await loadSetup();
+          if (listed) {
+            showStatus('success', str('ragBuilderProjectDeleted', 'RAG project deleted.'));
+          } else {
+            showStatus(
+              'warning',
+              str('ragBuilderProjectDeletedListFailed', 'The RAG project was deleted, but the project list could not be refreshed from SAS Model Manager.'),
+              {
+                id: idOf('retry-projects'),
+                label: str('ragBuilderProjectsRetry', 'Try again'),
+                run: () => void loadSelectionLists(),
+              }
+            );
+          }
+        } catch (error) {
+          console.error('Deleting the RAG project failed.', error);
+          showStatus('danger', str('ragBuilderDeleteFailed', 'Deleting failed - check your Model Manager permissions.'));
+        } finally {
+          updateSelectionActions();
+        }
+      });
     })();
   });
 
-  docSaveButton.addEventListener('click', () => void saveDocumentation());
-  saveButton.addEventListener('click', () => void saveSetup());
-  manifestButton.addEventListener('click', () => void manifestSetup());
+  // The three writes of a setup, each locked from its click to its end.
+  docSaveButton.addEventListener('click', () => void selectionLock.during(saveDocumentation));
+  saveButton.addEventListener('click', () => void selectionLock.during(saveSetup));
+  manifestButton.addEventListener('click', () => void selectionLock.during(manifestSetup));
   launchButton.addEventListener('click', () => void launchIngestion());
   ledgerButton.addEventListener('click', () => void browseLedger());
   // The toolbar button opens the panel and puts the cursor in the question;
@@ -3508,8 +4698,51 @@ export async function buildRagBuilder(
   });
 
   // ---- initial load ---------------------------------------------------------
-  await refreshProjects();
-  await refreshSetups();
+  /**
+   * Fill the two pickers, and say so in the page when that fails.
+   *
+   * A project listing SAS Model Manager refuses (a permission, an outage, an
+   * expired session) is a state of the page, not a reason to have no page:
+   * everything else is built and usable, and whoever hosts this builder gets
+   * an element it can show either way. The alert carries the retry, because
+   * the usual cause passes and a reload would throw away the other builder's
+   * work on the same page.
+   */
+  async function loadSelectionLists(): Promise<void> {
+    try {
+      await refreshProjects();
+      await refreshSetups();
+      clearStatus();
+      // An open setup whose stored state could not be read is read again:
+      // the Try again of a setup created and not read back stands for both.
+      if (selectedSetupID && setupUnread) await loadSetup();
+    } catch (error) {
+      console.error('Listing the RAG projects failed.', error);
+      // The pickers still say what they are for: without their placeholders
+      // they would be two blank boxes under the alert.
+      renderProjectOptions();
+      renderSetupOptions();
+      showStatus(
+        'danger',
+        str(
+          'ragBuilderProjectsLoadError',
+          'The RAG projects could not be listed from SAS Model Manager. Check that you are signed in to SAS Viya and may read the model repository, then try again.'
+        ),
+        {
+          id: idOf('retry-projects'),
+          label: str('ragBuilderProjectsRetry', 'Try again'),
+          run: () => void loadSelectionLists(),
+        }
+      );
+    }
+  }
+  // The page is built and no setup is opened yet: this is what the fields of
+  // the steps after Setup are put back to before a setup is drawn into them.
+  stepper.rememberFreshState();
+  await loadSelectionLists();
+
+  // Last, so the host never steers a builder that is still being put together.
+  hooks.onReady?.({ showSetup: () => stepper.goTo(0, { scroll: true }) });
 
   return container;
 }

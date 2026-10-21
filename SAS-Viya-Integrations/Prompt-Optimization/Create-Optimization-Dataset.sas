@@ -25,6 +25,10 @@
          CAS server / caslib / table dropdowns (the lists show loaded tables,
          which is why the load + promote below matters).
 
+    The table lives in memory only: it is promoted, not saved. After a
+    restart of the CAS server it is gone, and the dropdowns no longer list
+    it - run this program again.
+
     The optimize job snapshots the exact rows it used into the prompt's model
     (Prompt-Optimization-Dataset-<n>.json), so later edits to this table never
     orphan the provenance of past runs.
@@ -33,7 +37,21 @@
 %let dataset_caslib  = Public;
 %let dataset_table   = PROMPT_OPTIMIZATION_DATASET;
 
-cas _optbuild;
+/* A session _optbuild that is connected - left by an earlier run that did
+   not reach its end, say - is used and left as it is: a second cas _optbuild
+   only makes SAS warn that the session exists, and the end of the program
+   would end a session it did not start. PROC CASUTIL halts with 'ERROR: No
+   active Cloud Analytic Services session.' while the option SESSREF names a
+   session that was ended, also with SESSION=_optbuild (measured on SAS Viya on
+   2026-10-16), so the option is then set to a connected _optbuild. */
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(_optbuild)) EQ 1 %then %do;
+    options sessref=_optbuild;
+%end;
+%let _opt_clean_cas_session = 0;
+%if %sysfunc(sessfound(_optbuild)) NE 1 %then %do;
+    %let _opt_clean_cas_session = 1;
+    cas _optbuild;
+%end;
 caslib _all_ assign sessref=_optbuild;
 
 /* One row per example: the variable column(s) + the reference response.
@@ -66,4 +84,7 @@ proc casutil session=_optbuild;
     droptable casdata="_staging" incaslib="casuser" quiet;
 run; quit;
 
-cas _optbuild terminate;
+%if &_opt_clean_cas_session. %then %do;
+    cas _optbuild terminate;
+%end;
+%symdel _opt_clean_cas_session / nowarn;

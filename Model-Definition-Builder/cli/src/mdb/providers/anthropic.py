@@ -12,6 +12,47 @@ from ..core.netutil import get_json
 from .base import CatalogModel, ProviderAdapter, SmokeResult, http_smoke_failure
 
 ANTHROPIC_VERSION = "2023-06-01"
+#: The effort words of output_config.effort, lowest first.
+EFFORT_WORDS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _supported(capabilities: dict, *path: str) -> Optional[bool]:
+    """capabilities[path...]['supported'] of a Models API entry, None where
+    the entry does not say."""
+    node = capabilities
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    if isinstance(node, dict) and isinstance(node.get("supported"), bool):
+        return node["supported"]
+    return None
+
+
+def _catalog_model(entry: dict) -> CatalogModel:
+    """One entry of GET /v1/models. Since 2026 an entry carries the context
+    window (max_input_tokens), the output cap (max_tokens) and its
+    capabilities; an entry without them keeps the old assumptions (200k
+    context, budget thinking)."""
+    capabilities = entry.get("capabilities") or {}
+    budget = _supported(capabilities, "thinking", "types", "enabled")
+    adaptive = _supported(capabilities, "thinking", "types", "adaptive")
+    efforts = [word for word in EFFORT_WORDS if _supported(capabilities, "effort", word)]
+    adaptive_only = bool(adaptive) and budget is False
+    return CatalogModel(
+        ref=entry["id"],
+        display_name=entry.get("display_name") or entry["id"],
+        release_date=(entry.get("created_at") or "")[:10] or None,
+        # uniform for older Claude models where the entry does not say; confirm in the wizard
+        context_length=entry.get("max_input_tokens") or 200000,
+        max_output_tokens=entry.get("max_tokens"),
+        extended_thinking=budget is not False,
+        # A model that refuses budget thinking (Claude 5.5) is steered by
+        # effort, and refuses temperature / top_p / top_k as well - the
+        # Models API has no field for sampling, so this follows the thinking.
+        adaptive_thinking=adaptive_only,
+        sampling=not adaptive_only,
+        reasoning_efforts=efforts if adaptive_only and efforts else None,
+        source="live",
+    )
 
 
 class AnthropicAdapter(ProviderAdapter):
@@ -40,14 +81,7 @@ class AnthropicAdapter(ProviderAdapter):
         )
         models = []
         for entry in payload.get("data", []):
-            models.append(CatalogModel(
-                ref=entry["id"],
-                display_name=entry.get("display_name") or entry["id"],
-                release_date=(entry.get("created_at") or "")[:10] or None,
-                context_length=200000,  # uniform for current Claude models; confirm in the wizard
-                extended_thinking=True,
-                source="live",
-            ))
+            models.append(_catalog_model(entry))
         return models
 
     def smoke_test(self, manifest: ModelManifest, api_key: Optional[str],

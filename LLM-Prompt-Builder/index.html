@@ -7,11 +7,34 @@ Single entry document. Everything (CSS, JS, locales) is bundled and inlined into
 one self-contained HTML file at build time — there are no external CDN scripts,
 fonts, or a runtime config.js, so the built file works inside a locked-down SAS
 Visual Analytics / SAS Job Execution embed.
+
+The referrer policy "same-origin" belongs to that: the page is served from the
+SAS Viya host, and a link that leaves it for another site (the user guide link
+of the Optimize step, a link in a rendered LLM response) must not tell that
+site in a Referer where SAS Viya runs. The policy does this and no more: what
+the page asks of another origin than its own carries no Referer, what it asks
+of its own origin keeps it.
+
+- Requests to SAS Viya keep their Referer where the page is served from the
+  SAS Viya origin, which is how it is deployed. With the viyaHost parameter
+  naming another origin every call to SAS Viya is cross-origin and carries
+  none, and a tab opened on SAS Model Manager gets none either.
+- A fetch to another origin - a model container on another host, or SAS Viya
+  under such a viyaHost - carries no Referer, but the browser still names the
+  origin of the page in its Origin header, which no referrer policy takes
+  away. The host is kept from the sites a link leads to, not from the hosts
+  the page calls.
+
+The links are opened through window.open without the "noreferrer" feature,
+because the answer of window.open has to say whether a tab opened (see
+src/ui/external-link.ts) - so the policy of the document is what keeps the
+Referer back.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="same-origin" />
     <title>LLM Prompt Builder</title>
   </head>
   <body>

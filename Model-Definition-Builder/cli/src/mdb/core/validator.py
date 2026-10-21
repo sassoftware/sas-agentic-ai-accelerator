@@ -19,6 +19,7 @@ from .generator import (
     AZURE_TEMPLATES, CoreAssets, GenerationError, list_custom_options, render_assets,
 )
 from .manifest import MANIFEST_FILENAME, ModelManifest, load_manifest
+from ..viya.answer import one_line
 
 Severity = Literal["error", "warning", "info"]
 
@@ -38,9 +39,12 @@ class Issue:
     hint: Optional[str] = None
 
     def format(self) -> str:
-        text = f"[{self.rule}] {self.model_id}: {self.message}"
+        """The issue on one line, and its hint on a line of its own: a name
+        the message or the hint holds - an option's name with a line break -
+        is shown on that line (one_line)."""
+        text = f"[{self.rule}] {one_line(self.model_id)}: {one_line(self.message)}"
         if self.hint:
-            text += f"\n        fix: {self.hint}"
+            text += f"\n        fix: {one_line(self.hint)}"
         return text
 
 
@@ -76,7 +80,7 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
     try:
         rendered = render_assets(manifest, core)
     except GenerationError as exc:
-        issues.append(Issue("V003", "error", model_id, str(exc)))
+        issues.append(Issue("V003", "error", model_id, one_line(str(exc))))
         return issues
 
     # V004 - generated files on disk match a fresh render (the CI drift gate)

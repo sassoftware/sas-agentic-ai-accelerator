@@ -93,7 +93,13 @@ export function enrichValues(setup: RagSetup, corePath: string, position: number
   };
 }
 
-export function ingestionChain(setup: RagSetup, corePath: string): Record<string, StepValues> {
+/**
+ * `scrEndpoint` is where the Embed step embeds: the endpoint the Builder
+ * resolved for this setup, the same one it hands to the generated job and
+ * manifests into the retrieval model. Blank leaves the choice to the step,
+ * which then takes the host of the compute session it runs in.
+ */
+export function ingestionChain(setup: RagSetup, corePath: string, scrEndpoint = ''): Record<string, StepValues> {
   const project = setup.tables.prefix;
   return {
     'RAG - List Documents': {
@@ -122,7 +128,7 @@ export function ingestionChain(setup: RagSetup, corePath: string): Record<string
     'RAG - Enrich Chunks': enrichValues(setup, corePath, 0),
     'RAG - Embed Chunks': {
       _rgem_embedModel: setup.embedding.model,
-      _rgem_scrEndpoint: setup.embedding.scrEndpoint || '',
+      _rgem_scrEndpoint: setup.embedding.scrEndpoint || scrEndpoint,
       _rgem_deploymentType: setup.embedding.deploymentType || 'k8s',
       _rgem_replicas: setup.policies?.embedReplicas ?? 1,
       // an API-backed embedding model resolves its provider key from here

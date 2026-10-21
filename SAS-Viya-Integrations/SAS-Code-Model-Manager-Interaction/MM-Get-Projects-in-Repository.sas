@@ -82,5 +82,5 @@
 %_mgp_project_pagination();
 
 * Clean up;
-%symdel _mgp_repository_id _mgp_viyaHost;
+%symdel _mgp_repository_id _mgp_viyaHost / nowarn;
 %sysmacdelete _mgp_project_pagination;

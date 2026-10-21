@@ -4,6 +4,18 @@
  */
 
 import { viyaFetch } from './http-client';
+import { optionsText } from './stored-json';
+
+// The calls to a model container (callSCRLLM, callSCRDecision and the
+// metadata request) use fetch() directly, and that is on purpose. viyaFetch
+// is the client for SAS Viya SERVICES: it prepends the SAS Viya host, sends
+// the session cookie and X-Requested-With, repeats a request after HTTP 449
+// and carries the CSRF token. A model container is none of that: it is
+// reached at the SCR endpoint, an absolute URL that may be another host
+// (Azure Container Apps), it has no SAS Logon session and no CSRF token, and
+// credentials or an extra header on a cross-origin call would only make the
+// browser's preflight fail. Every request to a SAS Viya service goes through
+// viyaFetch; the verify suites check that (GET /__direct of the mock).
 
 interface SCRInput {
   name: string;
@@ -76,12 +88,7 @@ export async function callSCRDecision(
     deploymentType === 'aca'
       ? `https://${model.replaceAll('_', '-')}.${scrEndpoint}/${model}`
       : `${scrEndpoint}/${model}/${model}`;
-  const optionsString =
-    '{' +
-    Object.entries(options)
-      .map(([key, value]) => `${key}:${value}`)
-      .join(',') +
-    '}';
+  const optionsString = optionsText(options);
   const body = JSON.stringify({
     inputs: [
       { name: 'state', value: state },
@@ -124,13 +131,9 @@ export async function callSCRLLM(
   // input in the form `{key:value,key:value}` — no quotes, no spaces — including
   // API_KEY when the model requires one. See the LLM score code (baseScore.py /
   // claudeSonnet35Score.py) and the SCR-LLM-Calls Postman collection in the
-  // accelerator for the exact contract.
-  const optionsString =
-    '{' +
-    Object.entries(options)
-      .map(([key, value]) => `${key}:${value}`)
-      .join(',') +
-    '}';
+  // accelerator for the exact contract. Save Experiments stores the same text
+  // with the run (optionsText).
+  const optionsString = optionsText(options);
 
   const body = JSON.stringify({
     inputs: [

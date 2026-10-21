@@ -5,7 +5,9 @@ title: RAG
 
 Retrieval-augmented generation turns a folder of documents into something a
 decision can quote. This guide builds a working pipeline with the shipped
-custom steps, then asks it questions. For deployment and the environment
+custom steps, then asks it questions; the no-code route to the same pipeline
+is the [RAG setup](./Prompt-Builder.md#rag-setups) kind of the Prompt
+Builder. For deployment and the environment
 prerequisites, see the
 [RAG administration guide](../Administration-Guide/RAG-Ingestion-and-Retrieval.md).
 
@@ -22,6 +24,29 @@ between is bookkeeping — but the bookkeeping is what makes it operable:
   and a bad run rolled back;
 - every chunk knows **where it came from**, so an answer can be traced to a
   passage in a file.
+
+## Two ways to build it
+
+The pipeline is the same either way; what differs is where you configure it.
+
+- **In the Prompt Builder, without wiring anything.** Where your administrator
+  has enabled it, the Prompt Builder's first card offers a *RAG setup for a
+  document collection* beside the prompt and decision templates. Choosing it
+  opens the RAG Builder: four steps in which you name the documents, the
+  embedding model, the chunking and the vector store, save that as a governed
+  setup, and let it generate the ingestion job and the SAS Studio flow for
+  you. It also launches the ingestion, browses the ledger and tests the
+  retrieval. See [RAG setups](./Prompt-Builder.md#rag-setups) in the Prompt
+  Builder guide. If the step shows a warning about TLS verification at
+  **Manifest setup**, your administrator has switched certificate
+  verification off for manifested models: the retrieval model you manifest
+  then does not check the certificate of the embedding container and is
+  tagged `TLS-Verification-Off` in SAS Model Manager. Ask before you
+  manifest a setup that is going to production.
+- **In SAS Studio, step by step.** Chain the custom steps yourself, as the
+  rest of this page describes. This is also the page to read for what each
+  stage does — a setup made in the RAG Builder runs the same stages, and the
+  flow it generates is made of these steps.
 
 ## Build the pipeline
 
@@ -97,12 +122,24 @@ It manifests the retrieval model for *your* collection, registers it in SAS
 Model Manager as a scoreable Python model, and writes the governance artifacts
 next to it: `pipeline.yaml`, the ingestion manifest (which documents, at which
 content hash, from which run), the collection manifest and the store DDL a DBA
-can review.
+can review. The model goes into the SAS Model Manager project the step
+names. A project of that name that does not exist yet is created, in the
+default repository of SAS Model Manager; to have it in another repository,
+create the project there first.
 
 Point it at your flow as well and it generates the **scheduled ingestion job**
 from that flow, so the visual pipeline and the scheduled one cannot drift
 apart. Everything is idempotent — re-registering updates rather than
 duplicating.
+
+The model the step registers verifies the TLS certificates of the calls it
+makes when it is scored. The checkbox **Verify TLS certificates in the
+registered retrieval model** in the *Runtime* section switches that off for
+the registered model: leave it ticked unless your administrator tells you
+otherwise. Not ticked, the step ends its log with a warning, the
+registration report says *TLS certificate verification OFF*, and the model
+is tagged `TLS-Verification-Off` in SAS Model Manager. Ask before you
+register a setup that way for production.
 
 ## Keeping the corpus current
 
@@ -129,7 +166,14 @@ unpredictably.
 **RAG - Purge Documents** takes documents the way you know them — a file name,
 a full path, or a doc id — and resolves them against the ledger. It runs in
 **Preview** mode by default and reports exactly what would go before anything
-does.
+does. A preview only reads: it takes no run lock and does not write the
+ledger, so an ingestion can start while it runs. It is refused while another
+run holds the lock, and on a project that has no ledger yet it fails with *no
+ledger table for this RAG project*. That is the preview as release 2.3.0
+changed it; the administration guide has
+[what was measured before and after the change](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#retention-and-erasure).
+A purge is not a run in the tables under *Seeing what happened*: it writes
+no row to them.
 
 :::danger Purging cannot be undone
 It removes retired generations too, so an as-of read can no longer reach the
@@ -151,12 +195,30 @@ Every run is recorded. Two CAS tables appear next to your pipeline tables:
 Point Visual Analytics at them for corpus size over time, which documents keep
 failing, or what last month's ingestion cost.
 
+The two tables are written by both ingestion paths: by **RAG - Load Vector
+Store**, the last ingestion step of the flow, and, from release 2.3.0 on, by a
+run that the Prompt Builder starts with **Launch ingestion** or by the
+ingestion job of a setup. Each run writes every run the vector store holds for
+the collection, so the tables hold the runs of both paths. A setup that was
+manifested with an earlier release needs **Manifest setup** once before its
+job writes them. The administration guide has
+[where the history is kept](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#run-history),
+and what of this was measured on SAS Viya and what was not run there.
+
 ## Things worth knowing
 
 **Two runs cannot collide.** The first step takes a lock on the ledger. A
 second run refuses to start while the first holds it, and a failed run hands
 its lock back so you can retry immediately. A stale lock expires after 30
-minutes.
+minutes. The ingestion job the Prompt Builder launches for a setup and the
+flow it generates for the same setup keep one ledger and take the same
+lock. Up to release 2.2 a flow could not take it on a ledger the job had
+written; from release 2.3.0 the job and the flow of one setup ran one
+after the other in both orders. From release 2.3.0 the ingestion job hands
+its lock back after a run that failed, as the steps do: when it was
+measured, the job was run again five seconds after a run that had failed
+and was not refused. The administration guide has
+[what was seen, what was changed and what was measured](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#one-ledger-for-the-job-and-the-flow).
 
 **A bad document does not fail the run.** Extraction and embedding failures are
 recorded against that document's ledger row; everything else proceeds. Failed
@@ -174,8 +236,17 @@ failure that costs the most to find. They re-enter the pipeline on the next
 run too, so installing an extractor or turning code files on is enough to pick
 them up.
 
-**A step that fails does not abort the session.** The rest of the flow skips
-and forwards, which is what makes the same flow safe to schedule as a job.
+**A step that fails ends the flow run.** In SAS Studio the step writes its
+ERROR line and stops the run with an `abort`, and the steps after it do not
+run. A job is another matter, because an `abort` ends the session of a job
+before SAS Job Execution learns how it ended. The job that **RAG - Register
+Setup** generates from your flow therefore switches the `abort` off: the step
+that failed writes its ERROR line, the steps after it are skipped, and the job
+ends as failed with a line that says a step of the run reported an error. A
+job that SAS Studio itself deploys from the flow does not have that — to
+schedule the flow, use the job the step generates. The administration guide
+has
+[what the generated job begins and ends with, and what was measured](../Administration-Guide/RAG-Ingestion-and-Retrieval.md#tls-register-setup-step).
 
 **Citations may lack a location.** A chunk whose position in its document
 cannot be established carries no span rather than a guessed one — a wrong

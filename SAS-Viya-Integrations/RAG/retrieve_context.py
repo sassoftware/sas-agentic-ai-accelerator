@@ -14,13 +14,22 @@ Signature (a decision maps these to terms):
     execute(question, k, filter_json, retrieval_mode, options)
       -> (context_dg, context_envelope, retrieval_status, run_time)
 
-  question       - the user question to retrieve context for
-  k              - number of chunks (0/blank -> the manifested default)
+  question       - the user question to retrieve context for. Blanks around
+                   it are dropped before it is embedded and before it is
+                   returned as `query`: a decision pads a character input
+                   with blanks to its declared length
+  k              - number of chunks. 0, empty, blanks only or a missing
+                   value means the manifested default. A value that is
+                   no number falls back to the default as well and says
+                   so in retrieval_status. A missing number (NaN) and an
+                   infinity, also as the texts nan and inf, are the
+                   default without that note
   filter_json    - optional JSON object of column equality filters,
-                   e.g. {"doc_id": "..."} (allow-listed columns only)
+                   e.g. {"doc_id": "..."} (allow-listed columns only);
+                   empty or blanks only means no filter
   retrieval_mode - "vector" (hybrid arrives with a later release; any
                    other value falls back to vector and says so in
-                   retrieval_status)
+                   retrieval_status). Empty or blanks only means vector
   options        - optional JSON object overriding connection settings for
                    callers that manage their own secrets: host, port,
                    dbname, sslmode, user, password, scr_endpoint, model
@@ -45,21 +54,45 @@ Signature (a decision maps these to terms):
 
 Connection resolution (design §4 destination boundary), per value:
   1. the per-call options input (external callers with their own secrets)
-  2. secrets from the SAS Viya credentials service when a session token is
-     present (compute sessions): entries {BACKEND}_RAG_USER and
-     {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
-     domain serve several vector stores)
-  3. environment variables (SCR/MAS deploy-time injection; local .env):
+  2. environment variables (SCR/MAS deploy-time injection; local .env):
      {BACKEND}_RAG_USER/{BACKEND}_RAG_PW for the secrets,
      {BACKEND}_HOST/PORT/DB/SSLMODE — or the shared RAGSTORE_* fallback — for
      connection config, RAGEMBED_* for the embedder
+  3. secrets from the SAS Viya credentials service when a session token is
+     present (compute sessions): entries {BACKEND}_RAG_USER and
+     {BACKEND}_RAG_PW in the credential domain (the backend prefix lets one
+     domain serve several vector stores). The service is asked only when
+     the user or the password is still missing after 1 and 2
   4. the manifested constants below
 A decision definition never stores a secret.
 
-The EMBEDDING provider key is different, and only step 1 or 3 can supply it:
+The embedding endpoint has one rung more, in this order:
+  1. scr_endpoint in the per-call options input
+  2. the environment variable RAGEMBED_ENDPOINT
+  3. the manifested EMBED_ENDPOINT, when it is not blank
+  4. SAS_SERVICES_URL + "/llm" (compute sessions set SAS_SERVICES_URL)
+The manifested value comes before SAS_SERVICES_URL because it is the endpoint
+the ingestion job embedded the documents with; a site whose model containers
+are not served under <SAS Viya host>/llm would otherwise embed the question
+somewhere else than the corpus.
+
+TLS verification of the two HTTPS calls this file makes itself (the embedding
+container: prefix RAGEMBED; the credentials service: prefix RAGSTORE):
+  - <prefix>_SSLVERIFY set to false/no/0 switches verification off, set to
+    true/yes/1 switches it on - the environment wins in both directions
+  - unset, or any other word: the manifested constant SSL_VERIFY decides
+  - verification on means the CA bundle named by <prefix>_CABUNDLE (default
+    /security/trustedcerts.pem, which SAS Viya mounts into its pods) when that
+    file exists, else the certificates Python trusts by default
+A copy manifested with the constant set to False is for a destination that
+runs Python where the bundle is not mounted. RAGEMBED_SSLVERIFY=true and
+RAGSTORE_SSLVERIFY=true on the destination turn verification back on without
+manifesting again.
+
+The EMBEDDING provider key is different, and only step 1 or 2 can supply it:
 an API-backed embedding container reads API_KEY out of the SCR options, and a
 decision running in SAS Intelligent Decisioning has no SAS Viya session token,
-so step 2 cannot resolve anything there. Pass it as API_KEY in the options
+so step 3 cannot resolve anything there. Pass it as API_KEY in the options
 input, or set RAGEMBED_API_KEY on the destination. A locally-served embedding
 model needs none.
 
@@ -85,6 +118,7 @@ STORE_SSLMODE = "prefer"
 CREDENTIAL_DOMAIN = "agentic-ai-keys"
 DEFAULT_K = 4
 INGESTION_RUN_ID = ""  # corpus-version lineage stamp (set by Register Setup)
+SSL_VERIFY = True
 # -----------------------------------------------------------------------------
 
 _FILTER_COLUMNS = {"doc_id", "source_uri", "content_hash", "extractor",
@@ -111,12 +145,21 @@ _DATAGRID_METADATA = [{"document_id": "string"}, {"chunk_id": "string"},
 
 def _ssl_verify(prefix):
     """TLS verification for in-cluster calls: the CA bundle SAS Viya mounts
-    into every pod, an explicit bundle, or disabled via *_SSLVERIFY=false."""
+    into its pods, an explicit bundle, or off.
+
+    <prefix>_SSLVERIFY wins in both directions when it holds a recognised
+    word; unset or unrecognised, the manifested SSL_VERIFY decides. Only the
+    literal False switches verification off there: a copy manifested by a
+    renderer that does not write the constant has none, and it verifies.
+    """
     bundle = os.getenv(prefix + "_CABUNDLE", "/security/trustedcerts.pem")
     verify = bundle if os.path.isfile(bundle) else True
-    if os.getenv(prefix + "_SSLVERIFY", "").strip().lower() in ("false", "no", "0"):
-        verify = False
-    return verify
+    word = os.getenv(prefix + "_SSLVERIFY", "").strip().lower()
+    if word in ("false", "no", "0"):
+        return False
+    if word in ("true", "yes", "1"):
+        return verify
+    return False if globals().get("SSL_VERIFY", True) is False else verify
 
 
 def _domain_secrets():
@@ -220,14 +263,27 @@ def _embed_options(options):
     return "{" + ",".join(str(k) + ":" + str(v) for k, v in embed.items()) + "}"
 
 
+def _embed_endpoint(options):
+    """The SCR base URL the question is embedded at.
+
+    The manifested value outranks SAS_SERVICES_URL: it is the endpoint the
+    ingestion job used, and where the model containers are not served under
+    <SAS Viya host>/llm the two differ - the question would then be embedded
+    by whatever answers there, or by nothing. A blank value is no value on
+    any rung.
+    """
+    services = os.getenv("SAS_SERVICES_URL", "").strip().rstrip("/")
+    return (str(options.get("scr_endpoint") or "").strip()
+            or os.getenv("RAGEMBED_ENDPOINT", "").strip()
+            or str(EMBED_ENDPOINT or "").strip()
+            or (services + "/llm" if services else "")).rstrip("/")
+
+
 def _embed_query(question, options):
     """Embed the question through the SCR embedding container (query mode)."""
     import requests
 
-    endpoint = (options.get("scr_endpoint") or os.getenv("RAGEMBED_ENDPOINT")
-                or (os.getenv("SAS_SERVICES_URL", "").rstrip("/") + "/llm"
-                    if os.getenv("SAS_SERVICES_URL") else "")
-                or EMBED_ENDPOINT).rstrip("/")
+    endpoint = _embed_endpoint(options)
     model = options.get("model") or os.getenv("RAGEMBED_MODEL") or EMBED_MODEL
     if os.getenv("RAGEMBED_DEPLOYMENT_TYPE", "k8s") == "aca":
         host = endpoint.replace("https://", "").replace("http://", "")
@@ -259,7 +315,9 @@ def _quote(identifier):
 def _compile_filter(filter_json):
     """Equality-only allow-listed filter -> (condition, params); always bound."""
     condition, params = "TRUE", []
-    if not filter_json:
+    # blanks only is an input a decision left empty and padded, not a filter
+    if not filter_json or (isinstance(filter_json, str)
+                           and not filter_json.strip()):
         return condition, params
     parsed = json.loads(filter_json) if isinstance(filter_json, str) else filter_json
     if not isinstance(parsed, dict):
@@ -358,25 +416,59 @@ def _search(vector, k, filter_json, store):
     return hits
 
 
+def _top_k(k):
+    """(number of chunks, note for retrieval_status) for the input k.
+
+    No value means the manifested default: 0, None, an empty text, blanks
+    only (the padding a decision gives a character input) and a missing
+    number (NaN). A text that is no number means the default too - the call
+    is not failed for it - and the note says which value was not used. A
+    number is cut to its whole part, as before; a negative one is passed on
+    as it is.
+    """
+    text = k.strip() if isinstance(k, str) else k
+    if text is None or text == "":
+        return DEFAULT_K, ""
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_K, (" (k " + str(text)[:40] + " is not a number - used "
+                           + str(DEFAULT_K) + ")")
+    if number != number or number in (float("inf"), float("-inf")):
+        return DEFAULT_K, ""
+    return int(number) or DEFAULT_K, ""
+
+
 def execute(question, k, filter_json, retrieval_mode, options):
     "Output: context_dg, context_envelope, retrieval_status, run_time"
     started = time.time()
-    mode = str(retrieval_mode or "vector").strip().lower()
+    # Blanks only is an input a decision left empty and padded, not the name
+    # of a mode: it means the default, as an empty value does.
+    mode = str(retrieval_mode or "").strip().lower() or "vector"
     note = ""
     hits = []
     status = "ok"
+    # A decision hands a character input over padded with blanks to its
+    # declared length (found live: a 1000-character input arrived with about
+    # 900 trailing blanks). The padding is not part of the question, so it is
+    # neither embedded nor returned in the envelope.
+    question = str(question or "").strip()
     try:
-        if not str(question or "").strip():
+        if not question:
             raise ValueError("question is empty")
         if mode != "vector":
-            note = " (retrieval_mode " + mode + " not available yet - used vector)"
+            # at most 40 characters of the name: retrieval_status has a
+            # declared length, and a note must not take it over
+            note = (" (retrieval_mode " + mode[:40]
+                    + " not available yet - used vector)")
             mode = "vector"
         parsed_options = {}
         if options and str(options).strip():
             parsed_options = json.loads(options) if isinstance(options, str) else dict(options)
-        top_k = int(float(k or 0)) or DEFAULT_K
+        top_k, k_note = _top_k(k)
+        note += k_note
         store = _store_config(parsed_options)
-        vector = _embed_query(str(question), parsed_options)
+        vector = _embed_query(question, parsed_options)
         hits = _search(vector, top_k, filter_json, store)
         status = "ok" + note if hits else "ok - no chunks matched" + note
     except Exception as error:
@@ -396,7 +488,7 @@ def execute(question, k, filter_json, retrieval_mode, options):
                   for h in hits]},
     ])
     context_envelope = json.dumps({
-        "query": str(question or ""),
+        "query": question,
         "hits": hits,
         "graph_context": None,
         "retrieval_mode": mode,

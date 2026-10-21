@@ -5,10 +5,11 @@
     Build RAG_RUN_COST: what each RAG ingestion run cost.
 
     The RAG pipeline records every run in `rag_runs` INSIDE the vector store,
-    and the Load step publishes that table to CAS as <PREFIX>_RUNS. This
-    script joins those published runs to EMBEDDING_FACT_SHEET and applies the
-    price, the same way the LLM Usage Report joins LLM_LOGS to
-    LLM_FACT_SHEET - one table, one join, no new plumbing.
+    and the Load step and the ingestion job of a setup publish that table to
+    CAS as <PREFIX>_RUNS. This script joins those published runs to
+    EMBEDDING_FACT_SHEET and applies the price, the same way the LLM Usage
+    Report joins LLM_LOGS to LLM_FACT_SHEET - one table, one join, no new
+    plumbing.
 
     Two cost bases, taken from the fact sheet's cost_type:
 
@@ -38,18 +39,66 @@
     schedule it alongside the ingestion job.
 ********************************************************************************/
 
+/* A setting is taken from the lines below only where its macro variable is
+   not set yet. A program of your own that sets a value with a LET statement
+   and then includes this file keeps that value, also after this file was
+   replaced by the one of a newer release. */
+%macro _rcv_default(_rcv_name, _rcv_value);
+    %if %symexist(&_rcv_name.) EQ 0 %then %do;
+        %global &_rcv_name.;
+        %let &_rcv_name. = &_rcv_value.;
+    %end;
+%mend _rcv_default;
 /* CAS library holding the fact sheets (see Load-Fact-Sheets.sas) */
-%let _rcv_fact_caslib = Public;
+%_rcv_default(_rcv_fact_caslib, Public);
 /* CAS library the RAG pipeline published its run history to */
-%let _rcv_runs_caslib = Public;
-/* Published run-history tables: one per RAG setup, comma-separated.
-   The Load step names them <PIPELINE PREFIX>_RUNS. */
-%let _rcv_runs_tables = RAG_HR_RUNS;
+%_rcv_default(_rcv_runs_caslib, Public);
+/* Published run-history tables: one per RAG setup, comma-separated, with or
+   without blanks around the commas. The Load step names them
+   <PIPELINE PREFIX>_RUNS. Several tables are set with a LET statement in
+   front of this file: a list with commas can not be written into the line
+   below. */
+%_rcv_default(_rcv_runs_tables, RAG_HR_RUNS);
 /* Output table */
-%let _rcv_out_caslib  = Public;
-%let _rcv_out_table   = RAG_RUN_COST;
+%_rcv_default(_rcv_out_caslib, Public);
+%_rcv_default(_rcv_out_table, RAG_RUN_COST);
+%sysmacdelete _rcv_default;
 
-cas _rcvSess;
+/* 1 once the program has written an ERROR line of its own. The last
+   statement reads it */
+%let _rcv_failed = 0;
+/* 1 once the DATA step that stacks the run tables has ended without an
+   error. The output table is replaced only behind such a step */
+%let _rcv_stacked = 0;
+/* 1 once every step that prices the runs has ended without an error: only
+   then is the cost table of this run handed to CAS */
+%let _rcv_priced = 0;
+
+/* No table of WORK that this program writes is left from an earlier run in
+   the same SAS session: a step that ended with an error must not leave the
+   table of an earlier run in its place */
+proc datasets lib=work nolist nowarn;
+    delete _rcv_runs _rcv_runs_n _rcv_cost _rcv_facts _rcv_llm;
+run; quit;
+
+/* A CAS session that is connected is used as it is, and only a session this
+   program started is ended at its end. The option SESSREF keeps the name of
+   a session that was ended, so SESSFOUND is asked whether it is connected. */
+/* Where that session is not connected but _rcvSess is, the option is set to
+   _rcvSess, which is then used and left as it is. A second cas _rcvSess
+   only makes SAS warn that the session exists and leaves the option on the
+   session that was ended, and the end of the program would end a session
+   it did not start. */
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 and %sysfunc(sessfound(_rcvSess)) EQ 1 %then %do;
+    options sessref=_rcvSess;
+%end;
+%if %sysfunc(sessfound(%sysfunc(getoption(sessref)))) NE 1 %then %do;
+    %let _rcv_clean_cas_session = 1;
+    cas _rcvSess;
+%end;
+%else %do;
+    %let _rcv_clean_cas_session = 0;
+%end;
 caslib _all_ assign;
 
 /* ---- stack every published run table into one ----------------------------
@@ -57,28 +106,65 @@ caslib _all_ assign;
    definition: in open code the step never runs at all, it fails with "ERROR:
    The %DO statement is not valid in open code" and leaves `set` with no table
    list. (The open-code %IF..%THEN %DO further down is a different statement
-   and is supported.) `_rcv_i` and `_rcv_t` stay local to the macro, which is
-   why the %symdel at the end tolerates their absence.                      */
+   and is supported.) `_rcv_n`, `_rcv_i` and `_rcv_t` are local to the macro,
+   which is why the %symdel at the end tolerates their absence.
+
+   THE LIST OF THE TABLES is handed to the macro functions through %SUPERQ,
+   which gives it to them as one text. Written as a reference with an
+   ampersand, a list of two tables was two arguments of %SCAN: measured on
+   2026-10-12 with two run tables, the log held "A character operand was
+   found in the %EVAL function", "Argument 2 to macro function %SCAN is not
+   a number" and "The macro _RCV_STACK_RUNS will stop executing". The names
+   are counted first and then taken by their position, so that no name
+   stands in a condition; a comma and a blank both end a name, so blanks
+   around a comma are no part of one.                                       */
 %macro _rcv_stack_runs;
+    %local _rcv_n _rcv_i _rcv_t;
+    %let _rcv_n = 0;
+    %if %length(%superq(_rcv_runs_tables)) GT 0 %then %let _rcv_n = %sysfunc(countw(%superq(_rcv_runs_tables), %str( ,)));
+    %if &_rcv_n. LT 1 %then %do;
+        %put ERROR: Build-RAG-Cost-View: the setting _rcv_runs_tables names no run table, no run was read.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
     data work._rcv_runs;
         length source_table $ 64;
         set
-        %let _rcv_i = 1;
-        %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
-            %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
+        %do _rcv_i = 1 %to &_rcv_n.;
+            %let _rcv_t = %scan(%superq(_rcv_runs_tables), &_rcv_i., %str( ,));
             &_rcv_runs_caslib..&_rcv_t. (in=_in&_rcv_i.)
-            %let _rcv_i = %eval(&_rcv_i. + 1);
         %end;
         ;
-        %let _rcv_i = 1;
-        %do %while (%scan(&_rcv_runs_tables., &_rcv_i., %str(,)) ne );
-            %let _rcv_t = %scan(&_rcv_runs_tables., &_rcv_i., %str(,));
+        %do _rcv_i = 1 %to &_rcv_n.;
+            %let _rcv_t = %scan(%superq(_rcv_runs_tables), &_rcv_i., %str( ,));
             if _in&_rcv_i. then source_table = "&_rcv_t.";
-            %let _rcv_i = %eval(&_rcv_i. + 1);
         %end;
     run;
+    /* the return code of that step: 0, or the 4 of a warning */
+    %if &syserr. LE 4 %then %let _rcv_stacked = 1;
 %mend _rcv_stack_runs;
 %_rcv_stack_runs;
+
+/* ---- price the runs, or leave at the first refusal ------------------------
+   The steps below read the stacked runs. Behind a list without a table, which
+   has written its ERROR line, they do not run at all, and behind a step that
+   did not stack the run tables - SAS wrote why - one ERROR line says that the
+   output table was left as it is. Measured on 2026-10-12: with an empty list
+   the program went on behind its own ERROR line, and SAS wrote "ERROR: File
+   WORK._RCV_RUNS.DATA does not exist.", "ERROR: File WORK._RCV_COST.DATA does
+   not exist." and two WARNINGs; with a table that is not there "ERROR: File
+   WORK._RCV_COST.DATA does not exist." and three WARNINGs before the closing
+   ERROR line. A step below that ends with an error ends the macro the same
+   way, with one ERROR line. Wrapped in a macro because a condition inside a
+   condition is not valid in open code.                                      */
+%macro _rcv_price;
+    %if &_rcv_stacked. NE 1 %then %do;
+        %if &_rcv_failed. NE 1 %then %do;
+            %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: the run tables of the setting _rcv_runs_tables could not be stacked. The lines above say why.;
+            %let _rcv_failed = 1;
+        %end;
+        %return;
+    %end;
 
 /* ---- normalise the run measures to numeric --------------------------------
    The history publish stages its CAS tables as varchar (see the Load step's
@@ -124,6 +210,11 @@ data work._rcv_runs_n;
     enrich_model = "";
 %end;
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* ---- normalise the prices to numeric -------------------------------------
    The fact sheets use "." as the not-applicable placeholder, so a column
@@ -138,6 +229,11 @@ data work._rcv_facts;
     _unit_tokens  = input(cats(input_token_price), ?? best32.);
     _unit_seconds = input(cats(second_cost),       ?? best32.);
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* the same treatment for the LLM sheet, which prices the Enrich stage */
 data work._rcv_llm;
@@ -151,6 +247,11 @@ data work._rcv_llm;
     rename provider = llm_provider cost_type = llm_cost_type
            deployment_type = llm_deployment;
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* ---- price them ---------------------------------------------------------- */
 proc sql;
@@ -216,46 +317,136 @@ proc sql;
       on r.enrich_model = l.model_id
     order by r.started_at desc;
 quit;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
 
 /* enrich_cost_total is scaffolding for the sum above; the reportable columns
    are enrich_cost (missing when unpriced) and total_cost. */
 data work._rcv_cost;
     set work._rcv_cost(drop = enrich_cost_total);
 run;
+    %if &syserr. GT 4 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: a step that prices the runs ended with an error. The lines above say why.;
+        %let _rcv_failed = 1;
+        %return;
+    %end;
+    %let _rcv_priced = 1;
+%mend _rcv_price;
+%_rcv_price;
 
-/* ---- publish ------------------------------------------------------------- */
-proc casUtil incaslib="&_rcv_out_caslib." outcaslib="&_rcv_out_caslib.";
-    droptable casdata="&_rcv_out_table." quiet;
-    load data=work._rcv_cost casout="&_rcv_out_table.";
-    promote casdata="&_rcv_out_table." casout="&_rcv_out_table.";
-    save casdata="&_rcv_out_table." casout="&_rcv_out_table." replace;
-run; quit;
+/* ---- publish, and say what became of it -----------------------------------
+   The output table is dropped and loaded only where this run has a cost
+   table to put in its place: the run tables were stacked and priced without
+   an error, and WORK._RCV_COST is there with its columns. Behind an error on
+   the way - a run table that is not in the CAS library, for one - the table
+   of an earlier run stays as it is, and the macro is not called.
 
-/* ---- say what could not be priced, rather than leaving it to be noticed --- */
-proc sql noprint;
-    select count(distinct embed_model) into :_rcv_unpriced trimmed
-    from work._rcv_cost where embed_cost = . and embed_model is not null;
-    select count(distinct enrich_model) into :_rcv_unpriced_llm trimmed
-    from work._rcv_cost
-    where enrich_cost = . and enrich_model is not null and enrich_model ne '';
-quit;
-%put NOTE: RAG_RUN_COST built in &_rcv_out_caslib..;
-%if %sysevalf(&_rcv_unpriced. > 0) %then %do;
-    %put WARNING: &_rcv_unpriced. embedding model(s) have no price in EMBEDDING_FACT_SHEET;
-    %put WARNING- their runs show a missing cost. Reload the fact sheet or add the model.;
+   The closing NOTE is written when CAS holds the table with the rows of this
+   run, and an ERROR line when it does not. Measured on 2026-10-12: a run that
+   had stopped while it stacked two run tables ended with the NOTE that the
+   table was built, and the table did not exist.
+
+   Wrapped in a macro because a condition inside a condition is not valid in
+   open code.                                                               */
+%macro _rcv_publish;
+    %local _rcv_dsid _rcv_rc _rcv_rows _rcv_vars _rcv_built _rcv_unpriced _rcv_unpriced_llm;
+    %let _rcv_rows = -1;
+    %let _rcv_vars = 0;
+    %let _rcv_built = -1;
+    %if &_rcv_priced. EQ 1 and %sysfunc(exist(work._rcv_cost)) %then %do;
+        %let _rcv_dsid = %sysfunc(open(work._rcv_cost));
+        %if &_rcv_dsid. GT 0 %then %do;
+            %let _rcv_rows = %sysfunc(attrn(&_rcv_dsid., nlobs));
+            %let _rcv_vars = %sysfunc(attrn(&_rcv_dsid., nvars));
+            %let _rcv_rc = %sysfunc(close(&_rcv_dsid.));
+        %end;
+    %end;
+
+    %if &_rcv_vars. GT 0 %then %do;
+        proc casUtil incaslib="&_rcv_out_caslib." outcaslib="&_rcv_out_caslib.";
+            droptable casdata="&_rcv_out_table." quiet;
+            load data=work._rcv_cost casout="&_rcv_out_table.";
+            promote casdata="&_rcv_out_table." casout="&_rcv_out_table.";
+            save casdata="&_rcv_out_table." casout="&_rcv_out_table." replace;
+        run; quit;
+
+        /* the rows CAS holds under the name of the output table now: -1 for a
+           table that CAS did not say is there or did not count */
+        proc cas;
+            built = -1;
+            table.tableExists result = found status = foundAsked / caslib = "&_rcv_out_caslib." name = "&_rcv_out_table.";
+            if foundAsked.severity != 0 then built = -1;
+            else if found.exists != 0 then do;
+                built = 0;
+                table.tableInfo result = listing status = counted / caslib = "&_rcv_out_caslib.";
+                if counted.severity != 0 then built = -1;
+                if exists(listing, "TableInfo") then do;
+                    do entry over listing.TableInfo;
+                        if upcase(entry.Name) == upcase("&_rcv_out_table.") then built = entry.Rows;
+                    end;
+                end;
+            end;
+            /* "L": local to this macro - without a scope CASL writes to the global symbol table */
+            call symputx("_rcv_built", built, "L");
+        quit;
+    %end;
+
+    %if &_rcv_vars. GT 0 and &_rcv_built. EQ &_rcv_rows. %then %do;
+        /* say what could not be priced, rather than leaving it to be noticed */
+        %let _rcv_unpriced = 0;
+        %let _rcv_unpriced_llm = 0;
+        proc sql noprint;
+            select count(distinct embed_model) into :_rcv_unpriced trimmed
+            from work._rcv_cost where embed_cost = . and embed_model is not null;
+            select count(distinct enrich_model) into :_rcv_unpriced_llm trimmed
+            from work._rcv_cost
+            where enrich_cost = . and enrich_model is not null and enrich_model ne '';
+        quit;
+        %put NOTE: &_rcv_out_table. built in &_rcv_out_caslib..;
+        %if %sysevalf(&_rcv_unpriced. > 0) %then %do;
+            %put WARNING: &_rcv_unpriced. embedding model(s) have no price in EMBEDDING_FACT_SHEET;
+            %put WARNING- their runs show a missing cost. Reload the fact sheet or add the model.;
+        %end;
+        %if %sysevalf(&_rcv_unpriced_llm. > 0) %then %do;
+            %put WARNING: &_rcv_unpriced_llm. enrichment LLM(s) have no price in LLM_FACT_SHEET;
+            %put WARNING- their runs show a missing enrichment cost and no total. A prompt;
+            %put WARNING- manifested without the prompt_length/output_length outputs also;
+            %put WARNING- reports no tokens, which looks the same here.;
+        %end;
+    %end;
+    %else %if &_rcv_vars. GT 0 %then %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built in &_rcv_out_caslib.: this run has &_rcv_rows. rows for it and the CAS library holds &_rcv_built., -1 stands for a table that CAS did not say is there or did not count. The lines above say why.;
+        %let _rcv_failed = 1;
+    %end;
+    %else %do;
+        %put ERROR: Build-RAG-Cost-View: &_rcv_out_table. was not built, and a table of that name in &_rcv_out_caslib. was left as it is: this run has no cost table to put in its place. The lines above say why.;
+        %let _rcv_failed = 1;
+    %end;
+%mend _rcv_publish;
+/* Only a run that priced its runs has a cost table to hand to CAS */
+%if &_rcv_priced. EQ 1 %then %do;
+    %_rcv_publish;
 %end;
-%if %sysevalf(&_rcv_unpriced_llm. > 0) %then %do;
-    %put WARNING: &_rcv_unpriced_llm. enrichment LLM(s) have no price in LLM_FACT_SHEET;
-    %put WARNING- their runs show a missing enrichment cost and no total. A prompt;
-    %put WARNING- manifested without the prompt_length/output_length outputs also;
-    %put WARNING- reports no tokens, which looks the same here.;
-%end;
+%sysmacdelete _rcv_stack_runs;
+%sysmacdelete _rcv_price;
+%sysmacdelete _rcv_publish;
 
-proc datasets lib=work nolist;
+proc datasets lib=work nolist nowarn;
     delete _rcv_runs _rcv_runs_n _rcv_cost _rcv_facts _rcv_llm;
 run; quit;
 
-cas _rcvSess terminate;
+%if &_rcv_clean_cas_session. %then %do;
+    cas _rcvSess terminate;
+%end;
+/* A run that wrote an ERROR line of its own ends with the condition code of
+   a failed job, as a SAS error leaves it - the other programs of this folder
+   do the same. Nothing follows but the macro variables that are deleted. */
+%if &_rcv_failed. EQ 1 %then %do;
+    %let SYSCC = 1012;
+%end;
 %symdel _rcv_fact_caslib _rcv_runs_caslib _rcv_runs_tables _rcv_has_enrich
         _rcv_out_caslib _rcv_out_table _rcv_i _rcv_t _rcv_unpriced
-        _rcv_unpriced_llm / nowarn;
+        _rcv_unpriced_llm _rcv_clean_cas_session _rcv_failed _rcv_stacked _rcv_priced / nowarn;

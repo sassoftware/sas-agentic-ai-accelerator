@@ -20,6 +20,9 @@ from typing import Optional
 
 from ..core.generator import effective_score_file
 from ..core.manifest import MANIFEST_FILENAME, ModelManifest
+from ..core.options import SEED_PROJECT_LABELS
+from ..core.printable import printable
+from .answer import answer
 
 KIND_PROJECT = {
     "llm": "LLM Model Project",
@@ -145,7 +148,7 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
     and project ids for the bootstrap-file generation in mdb setup.
 
     Creates the repository and project if absent; the authorization-group rules
-    and builder seed files are produced separately by
+    and the builder seed file are produced separately by
     mdb setup (see authorization_rules_text / builder_seed)."""
     from sasctl.services import model_repository as mr
 
@@ -172,8 +175,8 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
             existing_repo = mr.get_repository(REPOSITORY)
             if existing_repo is None:
                 raise RuntimeError(
-                    f"Could not create the '{REPOSITORY}' repository: HTTP {response.status_code} "
-                    f"{response.text[:200]} - you may need a SAS administrator to grant repository rights."
+                    f"Could not create the '{REPOSITORY}' repository: {answer(response)} - you may need a SAS "
+                    "administrator to grant repository rights."
                 )
         else:
             created.append(f"repository '{REPOSITORY}'")
@@ -236,23 +239,45 @@ def authorization_rules_text(repository_id: Optional[str], repository_folder_id:
     )
 
 
-def builder_seed(kind: str, repository_id: Optional[str], project_id: Optional[str],
+def content_rules_text(content_root: str, folder_id: Optional[str]) -> str:
+    """The sas-viya-cli-content-commands.txt content: the authorization rules
+    for the accelerator's content folder, as commands to review. The transfer
+    package carries no rule, so who may read the folder is decided on the
+    site; these two rules give the LLM Consumers group - the group the
+    commands of `authorization_rules_text` create - Read on the folder and on
+    what is in it. The folder id is filled in when known."""
+    folder = folder_id or "<content-folder-id>"
+    return (
+        "# This script is written for Windows, update the commands accordingly\n"
+        "# Each command comes with a description, please read it and the documentation before running anything\n\n"
+        f"# The content folder {content_root} holds the Prompt Builder, the reports, the custom steps and the RAG runtime.\n"
+        "# The transfer package carries no authorization rule, so who may read the folder is decided here.\n"
+        "# The LLM Consumers group is created by the commands in sas-viya-cli-commands.txt, which mdb setup writes -\n"
+        "# if you do not want to use this group, replace the name in both commands.\n\n"
+        "# Create two rules that let the LLM Consumers read the content folder and what is in it\n"
+        f'sas-viya authorization create-rule -o /folders/folders/{folder} -g LLMConsumers -p Read -d "Enables the LLM Consumers to open the SAS Agentic AI Accelerator content folder" --reason "You are not part of the LLM Consumers group"\n'
+        f'sas-viya authorization create-rule --container-uri /folders/folders/{folder} -g LLMConsumers -p Read -d "Enables the LLM Consumers to read the content of the SAS Agentic AI Accelerator content folder" --reason "You are not part of the LLM Consumers group"\n'
+    )
+
+
+def builder_seed(repository_id: Optional[str], project_ids: dict,
                  scr_endpoint: str, deployment_type: str) -> dict:
-    """The Prompt Builder / RAG Builder quick-start seed JSON
-    (llm-prompt-builder.json for llm, rag-builder.json for embedding)."""
-    if kind == "llm":
-        return {
-            "name": "LLM Prompt Builder", "id": "LPB", "width": 0, "type": "promptBuilder",
-            "modelRepositoryID": repository_id or "", "llmProjectID": project_id or "",
-            "SCREndpoint": scr_endpoint,
-            "API_KEYS": {"Anthropic": "key-value", "OpenAI": "key-value", "Google": "key-value"},
-            "deploymentType": deployment_type,
-        }
-    return {
-        "name": "RAG Builder", "id": "RBO", "width": 0, "type": "ragBuilder",
-        "modelRepositoryID": repository_id or "", "embeddingProjectID": project_id or "",
-        "SCREndpoint": scr_endpoint, "deploymentType": deployment_type,
-    }
+    """The Prompt Builder quick-start seed (llm-prompt-builder.json): the
+    environment-specific options a fresh report needs, under the names the
+    Options pane and the URL parameters use.
+
+    `project_ids` maps a seed kind ("llm", "embedding") to its Model Manager
+    project id. A kind that is not in the mapping gets no key at all, so a
+    project that could not be discovered never overwrites a value a report
+    already holds with an empty one.
+    """
+    seed = {"modelRepositoryID": repository_id or ""}
+    for kind, label in SEED_PROJECT_LABELS.items():
+        if kind in project_ids:
+            seed[label] = project_ids[kind] or ""
+    seed["SCREndpoint"] = scr_endpoint
+    seed["deploymentType"] = deployment_type
+    return seed
 
 
 @dataclass
@@ -464,7 +489,7 @@ def ensure_model_lifecycle(session, model_name: str,
         },
     )
     if response.status_code >= 300:
-        raise RuntimeError(f"Updating model lifecycle failed: HTTP {response.status_code} {response.text[:200]}")
+        raise RuntimeError(f"Updating model lifecycle failed: {answer(response)}")
     return True
 
 
@@ -640,7 +665,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
     )
     if version.status_code >= 300:
         # Non-fatal: some releases version implicitly on content change
-        print(f"note: model version bump returned HTTP {version.status_code} - continuing")
+        print(printable(f"note: model version bump returned HTTP {version.status_code} - continuing"))
     # Re-uploading inputVar.json/outputVar.json makes Model Manager re-import the
     # variables; without clearing the existing ones first they accumulate as
     # duplicates on every --update. Delete them before the content upload
@@ -653,7 +678,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
             files={"files": (name, path.read_bytes())},
         )
         if response.status_code >= 300:
-            raise RuntimeError(f"Updating content {name} failed: HTTP {response.status_code} {response.text[:300]}")
+            raise RuntimeError(f"Updating content {name} failed: {answer(response)}")
     details = mr.get_model_details(model_id)
     body = dict(details.items())
     body.update(attributes)
@@ -675,7 +700,7 @@ def register_model(session, manifest: ModelManifest, folder: Path, fact_row: dic
         },
     )
     if response.status_code >= 300:
-        raise RuntimeError(f"Updating model attributes failed: HTTP {response.status_code} {response.text[:300]}")
+        raise RuntimeError(f"Updating model attributes failed: {answer(response)}")
     return RegisterResult("updated", manifest.model_id, _link(model_id))
 
 
@@ -731,7 +756,7 @@ def publish_model(session, model_name: str, destination: str,
         },
     )
     if response.status_code != 201:
-        raise RuntimeError(f"Publish request failed: HTTP {response.status_code} {response.text[:300]}")
+        raise RuntimeError(f"Publish request failed: {answer(response)}")
     if not wait:
         return "requested"
     deadline = time.time() + timeout_s

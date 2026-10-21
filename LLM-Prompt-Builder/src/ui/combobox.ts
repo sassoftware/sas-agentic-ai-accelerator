@@ -85,6 +85,10 @@ export function attachCombobox(select: HTMLSelectElement): void {
   }
 
   function close(): void {
+    // Emptied, not only hidden: it is built again from the list whenever it
+    // opens, and the entries it was last built with may no longer be in the
+    // list (the caslibs of a CAS server the page has since let go of).
+    menu.replaceChildren();
     menu.classList.remove('show');
     input.setAttribute('aria-expanded', 'false');
     typedFilter = null;

@@ -19,6 +19,9 @@ that must be regenerated when either fact sheet changes:
     python -m rag_core.pricing --from ../../Embedding-Definitions/embedding_fact_sheet.csv
     python -m rag_core.pricing --llm-from ../../LLM-Definitions/llm_fact_sheet.csv
 
+tests/test_pricing.py fails while either map differs from its sheet - a
+definition added with mdb, or a price changed, is the change that says so.
+
 A model missing here yields no cost line at all rather than a zero, on the same
 principle as the view: an unpriced model must read as unknown, never as free.
 
@@ -55,7 +58,12 @@ PRICES = {
 #: Tokens  -> USD per input / output token   Seconds -> USD per second, in unit_in
 #: Generated from llm_fact_sheet.csv; see the module docstring.
 LLM_PRICES = {
+    "azure_openai_env": ("Tokens", 2e-07, 1.2e-06),
+    "claude_haiku_4_5_bedrock": ("Tokens", 1e-06, 5e-06),
+    "claude_haiku_5_5": ("Tokens", 1e-07, 5e-07),
+    "claude_opus_5_5": ("Tokens", 4e-06, 2e-05),
     "claude_sonnet_4_5": ("Tokens", 3e-06, 1.5e-05),
+    "claude_sonnet_5_5": ("Tokens", 2e-06, 1e-05),
     "free_models_router": ("Tokens", 0.0, 0.0),
     "gemini_flash_25": ("Tokens", 3e-07, 2.5e-06),
     "google_gemma_4_31b_free": ("Tokens", 0.0, 0.0),
@@ -66,6 +74,8 @@ LLM_PRICES = {
     "gpt_4o_mini_az_2024_07_18": ("Tokens", 1.5e-07, 6e-07),
     "gpt_56_sol": ("Tokens", 5e-06, 3e-05),
     "gpt_5_mini": ("Tokens", 2.5e-07, 2e-06),
+    "gpt_61_sol": ("Tokens", 2e-06, 1e-05),
+    "gpt_6_luna": ("Tokens", 1e-07, 5e-07),
     "ling_3_0_flash_free": ("Tokens", 0.0, 0.0),
     "llama_32_1b": ("Seconds", 3.9178e-05, 0.0),
     "llama_32_3b": ("Seconds", 6.9178e-05, 0.0),
@@ -164,12 +174,16 @@ def log_enrich_cost(model: str, usage: dict, log=print) -> None:
         f"({basis}). Authoritative totals: RAG_RUN_COST.")
 
 
-def _regenerate(csv_path: str) -> str:
-    """Re-emit the PRICES literal from the fact sheet (developer utility)."""
+def prices(csv_path: str) -> dict:
+    """model_id -> (cost_type, unit_price) for the priced rows of the embedding sheet.
+
+    A row whose cost_type is neither Tokens nor Seconds, or whose price is
+    empty, is left out: an unpriced model reads as unknown, never as free.
+    """
     import csv
 
-    lines = ["PRICES = {"]
-    with open(csv_path, newline="", encoding="utf-8") as fh:
+    entries = {}
+    with open(csv_path, newline="", encoding="utf-8-sig") as fh:
         for row in csv.DictReader(fh):
             cost_type = (row.get("cost_type") or "").strip()
             raw = (row.get("input_token_price") if cost_type == "Tokens"
@@ -177,13 +191,12 @@ def _regenerate(csv_path: str) -> str:
             raw = raw.strip()
             if cost_type not in ("Tokens", "Seconds") or raw in ("", "."):
                 continue
-            lines.append(f'    "{row["model_id"]}": ("{cost_type}", {float(raw)!r}),')
-    lines.append("}")
-    return "\n".join(lines)
+            entries[row["model_id"]] = (cost_type, float(raw))
+    return entries
 
 
-def _regenerate_llm(csv_path: str) -> str:
-    """Re-emit LLM_PRICES from the LLM fact sheet (developer utility).
+def llm_prices(csv_path: str) -> dict:
+    """model_id -> (cost_type, unit_in, unit_out) for the priced rows of the LLM sheet.
 
     A token-priced model needs BOTH prices to be usable, so one missing
     column drops the row - an LLM priced on its input alone would report a
@@ -198,7 +211,7 @@ def _regenerate_llm(csv_path: str) -> str:
         except ValueError:
             return None
 
-    lines = ["LLM_PRICES = {"]
+    entries = {}
     with open(csv_path, newline="", encoding="utf-8-sig") as fh:
         for row in sorted(csv.DictReader(fh), key=lambda r: r.get("model_id") or ""):
             cost_type = (row.get("cost_type") or "").strip()
@@ -213,8 +226,25 @@ def _regenerate_llm(csv_path: str) -> str:
                     continue
             else:
                 continue
-            lines.append(f'    "{row["model_id"]}": ("{cost_type}", '
-                         f"{unit_in!r}, {unit_out!r}),")
+            entries[row["model_id"]] = (cost_type, unit_in, unit_out)
+    return entries
+
+
+def _regenerate(csv_path: str) -> str:
+    """Re-emit the PRICES literal from the fact sheet (developer utility)."""
+    lines = ["PRICES = {"]
+    for model_id, (cost_type, unit) in prices(csv_path).items():
+        lines.append(f'    "{model_id}": ("{cost_type}", {unit!r}),')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _regenerate_llm(csv_path: str) -> str:
+    """Re-emit LLM_PRICES from the LLM fact sheet (developer utility)."""
+    lines = ["LLM_PRICES = {"]
+    for model_id, (cost_type, unit_in, unit_out) in llm_prices(csv_path).items():
+        lines.append(f'    "{model_id}": ("{cost_type}", '
+                     f"{unit_in!r}, {unit_out!r}),")
     lines.append("}")
     return "\n".join(lines)
 

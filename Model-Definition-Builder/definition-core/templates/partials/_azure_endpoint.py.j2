@@ -37,10 +37,8 @@ def _azure_endpoint(deploymentName, route):
         return endpoint
     host = _from_env(RESOURCE_ENV, defaultResource)
     if not host:
-        raise RuntimeError(
-            f"No Azure resource: set the {RESOURCE_ENV} environment variable on this "
-            "container (any Azure host flavor, or the bare resource name)."
-        )
+        # One line, written out: SCR shows the caller the source line of the raise.
+        raise RuntimeError("No Azure resource: set the AZURE_OPENAI_RESOURCE environment variable on this container (any Azure host flavor, or the bare resource name).")
     # A short resource name expands to the classic Azure OpenAI host
     if '.' not in host:
         host = f"{host}.openai.azure.com"

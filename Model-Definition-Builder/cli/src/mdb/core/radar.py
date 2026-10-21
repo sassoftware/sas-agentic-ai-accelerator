@@ -59,7 +59,12 @@ def check_model(manifest, adapter, session, api_key: Optional[str], probe: bool)
     return RadarResult(**base, status="missing", detail="absent from the live catalog")
 
 
-def env_key_for(adapter) -> Optional[str]:
+def env_key_for(adapter, manifest=None) -> Optional[str]:
+    """The key to look a model up with: an `auth.mode: env` definition's own
+    variable first, then the adapter's."""
+    auth = manifest.provider.auth if manifest is not None else None
+    if auth is not None and auth.mode == "env" and auth.env_var and os.environ.get(auth.env_var):
+        return os.environ[auth.env_var]
     if not getattr(adapter, "env_key_var", None):
         return None
     return os.environ.get(adapter.env_key_var)

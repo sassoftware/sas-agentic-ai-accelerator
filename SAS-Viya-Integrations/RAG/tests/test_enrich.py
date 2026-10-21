@@ -630,7 +630,9 @@ def test_a_locally_served_llm_is_priced_on_seconds():
 
 
 def test_an_unpriced_llm_reads_as_unknown():
-    assert estimate_enrich_cost("claude_haiku_4_5_bedrock", {"calls": 1})[0] is None
+    # a model that is not in the LLM fact sheet - every row of the sheet that
+    # has its prices is in the copy (tests/test_pricing.py)
+    assert estimate_enrich_cost("no_such_llm", {"calls": 1})[0] is None
     assert estimate_enrich_cost("", {"calls": 1})[0] is None
 
 

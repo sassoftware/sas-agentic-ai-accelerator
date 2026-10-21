@@ -32,6 +32,16 @@
         installed. This is the most common failure mode - the job checks both
         the presence AND the version of dspy at startup and fails fast with a
         clear message (surfaced in the Prompt Builder's Optimize panel).
+      - The compute context must run its sessions as the user who starts the
+        job. A context that runs them under a service account (the stock
+        "SAS Job Execution compute context" does) resolves the provider keys
+        as that account and writes to the prompt in SAS Model Manager as that
+        account, which may not change it - the run then fails at its end,
+        after every model call. The job compares the user its session runs
+        as with the user who started it, as Start-Here.sas and
+        Load-Accelerator-Tables.sas do, and ends before any model call when
+        the two differ. It also adds a file to the prompt and removes it
+        again before any model call, and ends when either is refused.
       - Provider API keys (for hosted models) are resolved from the SAS Viya
         credential domain named by keyDomain (default agentic-ai-keys) under
         the identity this compute session runs as; only the domain NAME is
@@ -125,6 +135,29 @@
    targetModelName, scrEndpoint) are validated INSIDE the Python program, so a
    missing one fails through the same path as every other error - with a clear
    milestone and a failed tracker entry - instead of a SAS-side ABORT. */
+
+/* Whose session this is - the method of Start-Here.sas and
+   Load-Accelerator-Tables.sas. SAS Job Execution names the user a session
+   was started for (SYS_COMPUTE_SESSION_OWNER); a session without that name -
+   the program run in SAS Studio - is not asked. The two users are compared
+   as the persons they name - a domain behind @ or in front of a backslash is
+   dropped, the case does not count. Where they differ, _opt_runsAs holds the
+   user the session runs as and _opt_startedBy the user who started the job,
+   and the Python program ends before any model call with a message that
+   names both. */
+%let _opt_runsAs = ;
+%let _opt_startedBy = ;
+data _null_;
+    length _opt_owner _opt_user $ 256;
+    if symexist('SYS_COMPUTE_SESSION_OWNER') then do;
+        _opt_owner = lowcase(scan(scan(strip(symget('SYS_COMPUTE_SESSION_OWNER')), -1, '\'), 1, '@'));
+        _opt_user = lowcase(scan(scan(strip(symget('SYSUSERID')), -1, '\'), 1, '@'));
+        if lengthn(_opt_owner) > 0 and strip(_opt_owner) ne strip(_opt_user) then do;
+            call symputx('_opt_runsAs', strip(symget('SYSUSERID')));
+            call symputx('_opt_startedBy', strip(symget('SYS_COMPUTE_SESSION_OWNER')));
+        end;
+    end;
+run;
 
 /* Viya host for the Model Manager REST calls made from Python */
 %let _opt_viyaHost = %sysfunc(getoption(SERVICESBASEURL));
@@ -283,12 +316,98 @@ def import_dependencies():
 
 
 # ---- SAS Viya REST helpers -------------------------------------------------
+def http_failure(response):
+    """An answer of HTTP 400 or more as a sentence: the status, its name and
+    the message of the answer - "HTTP 403 (Forbidden)", "HTTP 404 (Not
+    Found): No model with ID x was found." SAS Viya answers with a JSON error
+    (version 2: message, remediation, httpStatusCode), which was written into
+    the message as it came, in a log that turns its quotation marks into
+    backticks. A model container (SCR) answers a call whose score code raised
+    with HTTP 422 and a JSON error of its own (errorCode, errorMessage,
+    httpStatus, id, remediation, version - measured on SAS Viya 2026.09):
+    its errorMessage is "422 Unprocessable Entity:" and the source line of
+    the raise, so the text of a raise such as RuntimeError("No API key: ...")
+    is its message, and a line of only the marks under a traceback is left
+    out. A message that only repeats the name of the status is left out; an
+    answer that is no JSON error, a JSON list or a JSON string gives its
+    text, without markup. The message and the remediation are each cut at
+    300 characters, and anything that looks like a key or a token is
+    masked: the sentence is written into the log and the tracker. Nothing
+    of the request (its headers, its body) is in it. The sentence ends with
+    a full stop."""
+    import http.client
+    status = int(getattr(response, "status_code", 0) or 0)
+    standard = http.client.responses.get(status, "")
+    reason = str(getattr(response, "reason", "") or standard or "").strip()
+    if reason.isupper():
+        # SCR answers "UNPROCESSABLE ENTITY" (Python 3.13 names 422
+        # "Unprocessable Content")
+        reason = standard if reason.casefold() == standard.casefold() else reason.title()
+    message, remediation = "", ""
+    text = str(getattr(response, "text", "") or "")
+    try:
+        body = json.loads(text) if text.strip() else None
+    except Exception:
+        body = None
+
+    def flat(value):
+        return re.sub(r"\s+", " ", str(value)).strip()
+
+    if isinstance(body, dict):
+        for key in ("message", "errorMessage", "error", "detail", "error_description"):
+            value = body.get(key)
+            if isinstance(value, dict):  # {"error": {"message": ...}} of a provider
+                value = value.get("message") or value.get("errorMessage")
+            if isinstance(value, (list, tuple)) and value:
+                value = json.dumps(value, separators=(",", ":"), default=str)
+            if isinstance(value, str) and value.strip():
+                message = flat(value)
+                break
+        if isinstance(body.get("remediation"), str):
+            remediation = flat(body["remediation"])
+    elif isinstance(body, str):
+        message = flat(body)
+    elif isinstance(body, list) and body:
+        message = json.dumps(body, separators=(",", ":"), default=str)
+    elif body is None and text.strip():
+        message = flat(re.sub(r"<[^>]*>", " ", text))
+    if message and status:
+        # "422 Unprocessable Entity: <line>" - the status again, before the line
+        message = re.sub(rf"^{status}\s+[A-Za-z][A-Za-z '-]{{0,40}}:\s*", "", message).strip()
+    raised = re.fullmatch(r"raise\s+[\w.]+\(\s*(['\"])(.*)\1\s*\)", message)
+    if raised:
+        message = raised.group(2).strip()
+    if not re.search(r"\w", message):
+        message = ""  # "~~~~~~~^^^^^^^^^^^", the marks under a traceback line
+
+    def masked(value):
+        value = re.sub(r"(?i)\b(bearer|basic)\s+(?=[\w.~+/=-]*\d)[\w.~+/=-]{8,}", r"\1 ***", value)
+        value = re.sub(r"(?i)\b(api[_-]?key|x-api-key|authorization|access[_-]?token|token|secret|password)(\s*[:=]\s*['\"]?)[\w.~+/=-]{8,}", r"\1\2***", value)
+        return re.sub(r"\b(sk|pk|rk|xox[abp]|AIza|ghp|gho)[-_][\w-]{12,}", r"\1-***", value)
+
+    def cut(value, limit=300):
+        value = masked(value)
+        return value if len(value) <= limit else value[:limit].rstrip() + "..."
+
+    message, remediation = cut(message), cut(remediation)
+
+    def unstopped(value):  # a closing full stop goes, an ellipsis stays
+        return value if value.endswith("...") else value.rstrip(".")
+
+    said = f"HTTP {status}" + (f" ({reason})" if reason else "")
+    if message and message.casefold() != reason.casefold():
+        said += ": " + unstopped(message)
+    if remediation and remediation.casefold() != message.casefold():
+        said += (" " if said.endswith("...") else ". ") + unstopped(remediation)
+    return said if said.endswith("...") else said + "."
+
+
 def viya(method, path, expect_json=True, **kwargs):
     headers = kwargs.pop("headers", {})
     headers.setdefault("Authorization", "Bearer " + TOKEN)
     response = requests.request(method, BASE + path, headers=headers, verify=VERIFY, timeout=120, **kwargs)
     if response.status_code >= 400:
-        fail(f"Viya request {method} {path} failed with HTTP {response.status_code}: {response.text[:300]}")
+        fail(f"The SAS Viya request {method} {path} was answered with {http_failure(response)}")
     return response.json() if expect_json and response.text else response
 
 
@@ -313,7 +432,7 @@ def add_model_content(model_id, name, payload):
         verify=VERIFY, timeout=120,
     )
     if response.status_code >= 400:
-        fail(f"Uploading {name} to model {model_id} failed with HTTP {response.status_code}: {response.text[:300]}")
+        fail(f"Uploading {name} to the model {model_id} was answered with {http_failure(response)}")
 
 
 def replace_model_content(model_id, name, payload):
@@ -321,6 +440,104 @@ def replace_model_content(model_id, name, payload):
         if item.get("name") == name and item.get("id"):
             viya("DELETE", f"/modelRepository/models/{model_id}/contents/{item['id']}", expect_json=False)
     add_model_content(model_id, name, payload)
+
+
+# ---- Before any model call: the session and the prompt ---------------------
+def viya_identity():
+    """The SAS Viya identity the token of this session stands for, or "" when
+    it cannot be read. On SAS Viya 2026.09 a session of the stock "SAS Job
+    Execution compute context" runs as sas and its token stands for
+    sas.compute (measured on 2026-10-20)."""
+    try:
+        import requests as requests_module
+        who = requests_module.get(
+            BASE + "/identities/users/@currentUser",
+            headers={"Authorization": "Bearer " + TOKEN},
+            verify=VERIFY, timeout=30,
+        )
+        if who.status_code == 200:
+            return str(who.json().get("id") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def check_session_user():
+    """End the run when this session does not run as the user who started
+    the job. The SAS code above the Python program compared the two (the
+    method of Start-Here.sas and Load-Accelerator-Tables.sas) and named them
+    in _opt_runsAs and _opt_startedBy. Measured on SAS Viya 2026.09 with the
+    stock "SAS Job Execution compute context", which runs as a service
+    account: a target with a provider key failed for want of the key, and a
+    target without one ran the whole optimization and was refused the write
+    to the prompt at its end, with HTTP 403. Both are ended here, before the
+    first model call. The message is kept below the 500 characters fail()
+    hands on, so that its remedy is not cut off."""
+    runs_as = str(SAS.symget("_opt_runsAs") or "").strip()
+    if not runs_as:
+        return
+    started_by = str(SAS.symget("_opt_startedBy") or "").strip() or "the user who started it"
+    context = str(SAS.symget("_contextName") or "").strip()
+    identity = viya_identity()
+    seen_as = f" (to SAS Viya: {identity})" if identity and identity.casefold() != runs_as.casefold() else ""
+    which = f"the compute context {context}" if context else "its compute context"
+    fail(
+        f"The optimization job runs as {runs_as}{seen_as}, not as {started_by}, who started it: "
+        f"{which} does not run as the user who starts the job. Point the option Optimization: compute "
+        f"context of the Prompt Builder at one that does, such as SAS Studio compute context. Nothing was "
+        f"called - that account resolves the provider keys and writes the result to the prompt, which it may not."
+    )
+
+
+WRITE_CHECK_NAME = "Prompt-Optimization-Write-Check.json"
+
+
+def check_prompt_writable():
+    """End the run when this session may not write to the prompt: the result
+    of a run is written there at its end, after every model call. The links
+    of the model do not say it - on SAS Viya 2026.09 the token of a service
+    account that was refused the write got the same update and addContent
+    links as the owner of the model (measured on 2026-10-20). So the check
+    makes the two requests a write-back makes: it adds a small file to the
+    prompt and removes it again. A file of that name an earlier run left is
+    removed first."""
+    model_id = P["promptModelId"]
+    auth = {"Authorization": "Bearer " + TOKEN}
+
+    def remove_check_files():
+        for item in get_model_contents(model_id):
+            if item.get("name") != WRITE_CHECK_NAME or not item.get("id"):
+                continue
+            response = requests.request(
+                "DELETE", BASE + f"/modelRepository/models/{model_id}/contents/{item['id']}",
+                headers=auth, verify=VERIFY, timeout=120,
+            )
+            if response.status_code >= 400:
+                fail(
+                    f"The optimization job may not remove files from the prompt {P['promptName']} in SAS Model "
+                    f"Manager: removing {WRITE_CHECK_NAME} was answered with {http_failure(response)} A run "
+                    f"replaces its files there, so nothing was called. Ask for the permission to change the "
+                    f"prompt-test - the file stays on it until it is removed."
+                )
+
+    remove_check_files()
+    response = requests.post(
+        BASE + f"/modelRepository/models/{model_id}/contents",
+        headers=auth,
+        files={"files": (WRITE_CHECK_NAME, b'{"writtenBy": "Optimize-Prompt-DSPy"}', "application/json")},
+        verify=VERIFY, timeout=120,
+    )
+    if response.status_code >= 400:
+        # A session that does not run as the user has ended before this
+        # (check_session_user): the identity named here is the user's.
+        identity = viya_identity()
+        as_whom = f" as {identity}" if identity else ""
+        fail(
+            f"The optimization job may not write to the prompt {P['promptName']} in SAS Model Manager{as_whom}: "
+            f"adding a file to it was answered with {http_failure(response)} A run writes its result there, so "
+            f"nothing was called. Ask for the permission to change the prompt-test, or optimize one you may change."
+        )
+    remove_check_files()
 
 
 # ---- Provider keys (resolved from the credential domain, never logged) -----
@@ -359,21 +576,12 @@ class KeyResolver:
                         except Exception:
                             pass
                 else:
-                    # Name WHO the credentials service saw: compute contexts
-                    # that run their servers under a service account resolve
-                    # the domain as that account, not as the launching user
-                    # (verified live) - the error must say so or the failure
-                    # is undebuggable from the outside.
-                    try:
-                        who = requests.get(
-                            BASE + "/identities/users/@currentUser",
-                            headers={"Authorization": "Bearer " + TOKEN},
-                            verify=VERIFY, timeout=30,
-                        )
-                        if who.status_code == 200:
-                            self.identity = str(who.json().get("id") or "")
-                    except Exception:
-                        pass
+                    # Name WHO the credentials service saw. A session that
+                    # does not run as the launching user ends before this
+                    # (check_session_user), so this is the identity of the
+                    # user - unless the program runs in SAS Studio, where no
+                    # launching user is known.
+                    self.identity = viya_identity()
             except Exception:
                 pass
         return self.domain_map
@@ -384,9 +592,7 @@ class KeyResolver:
     def identity_note(self):
         if not self.identity:
             return ""
-        return (f" The job resolved the domain as identity {self.identity} - "
-                "if that is a service account of the compute context, grant "
-                "the credential to that identity or one of its groups.")
+        return f" The job resolved the domain as identity {self.identity}."
 
 
 # ---- SCR access (mirrors the browser's callSCRLLM) -------------------------
@@ -429,7 +635,7 @@ def call_scr(model_name, options, system_prompt, user_prompt, role="target"):
     ]}
     response = requests.post(scr_url(model_name), json=body, verify=VERIFY, timeout=600)
     if response.status_code != 200:
-        raise RuntimeError(f"SCR call to {model_name} failed with HTTP {response.status_code}: {response.text[:300]}")
+        raise RuntimeError(f"The call of the model container {model_name} was answered with {http_failure(response)}")
     payload = response.json()
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     bucket = USAGE["judge" if role == "judge" else "target"]
@@ -895,7 +1101,12 @@ def main():
         missing_params = [name for name in required if not P[name]]
         if missing_params:
             fail("Required job parameters missing: " + ", ".join(missing_params))
+        # Before any model call: the session runs as the user who started
+        # the job, and may write to the prompt the result goes to.
+        check_session_user()
         import_dependencies()
+        progress("Checking that the result can be written to the prompt")
+        check_prompt_writable()
         SCRLM = build_scrlm_class()
         key_map = KeyResolver()
         progress("Loading the experiment tracker dataset")
@@ -1178,10 +1389,20 @@ run; quit;
    is deleted (all verified live). The OUTCOME therefore lives in the
    Prompt-Optimization-Tracker entry (status succeeded/failed + error), which
    the Prompt Builder reads when the job completes; the log keeps a plain
-   ERROR line for administrators. */
+   ERROR line for administrators.
+   The message is read with symget and the line is put together in a
+   variable. Written into the program as a quoted string, a message that
+   took the line beyond 262 bytes made SAS write the NOTE that suspects
+   unbalanced quotation marks above the ERROR line (seen in the RAG steps,
+   which wrote their ERROR line the same way). 2000 bytes hold the 500
+   characters the Python program hands over at most. */
 data _null_;
-    if "&_opt_rc." ne "0" then
-        putLog "ERROR: Prompt optimization failed: %superq(_opt_error)";
+    length text $ 2000 line $ 2100;
+    if "&_opt_rc." ne "0" then do;
+        text = symget("_opt_error");
+        line = "ERROR: Prompt optimization failed: " || text;
+        putLog line;
+    end;
     else
         putLog "NOTE: Prompt optimization succeeded.";
 run;
