@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [2.3.0] - unreleased
+## [2.3.0] - 2026-10-21
 
 The RAG Builder becomes part of the Prompt Builder, behind a switch like decision templates and prompt optimization. The content folder ships as one transfer package with a *Start Here* check; the logging chain reads every kind of model call. New: GPT-6, Claude 5.5, Mercury Decide, provider keys held by the container, a Contour ingress.
 
