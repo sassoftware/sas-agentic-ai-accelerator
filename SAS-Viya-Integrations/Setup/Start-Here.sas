@@ -43,8 +43,8 @@
  *     under that name and where it lies beside the object. Two objects of
  *     the name and kind of an entry stand in its way as well - nothing says
  *     which one is meant -, and what lies below a name two folders have is
- *     not checked. A report that
- *     is there is present whatever lies beside it: mdb writes no report
+ *     not checked. A report or a decision that
+ *     is there is present whatever lies beside it: mdb writes neither
  *     and fails none over a reference. A reference to an object of
  *     another kind is no part of the check
  *   - the CAS tables the two reports bind: there, rows, loaded when
@@ -239,6 +239,10 @@ STEP_BESIDE = 'Delete the file of that name: it is a step file that was uploaded
 # and by mdb content-deploy. A report is not: mdb content-deploy writes none, it comes with the package
 ENTRY_MISSING = 'Import the package of the accelerator again, or run mdb content-deploy.'
 REPORT_MISSING = 'Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, and mdb content-deploy writes none.'
+# A decision comes with the package as well, with the custom node type it carries (the Call LLM node under its one id)
+DECISION_MISSING = ('Import the package of the accelerator again, or run mdb builders-import: a decision comes with the package, with '
+                    'the Call LLM node, and mdb content-deploy writes none. Where builders-import names mdb decision-node-migrate, '
+                    'run that first.')
 # A member of a folder that is a reference names an object that lives in another folder. It is told by the type
 # of the member, is never followed, and is no object of the folder - whatever kind of object it names. Measured on
 # 2026-10-13 for a file: mdb content-deploy and the import in place reported the entry whose name a reference had as
@@ -249,12 +253,14 @@ REFERENCE_TODO = 'Remove the reference from the folder. Then: '
 # What the uri of an object of each kind of entry starts with: the uri of a reference is the one of the object it
 # names. mdb tells what a folder holds under the name of an entry by the name, to the letter, and by this table
 # (viya/content.py, _named). It fails an entry for a reference that has its name and names an object of its kind,
-# alone or beside the object, and for two objects of its name and kind. It writes no report and fails none over
+# alone or beside the object, and for two objects of its name and kind. It writes no report and no decision and fails none over
 # what a folder holds. The page judges what a folder holds under the name of an entry the same way. Below a folder
 # mdb fails, the two differ: mdb looks at nothing there, and the page reads the one folder of the name - its line
 # says that nothing is written below it - and reads nothing where two folders have the name
 KIND_URI = {'file': '/files/files/', 'step': '/dataFlows/steps/', 'jobDefinition': '/jobDefinitions/definitions/',
-            'report': '/reports/reports/', 'folder': '/folders/folders/'}
+            'report': '/reports/reports/', 'folder': '/folders/folders/', 'decision': '/decisions/flows/'}
+# The kinds that come with the package alone: mdb writes none of them and fails none over what its folder holds
+PACKAGE_ONLY = ('report', 'decision')
 REFERENCE_BESIDE = 'present, and a reference of that name is in its folder, which names an object that lives elsewhere'
 REFERENCE_BESIDE_TODO = 'Remove the reference from the folder: while it is there, the import and mdb content-deploy write nothing for this entry.'
 # Two objects of the name and kind of an entry in one folder: the entry is there, and nothing is written for it
@@ -579,7 +585,7 @@ def entry_line(path, kind, listings):
     folder, _, name = path.rpartition('/')
     status, members = listings.get(folder, (404, {}))
     what = f'{path} ({kind})' if kind else path
-    deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else ENTRY_MISSING
+    deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else DECISION_MISSING if kind == 'decision' else ENTRY_MISSING
     if status == 404:
         return line(section, what, MISSING, 'its folder is not in the content root', deploy)
     if status != 200:
@@ -587,8 +593,8 @@ def entry_line(path, kind, listings):
         return line(section, what, state, found, ask_again(status))
     # a reference is no object of the folder: only what is left is looked at for the entry
     there, references, others = named_as(members, name, kind)
-    if there and kind == 'report':
-        # mdb writes no report and fails none over what its folder holds: a report that is there is present
+    if there and kind in PACKAGE_ONLY:
+        # mdb writes no report and no decision and fails none over what its folder holds: one that is there is present
         return line(section, what, OK, 'present')
     if references and not there:
         return line(section, what, MISSING, REFERENCE_FOUND, REFERENCE_TODO + deploy)

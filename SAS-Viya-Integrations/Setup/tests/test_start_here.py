@@ -528,13 +528,18 @@ def test_a_reference_to_another_kind_under_the_name_of_the_release_file_is_no_re
 
 def test_the_page_and_mdb_have_one_rule_for_a_reference():
     """mdb fails an entry for a reference of its name that names an object of its kind, and tells the kind by what
-    the uri starts with (viya/content.py: _MEMBER_URI, _named, _references_named). The page holds the same table."""
+    the uri starts with (viya/content.py: _KIND_URI - the members it writes, _MEMBER_URI, and the kinds that come with
+    the package alone, _TRANSFER_URI: the decision -, _named, _references_named). The page holds the same table."""
     block = harness.python_block()
     mdb = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "viya" / "content.py").read_text(encoding="utf-8")
-    table = re.search(r"^_MEMBER_URI = (\{.*?\})$", mdb, flags=re.MULTILINE | re.DOTALL)
+    members = re.search(r"^_MEMBER_URI = (\{.*?\})$", mdb, flags=re.MULTILINE | re.DOTALL)
+    transfer_only = re.search(r"^_TRANSFER_URI = (\{.*?\})$", mdb, flags=re.MULTILINE | re.DOTALL)
+    assert "_KIND_URI = {**_MEMBER_URI, **_TRANSFER_URI}" in mdb
+    table = {**ast.literal_eval(members.group(1)), **ast.literal_eval(transfer_only.group(1))}
     of_the_page = re.search(r"^KIND_URI = (\{.*?\})$", block, flags=re.MULTILINE | re.DOTALL)
 
-    assert ast.literal_eval(of_the_page.group(1)) == ast.literal_eval(table.group(1)) == harness.URI_OF
+    assert ast.literal_eval(of_the_page.group(1)) == table == harness.URI_OF
+    assert table["decision"] == "/decisions/flows/"
     assert 'return [m for m in members if m.get("name") == name and str(m.get("uri") or "").startswith(prefix)]' in mdb
     assert "return [m for m in _named(members, name, kind) if is_reference(m)]" in mdb
     assert "return [m for m in _named(members, name, kind) if not is_reference(m)]" in mdb
@@ -577,8 +582,8 @@ def test_the_program_tells_a_reference_by_the_type_of_the_member():
             "the import write nothing for it -, and the line of the entry says so, where the reference is all the folder holds under "
             "that name and where it lies beside the object. Two objects of the name and kind of an entry stand in its way as well - "
             "nothing says which one is meant -, and what lies below a name two folders have is not checked. "
-            "A report that is there is present whatever lies beside it: mdb "
-            "writes no report and fails none over a reference. A reference to an object of another kind is no part of the check"
+            "A report or a decision that is there is present whatever lies beside it: mdb "
+            "writes neither and fails none over a reference. A reference to an object of another kind is no part of the check"
             ) in " ".join(header.split())
 
 

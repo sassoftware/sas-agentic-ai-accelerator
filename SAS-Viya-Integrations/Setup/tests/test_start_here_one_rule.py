@@ -55,9 +55,11 @@ def several(count):
 
 # One entry of each kind of the made-up content folder
 ENTRY = {"file": "RAG/rag_core/adapters/base.py", "step": "Logging and Monitoring/LLM - Log Parser.step",
-         "jobDefinition": "Data/Load-Accelerator-Tables", "folder": "RAG/rag_core", "report": "Prompt Builder/Prompt Builder"}
-# The kinds mdb writes. A report it does not write: it comes with the package
+         "jobDefinition": "Data/Load-Accelerator-Tables", "folder": "RAG/rag_core", "report": "Prompt Builder/Prompt Builder",
+         "decision": "Decisions/Call LLM Node"}
+# The kinds mdb writes. A report and a decision it does not write: they come with the package
 WRITTEN = ("file", "step", "jobDefinition", "folder")
+PACKAGE_ONLY = ("report", "decision")
 
 # (objects of the name and kind, references of the name to an object of the kind):
 #     (what mdb says of the entry, the state of its line on the page, what the line found, counted as present)
@@ -73,7 +75,7 @@ RULE = {
     # two objects are named before a reference beside them: below two folders the page reads nothing
     (2, 1): ("FAILED", MISSING, several(2), True),
 }
-# The same for a report: mdb says `not deployed` with one of two notes and fails none, whatever has its name
+# The same for a report and a decision: mdb says `not deployed` with one of two notes and fails none, whatever has its name
 ON_THE_SITE, NOT_ON_THE_SITE = "on the site", "not on the site - it comes with the package"
 RULE_OF_A_REPORT = {
     (0, 0): (NOT_ON_THE_SITE, MISSING, "not in its folder", False),
@@ -87,13 +89,13 @@ RULE_OF_A_REPORT = {
 }
 # What else can have the name of an entry and changes no outcome of mdb and no state of the page: a reference to an
 # object of another kind, an object of another kind, and - for a step - a step under the name without its ending
-OTHER_KIND = {"file": "report", "step": "file", "jobDefinition": "file", "folder": "file", "report": "file"}
+OTHER_KIND = {"file": "report", "step": "file", "jobDefinition": "file", "folder": "file", "report": "file", "decision": "file"}
 BESIDE = ("nothing else", "a reference to another kind", "an object of another kind", "the other spelling")
 
 
 def cases():
-    for kind in WRITTEN + ("report",):
-        for held in (RULE_OF_A_REPORT if kind == "report" else RULE):
+    for kind in WRITTEN + PACKAGE_ONLY:
+        for held in (RULE_OF_A_REPORT if kind in PACKAGE_ONLY else RULE):
             for beside in BESIDE:
                 if beside != "the other spelling" or kind == "step":
                     yield kind, held, beside
@@ -183,11 +185,12 @@ def mdb_outcomes(monkeypatch, content, site):
 # ---------------------------------------------------------------------------
 
 def test_the_table_names_every_kind_of_entry_and_the_made_up_folder_has_one_of_each(mdb_content):
-    assert set(ENTRY) == set(WRITTEN) | {"report"} == set(mdb_content._MEMBER_URI) == set(harness.URI_OF)
+    assert set(ENTRY) == set(WRITTEN) | set(PACKAGE_ONLY) == set(mdb_content._KIND_URI) == set(harness.URI_OF)
+    assert set(mdb_content._TRANSFER_URI) == {"decision"} and set(mdb_content._content.TRANSFER_KINDS) == set(PACKAGE_ONLY)
     assert all((path, kind) in ENTRIES for kind, path in ENTRY.items())
     # the table by which the page tells the kind of a member is the one of mdb
     of_the_page = re.search(r"^KIND_URI = (\{.*?\})$", harness.python_block(), flags=re.MULTILINE | re.DOTALL)
-    assert ast.literal_eval(of_the_page.group(1)) == mdb_content._MEMBER_URI == harness.URI_OF
+    assert ast.literal_eval(of_the_page.group(1)) == mdb_content._KIND_URI == harness.URI_OF
     # and the table of this file leaves out no case of up to three members of one name and kind, two of them of either sort
     assert set(RULE) - {(3, 0)} == set(RULE_OF_A_REPORT) == {(objects, references) for objects in range(3) for references in range(3)
                                                             if objects + references <= 3}
@@ -197,12 +200,12 @@ def test_the_table_names_every_kind_of_entry_and_the_made_up_folder_has_one_of_e
                          ids=[f"{kind}, {held[0]} objects, {held[1]} references, {beside}" for kind, held, beside in cases()])
 def test_the_page_and_mdb_say_of_an_entry_what_the_table_says(monkeypatch, tmp_path, mdb_content, kind, held, beside):
     path = ENTRY[kind]
-    said, state, found, counted = (RULE_OF_A_REPORT if kind == "report" else RULE)[held]
+    said, state, found, counted = (RULE_OF_A_REPORT if kind in PACKAGE_ONLY else RULE)[held]
     site = folder_with(kind, held, beside)
 
     # mdb, for this folder
     status, note = mdb_outcomes(monkeypatch, mdb_content, site)[(path, kind)]
-    if kind == "report":
+    if kind in PACKAGE_ONLY:
         assert (status, note) == ("not deployed", said)
     else:
         assert status == said, note
@@ -215,7 +218,7 @@ def test_the_page_and_mdb_say_of_an_entry_what_the_table_says(monkeypatch, tmp_p
     assert (entry["state"] == OK) == (status == "equal" or note == ON_THE_SITE)
 
 
-@pytest.mark.parametrize("kind, held", [(kind, held) for kind in WRITTEN + ("report",) for held in ((2, 0), (1, 1), (1, 2), (2, 1))],
+@pytest.mark.parametrize("kind, held", [(kind, held) for kind in WRITTEN + PACKAGE_ONLY for held in ((2, 0), (1, 1), (1, 2), (2, 1))],
                          ids=lambda value: str(value))
 def test_the_order_of_the_listing_changes_no_line(monkeypatch, tmp_path, kind, held):
     """Two members of one name: whichever the folder lists first, the line of the entry is the same."""
@@ -225,7 +228,7 @@ def test_the_order_of_the_listing_changes_no_line(monkeypatch, tmp_path, kind, h
     assert lines[0] == lines[1]
 
 
-@pytest.mark.parametrize("kind", WRITTEN + ("report",))
+@pytest.mark.parametrize("kind", WRITTEN + PACKAGE_ONLY)
 def test_the_kind_of_a_member_is_the_one_its_uri_says_for_the_page_as_for_mdb(monkeypatch, tmp_path, mdb_content, kind):
     """mdb tells the kind of a member by what its uri starts with and reads no contentType. The page told an object
     by its contentType until this round, and in the passes of 2026-10-13 the two found the same entries in the same
@@ -408,5 +411,32 @@ def test_the_line_of_a_report_takes_its_advice_from_one_sentence(monkeypatch, tm
 
     assert namespace["REPORT_MISSING"] == BRING_REPORT and "run mdb content-deploy" not in namespace["REPORT_MISSING"]
     assert namespace["ENTRY_MISSING"] == "Import the package of the accelerator again, or run mdb content-deploy."
-    assert "deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else ENTRY_MISSING" in block
-    assert block.count("REPORT_MISSING") == 2 and block.count("ENTRY_MISSING") == 2
+    assert ("deploy = STEP_MISSING if kind == 'step' else REPORT_MISSING if kind == 'report' else DECISION_MISSING if kind == 'decision' "
+            "else ENTRY_MISSING") in block
+    assert block.count("REPORT_MISSING") == 2 and block.count("ENTRY_MISSING") == 2 and block.count("DECISION_MISSING") == 2
+
+
+BRING_DECISION = ("Import the package of the accelerator again, or run mdb builders-import: a decision comes with the package, with the "
+                  "Call LLM node, and mdb content-deploy writes none. Where builders-import names mdb decision-node-migrate, run that first.")
+
+
+@pytest.mark.parametrize("held, lead", [((0, 0), ""), ((0, 1), "Remove the reference from the folder. Then: ")],
+                         ids=["not in its folder", "only a reference"])
+def test_the_advice_for_a_decision_names_the_import_and_not_content_deploy(monkeypatch, tmp_path, mdb_content, held, lead):
+    """The decision of the content folder comes with the package, with the Call LLM node type it carries: mdb content-deploy
+    writes none (`not deployed ... (not on the site - it comes with the package)`), and the page says so."""
+    site = folder_with("decision", held)
+    entry = page_lines(monkeypatch, tmp_path, site)[f"{ENTRY['decision']} (decision)"]
+
+    assert mdb_outcomes(monkeypatch, mdb_content, site)[(ENTRY["decision"], "decision")] == ("not deployed", NOT_ON_THE_SITE)
+    assert entry["state"] == MISSING and entry["todo"] == lead + BRING_DECISION
+    assert "run mdb content-deploy" not in BRING_DECISION
+    # a decision that is there is present, as mdb says `on the site`
+    there = page_lines(monkeypatch, tmp_path, Site())[f"{ENTRY['decision']} (decision)"]
+    assert (there["state"], there["found"]) == (OK, "present")
+    assert mdb_outcomes(monkeypatch, mdb_content, Site())[(ENTRY["decision"], "decision")] == ("not deployed", ON_THE_SITE)
+    # and a decision whose folder is not there
+    gone = Site()
+    gone.remove("Decisions")
+    line = page_lines(monkeypatch, tmp_path, gone)[f"{ENTRY['decision']} (decision)"]
+    assert (line["found"], line["todo"]) == ("its folder is not in the content root", BRING_DECISION)

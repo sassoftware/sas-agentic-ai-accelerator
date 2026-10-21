@@ -37,10 +37,12 @@ ENTRIES = [
     ("Logging and Monitoring/LLM Usage Report", "report"), ("Logging and Monitoring/LLM - Log Parser.step", "step"),
     ("Logging and Monitoring/Log-Parser-Code.sas", "file"),
     ("Data/llm_fact_sheet.csv", "file"), ("Data/Load-Accelerator-Tables", "jobDefinition"),
+    ("Decisions", "folder"), ("Decisions/Call LLM Node", "decision"),
 ]
-MEMBER_TYPE = {"folder": "folder", "file": "file", "step": "flowStep", "jobDefinition": "jobDefinition", "report": "report"}
+MEMBER_TYPE = {"folder": "folder", "file": "file", "step": "flowStep", "jobDefinition": "jobDefinition", "report": "report",
+               "decision": "decision"}
 URI_OF = {"folder": "/folders/folders/", "file": "/files/files/", "step": "/dataFlows/steps/", "jobDefinition": "/jobDefinitions/definitions/",
-          "report": "/reports/reports/"}
+          "report": "/reports/reports/", "decision": "/decisions/flows/"}
 TABLES = ("ACCELERATOR_RELEASES", "LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET")
 # The tables of the logging chain that no report binds (round 19)
 CHAIN_TABLES = ("DECISION_FACT_SHEET", "PROMPT_OPTIMIZATIONS", "RAG_SETUPS", "RAG_RUNS", "MODEL_CATALOG")

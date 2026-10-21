@@ -85,9 +85,9 @@ _MEMBER_URI = {"file": "/files/files/", "step": "/dataFlows/steps/",
                "folder": "/folders/folders/"}
 
 #: The kinds that come with the package alone, by the service their objects
-#: belong to. A decision is a member of its folder like a report; the table
-#: above is the one the Start Here page holds too, and names the kinds it
-#: knows.
+#: belong to. A decision is a member of its folder like a report. The two
+#: tables together (_KIND_URI) are the KIND_URI of the Start Here page, which
+#: names the kinds it knows; its tests hold the two to each other.
 _TRANSFER_URI = {"decision": "/decisions/flows/"}
 _KIND_URI = {**_MEMBER_URI, **_TRANSFER_URI}
 
