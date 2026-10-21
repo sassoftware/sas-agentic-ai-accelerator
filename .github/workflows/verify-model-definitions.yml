@@ -121,7 +121,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install mdb
-        run: pip install -e "./Model-Definition-Builder/cli[dev]"
+        # with the [viya] extra (sasctl): the tests of the commands that sign
+        # in to SAS Viya skip without it - 85 of them did before this
+        run: pip install -e "./Model-Definition-Builder/cli[dev,viya]"
       - name: Drift gate - committed assets match their manifests
         run: mdb generate --all --check
       - name: Validate managed definitions
