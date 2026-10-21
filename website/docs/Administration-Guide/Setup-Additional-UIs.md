@@ -20,16 +20,7 @@ The Prompt Builder is shipped as a **standalone application** in the [`LLM-Promp
 
 The content folder `/SAS Agentic AI Accelerator` ships as **one transfer package**, `SAS-Agentic-AI-Accelerator.json` in the folder [`SAS-Viya-Integrations`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations) of the repository. It holds the Prompt Builder ready to run — the **Visual Analytics report** that hosts the object, the **SAS Job Execution** definition that serves the single-file app and the optimization job — and with it the RAG runtime, the logging programs with their two custom steps and the usage report, the files the tables of the reports are loaded from, and a first page with an installation check. Importing it takes the place of building the app and wiring it up by hand (steps 1–2 below).
 
-:::warning The package file of release 2.3.0 is not in the repository yet
-The package is exported from the content folder of the maintainers' system **after** the commit that describes it on this page. Until the file is in `SAS-Viya-Integrations/`:
-
-- `mdb builders-import` says that the checkout holds no package and ends with exit code 2;
-- `mdb package-check` says the same and ends with exit code 1;
-- seven tests of `mdb` are skipped with the reason *the package is exported from the owner's system after this round* — the six that read the shipped package and the one that wants the four packages of earlier releases gone;
-- those four packages are still in the repository. They are older than this page and are not what it describes.
-
 The commands of this section ran on the test system in eleven passes, twice on 2026-10-12, three times on 2026-10-13, three times on 2026-10-14, twice on 2026-10-15 and once on 2026-10-16, in test content roots and as they were then: what the first found changed the import, the second measured the import in place, the third what was built after the second, the fourth what was built after the third, the fifth what was changed after the fourth, the sixth what was changed after the fifth, the seventh what was changed after the sixth, and each pass after it what was changed after the pass before. [What was measured, and what has not run](#the-package-on-sas-viya) has all eleven.
-:::
 
 ### First install and upgrade {#first-install-and-upgrade}
 

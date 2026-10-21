@@ -8,7 +8,7 @@ The RAG Builder becomes part of the Prompt Builder, behind a switch like decisio
 
 ### Upgrading from 2.2.x
 
-One transfer package carries the whole content folder, the RAG part of the Prompt Builder included; the report `RAG Builder` is retired. **The package file, `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`, is not in the repository yet**: until then `mdb builders-import` ends with exit code 2. Steps 1 to 4 are for every site, the others where they say so.
+One transfer package carries the whole content folder, the RAG part of the Prompt Builder included; the report `RAG Builder` is retired. The package file is `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json`. Steps 1 to 4 are for every site, the others where they say so.
 
 **Everyone.** The import brings the content folder of this release and keeps the options set on the Prompt Builder report.
 
@@ -90,7 +90,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **The RAG Builder is part of the Prompt Builder.** One bundle, one job definition (`SAS-LLM-Prompt-Builder-UI`), one report and one Options pane serve all three kinds; names, paths, URLs and saved `builder-options.json` files keep working.
 - **The ingestion has its own compute context option**, `ragComputeContext` (**RAG: ingestion compute context**); `computeContext` stays the optimization job's. A blank URL value is the default, and the parameter `id` is no longer read.
 - **`mdb package-export` keeps only what the manifest lists** and ships neutral report defaults with no host and no user id. `--folder` is now `--content-root`, `--exclude` is gone, and `--allow-differences` and `--keep-user-ids` need `--out`.
-- **`mdb package-check` also compares the package with the checkout.** Beyond hosts it refuses rules, shares and user ids, and reports a content difference as a `drift:` line, an error with `--release`. `--fix` also repairs states, defaults and user ids; `--allow-missing` passes while the checkout holds no package file of this release.
+- **`mdb package-check` also compares the package with the checkout.** Beyond hosts it refuses rules, shares and user ids, and reports a content difference as a `drift:` line, an error with `--release`. `--fix` also repairs states, defaults and user ids.
 - **`mdb` keeps the settings a site gave its job definitions**, such as `_contextName` and `contentRoot`, through deploys and imports. `mdb builders-import` gives `ragComputeContext` of the options to a job definition it creates or that has no `_contextName`; `--compute-context` sets it everywhere.
 - **`mdb setup` writes one seed file**, `llm-prompt-builder.json`, now with `embeddingProjectID`.
 - **`deploy-rag-content.ps1` / `.sh` call `mdb content-deploy --only RAG --to <RAG content root>`** and need the Model Definition Builder installed.
