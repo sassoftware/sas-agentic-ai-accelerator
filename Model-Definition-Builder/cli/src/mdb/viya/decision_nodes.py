@@ -400,8 +400,16 @@ def _code(content: Optional[dict]) -> str:
     return node_code((content or {}).get("staticContent"))
 
 
+def _content_or_none(session, node_id: str) -> Optional[dict]:
+    """The content of a node type, or None where it is not there or cannot be read."""
+    try:
+        return get_node_content(session, node_id)
+    except NodeError:
+        return None
+
+
 def similar_node_types(session, nodes: list, name: str, target_id: str, target_content: Optional[dict],
-                       skip=()) -> list:
+                       skip=(), old_content: Optional[dict] = None) -> list:
     """[(node type, why, copy)] of the node types other than the target (and
     `skip`) that are like it.
 
@@ -414,8 +422,14 @@ def similar_node_types(session, nodes: list, name: str, target_id: str, target_c
     a node renamed by hand to free the name, or another node type named like
     it ("Call LLM Streaming") - and its code is another, or cannot be
     compared. It is listed with its decisions as a warning, and never counts
-    as left: a node type with other code is not moved on a name."""
+    as left: a node type with other code is not moved on a name.
+
+    `old_content` is the content of the old node type this run moves from
+    (the renamed one, or --from-id's): a node type with that code is a copy
+    as well, so a copy is still found after the target got other code (the
+    release's, from builders-import or the Update program)."""
     code = _code(target_content)
+    old_code = _code(old_content)
     found = []
     for node in nodes:
         node_id = str(node.get("id") or "")
@@ -423,7 +437,7 @@ def similar_node_types(session, nodes: list, name: str, target_id: str, target_c
             continue
         node_name = str(node.get("name") or "")
         by_name = node_name.lower().startswith(name.lower())
-        if not by_name and not code:
+        if not by_name and not code and not old_code:
             continue
         try:
             content = get_node_content(session, node_id)
@@ -433,9 +447,10 @@ def similar_node_types(session, nodes: list, name: str, target_id: str, target_c
             if not by_name:
                 continue
         same = bool(code) and content is not None and _code(content) == code
-        if same:
+        same_old = not same and bool(old_code) and content is not None and _code(content) == old_code
+        if same or same_old:
             found.append((node, (f"its name starts with '{name}' and it" if by_name else "it")
-                          + f" has the code of {target_id}", True))
+                          + (f" has the code of {target_id}" if same else " has the code of the old node type"), True))
         elif by_name:
             why = (f"{target_id} has no code to compare" if not code else "its code cannot be read"
                    if content is None else f"its code is not the code of {target_id}")
@@ -564,9 +579,12 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
         return 1
     # the node types like the target that this run does not move: compared with the code the target has, or - where
     # this run creates it or gives it its content - the code it gets
+    # and with the code of the old node type this run moves from
     others = similar_node_types(session, nodes, name, target_id,
                                 target_content if target_content is not None else old_content,
-                                skip={old_id} if old_id else ())
+                                skip={old_id} if old_id else (),
+                                old_content=(old_content if old_content is not None
+                                             else _content_or_none(session, old_id) if old_id else None))
 
     say("Looking for every decision with a version that calls "
         + (f"{old_uri}" if old_uri else "a node type like it") + " - every version of every decision is read ...",

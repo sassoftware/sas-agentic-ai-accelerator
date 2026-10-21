@@ -81,7 +81,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Six model definitions: GPT-6 Luna, GPT-6.1 Sol, Claude Haiku 5.5, Claude Sonnet 5.5, Claude Opus 5.5 and Mercury Decide** (`gpt_6_luna`, `gpt_61_sol`, `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5`, and the decision model `mercury_decide` through OpenRouter), with fact-sheet rows and catalog entries.
 - **`reasoning_effort` per model.** A `value_map` translates the five levels into the words a model accepts; Claude gets it as `output_config.effort`, not combinable with `thinking_budget`.
 - **Finalize says when a manifested prompt or decision template would have no input,** which SAS Intelligent Decisioning cannot use.
-- **The content folder brings the *Call LLM* node under one id,** in a decision of its own in the folder `Decisions`. `mdb builders-import` imports both in a job of their own; where a *Call LLM* node has another id it uploads neither and names the migration. `--no-decisions` leaves them out.
+- **The content folder brings the *Call LLM* node under one id,** in the decision `Decisions/Call LLM Node`. `mdb builders-import` imports both; where a *Call LLM* node has another id it imports neither and names the migration. `--no-decisions` leaves them out.
 - **`mdb decision-node-migrate` gives a site's *Call LLM* node that id.** It renames the old node, creates `f9efcbb7-f57b-4a62-b56d-1a89595e2039` and moves every decision, locked versions included; `--from-id` moves those of a copy or a node renamed by hand, with a warning where its code differs.
 - **Guide: The *Call LLM* node and its id.** Deployment of Decisions says why decisions need one node id, what a new and an existing site do, and why a node a decision uses is never deleted.
 

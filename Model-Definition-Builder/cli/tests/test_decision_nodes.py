@@ -678,6 +678,29 @@ def test_a_first_run_that_leaves_decisions_on_a_copy_ends_with_1(sid):
     assert migrate("--apply")[0] == 0
 
 
+def test_a_copy_is_still_found_after_the_node_of_the_id_got_the_code_of_the_release(sid):
+    """The first run names a copy and ends with 1; then builders-import (or the Update program) gives the node type of
+    the id the code of the release. The copy still has the code of the old node type the run renamed: a re-run and a
+    dry run still name it, and the re-run still ends with 1."""
+    sid.node(OLD, "ZZ Call", code="the 2.2 call code")
+    sid.node(HAND, "Our LLM node", code="the 2.2 call code")
+    sid.decision("d1", "Uses old", [OLD])
+    sid.decision("d2", "Uses the copy", [HAND], [HAND])
+    code, text = migrate("--apply")
+    assert code == 1 and "Not everything is done: 1 other node type(s)" in text, text
+    sid.contents[TARGET]["staticContent"] = "the 2.3 call code"
+    for args, exit_code in ((("--apply",), 1), ((), 0)):
+        code, text = migrate(*args)
+        assert code == exit_code, text
+        assert (f"The node type 'Our LLM node' ({HAND}) - it has the code of the old node type - is called by 1 "
+                "decision(s), which this run does not move:") in text
+    assert sid.uses("d2") == [[NODE + HAND], [NODE + HAND]]
+    code, text = migrate("--from-id", HAND, "--apply")
+    assert code == 0, text
+    assert sid.uses("d2") == [[NODE + TARGET], [NODE + TARGET]]
+    assert migrate("--apply")[0] == 0
+
+
 def test_a_from_id_run_that_leaves_decisions_on_another_copy_ends_with_1(sid):
     sid.node(TARGET, "ZZ Call", code="the code")
     sid.node(OLD, "ZZ Call old", code="the code")
