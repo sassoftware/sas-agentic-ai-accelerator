@@ -329,7 +329,7 @@ def _arguments(command: str, tmp: Path, monkeypatch, repo_root: Path) -> list:
         "load-facts": [], "load-releases": [], "setup": ["--out", str(tmp / "setup")],
         "options-save": ["--file", str(tmp / "options.json")], "options-restore": ["--file", str(saved)],
         "content-deploy": ["--dry-run"], "package-export": ["--out", str(tmp / "package.json")],
-        "builders-import": [str(repo_root / "SAS-Viya-Integrations" / "SAS Agentic AI Accelerator.json"), "--dry-run",
+        "builders-import": [str(repo_root / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json"), "--dry-run",
                             "--out", str(tmp / "import")],
         "register": ["smollm_135m"], "unregister": ["smollm_135m", "--yes"], "pull": ["smollm_135m"],
         "list": [], "publish": ["smollm_135m", "-d", "maslocal"], "ship": ["smollm_135m", "-d", "maslocal"],
