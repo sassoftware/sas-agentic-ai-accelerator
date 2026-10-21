@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Managing Credentials | SAS Agentic AI Accelerator Documentation</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Managing Credentials | SAS Agentic AI Accelerator Documentation"><meta data-rh="true" name="description" content="The accelerator can resolve every external secret it needs — LLM provider API"><meta data-rh="true" property="og:description" content="The accelerator can resolve every external secret it needs — LLM provider API"><link data-rh="true" rel="icon" href="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png"><link data-rh="true" rel="canonical" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials" hreflang="en"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Managing Credentials","item":"https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"}]}</script><link rel="stylesheet" href="/sas-agentic-ai-accelerator/assets/css/styles.f2f08132.css">
-<script src="/sas-agentic-ai-accelerator/assets/js/runtime~main.30eef88d.js" defer="defer"></script>
-<script src="/sas-agentic-ai-accelerator/assets/js/main.94e35372.js" defer="defer"></script>
+<script src="/sas-agentic-ai-accelerator/assets/js/runtime~main.194a6d73.js" defer="defer"></script>
+<script src="/sas-agentic-ai-accelerator/assets/js/main.5c338dcf.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -23,17 +23,34 @@ each user only the models they actually hold a key for.</p>
 deployment — its name is the single value configured in the app Options. A
 <strong>credential</strong> in the domain belongs to a <strong>user or group</strong> and carries a map
 of named secrets:</p>
-<table><thead><tr><th>Entry name</th><th>Holds</th></tr></thead><tbody><tr><td><code>OpenAI</code>, <code>Anthropic</code>, <code>Google</code>, <code>AzureOpenAI</code>, …</td><td>LLM provider API keys — named after the <code>KeyName</code> each model definition&#x27;s <code>API_KEY</code> option references (<code>key_name</code> in <code>definition.yaml</code>), because the Prompt Builder and the RAG Builder look a model&#x27;s key up under exactly that name</td></tr><tr><td><code>PGVECTOR_RAG_USER</code>, <code>PGVECTOR_RAG_PW</code></td><td>RAG vector-store credentials — the prefix names the vector DB backend</td></tr><tr><td><code>SINGLESTORE_RAG_USER</code>, <code>SINGLESTORE_RAG_PW</code>, …</td><td>further vector-store backends; one domain serves several stores side by side</td></tr></tbody></table>
+<table><thead><tr><th>Entry name</th><th>Holds</th></tr></thead><tbody><tr><td><code>OpenAI</code>, <code>Anthropic</code>, <code>Google</code>, <code>AzureOpenAI</code>, …</td><td>LLM provider API keys — named after the <code>KeyName</code> each model definition&#x27;s <code>API_KEY</code> option references (<code>key_name</code> in <code>definition.yaml</code>), because the Prompt Builder, its RAG Builder part included, looks a model&#x27;s key up under exactly that name</td></tr><tr><td><code>PGVECTOR_RAG_USER</code>, <code>PGVECTOR_RAG_PW</code></td><td>RAG vector-store credentials — the prefix names the vector DB backend</td></tr><tr><td><code>SINGLESTORE_RAG_USER</code>, <code>SINGLESTORE_RAG_PW</code>, …</td><td>further vector-store backends; one domain serves several stores side by side</td></tr></tbody></table>
 <p>Who resolves what:</p>
 <ul>
-<li class="">A <strong>group credential</strong> (for example for <code>LLMConsumers</code>) equips every member
-at once.</li>
-<li class="">A <strong>user credential</strong> belongs to one person and <strong>overrides</strong> the group
-credential entirely — a personal set of keys.</li>
-<li class="">A user with neither, or with a map that lacks a specific entry, sees the
+<li class="">
+<p>A <strong>group credential</strong> (for example for <code>LLMConsumers</code>) equips every member
+at once — and nobody else. <strong>The credential has to go to a group the people
+who open the Prompt Builder are members of.</strong> A credential for a group they
+are not in is written without an error and <code>mdb credentials-report</code> shows
+the group holding it, and those users still find the models of the provider
+disabled in the Prompt Builder, with this note:</p>
+<p><code>No &lt;provider&gt; key available in the &lt;domain&gt; credential domain - ask your administrator for access.</code></p>
+<p>The examples on this page use <code>LLMConsumers</code> for those people: it is the
+group for everybody who needs access to the LLM repository, and <code>mdb setup</code>
+writes the commands that create it into <code>sas-viya-cli-commands.txt</code> (see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-SAS-Model-Manager">Setup SAS Model Manager</a>). A site that
+equips another group names that group instead — what counts is the
+membership, not the name.</p>
+</li>
+<li class="">
+<p>A <strong>user credential</strong> belongs to one person and <strong>overrides</strong> the group
+credential entirely — a personal set of keys.</p>
+</li>
+<li class="">
+<p>A user with neither, or with a map that lacks a specific entry, sees the
 affected models greyed out in the Prompt Builder with a note naming the
 missing entry and the domain — access to keys is an identity decision, not
-an application setting.</li>
+an application setting.</p>
+</li>
 </ul>
 <p>Connection <em>configuration</em> — vector-store host, port, database name — is not
 a secret and stays in the RAG setup, never in the credential.</p>
@@ -76,18 +93,33 @@ values are never printed.</p>
 <p>The scripts above equip <strong>one</strong> identity per run, which is right for a demo
 and wrong for a rollout. <code>mdb</code> does a whole deployment from a manifest, and
 reports what it did:</p>
-<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-init                    # write a starter manifest</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply --dry-run         # see the plan</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply                   # do it</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-report                  # who holds one</span><br></div></code></pre></div></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-init                        # write a starter manifest</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-add group LLMConsumers      # add an identity to it</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply --dry-run             # see the plan</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply                       # do it</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-report                      # who holds one</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-remove group FormerTeam     # mark a credential for removal</span><br></div></code></pre></div></div>
 <p><code>credentials-init</code> reads your <code>.env</code> and writes a manifest listing the entries
 it actually carries — names only, never a value — so you can see what is
-available to hand out before deciding who gets it. All four commands default
-to <code>credentials.yaml</code> in the working directory; <code>--file</code> and <code>--manifest</code> put
-it anywhere you keep deployment records.</p>
+available to hand out before deciding who gets it. All five commands default
+to <code>credentials.yaml</code> in the working directory, and <code>--manifest</code> (<code>-m</code>) puts
+it anywhere you keep deployment records; <code>credentials-init</code> still reads
+<code>--file</code> / <code>-f</code>, the earlier name of the option. The manifest is the one place
+a rollout is managed from: identities are added to it, narrowed in it and
+marked for removal in it, and <code>credentials-apply</code> carries out what it says.</p>
 <p>The manifest says <strong>who</strong> gets keys and <strong>where those keys come from</strong>. It
 never contains a key, so unlike the <code>.env</code> it is meant to be committed and
 reviewed in a diff — who may call which provider is a decision worth having a
 history of. A fuller example is
 <a href="https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/Other/credentials.example.yaml" target="_blank" rel="noopener noreferrer" class=""><code>credentials.example.yaml</code></a>:</p>
-<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">domain</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> agentic</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">ai</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">keys</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">source</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../.env          </span><span class="token comment" style="color:#999988;font-style:italic"># relative to the manifest</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">identities</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> PromptEngineers</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> RAGEngineers</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">only</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">PGVECTOR_RAG_USER</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> PGVECTOR_RAG_PW</span><span class="token punctuation" style="color:#393A34">]</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> user</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sas</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">be</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">sa</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> FraudAnalytics</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">source</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../envs/production.env</span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">domain</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> agentic</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">ai</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">keys</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">source</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../.env          </span><span class="token comment" style="color:#999988;font-style:italic"># relative to the manifest</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"></span><span class="token key atrule" style="color:#00a4db">identities</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> LLMConsumers</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> RAGEngineers</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">only</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">[</span><span class="token plain">PGVECTOR_RAG_USER</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> PGVECTOR_RAG_PW</span><span class="token punctuation" style="color:#393A34">]</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> user</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain">  </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> sas</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">be</span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain">sa</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> FraudAnalytics</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">source</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> ../../envs/production.env</span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> FormerTeam</span><span class="token punctuation" style="color:#393A34">,</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">state</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> absent</span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
+<p><code>LLMConsumers</code> stands for the people who open the Prompt Builder. Name the
+group <strong>your</strong> users are members of: a credential for another group is
+written, reported as held, and leaves them with the note <em>No … key available
+in the … credential domain</em> (see
+<a href="#the-model-one-domain-named-entries-per-identity-credentials" class="">Who resolves what</a>).
+After a run that plans or writes a group credential, <code>credentials-apply</code>
+prints one line to that effect, and <code>credentials-report</code> prints it where a
+group holds a credential: <em>A group credential reaches only the members
+of that group, and a user&#x27;s own credential replaces it for that user.</em> Its
+last line names the report of the same manifest -
+<code>mdb credentials-report --manifest &lt;file&gt;</code> - or, for a run with <code>--identity</code>,
+of the same identities and domain. A path with a blank is printed in quotes.</p>
 <p>Paths inside a manifest resolve against <strong>the manifest&#x27;s own directory</strong>, not
 your working directory, so a manifest and the <code>.env</code> files it names can be
 kept together and moved together. <code>credentials-init</code> writes the source path
@@ -98,17 +130,180 @@ either end moves.</p>
 spells them (<code>OpenAI</code>, <code>PGVECTOR_RAG_PW</code>) rather than the way the <code>.env</code> does
 (<code>OPENAI_API_KEY</code>); a name the source does not carry is refused rather than
 quietly dropped. A single identity needs no manifest at all:</p>
-<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply --identity-type group --identity PromptEngineers --dry-run</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-report --identity gerdaw --identity-type user</span><br></div></code></pre></div></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply --identity-type group --identity LLMConsumers --dry-run</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-report --identity &lt;user id&gt; --identity-type user</span><br></div></code></pre></div></div>
+<p><code>--domain</code>, <code>--identity-type</code>, <code>--env-file</code> and <code>--keys-file</code> belong to that
+mode. With a manifest the run goes to the domain the manifest names and takes
+the type and the key file of each identity from it. A <code>--domain</code> that names
+another domain is refused before the sign-in, because an apply also removes
+what the manifest marks absent; so is any <code>--identity-type</code>, <code>--env-file</code> or
+<code>--keys-file</code>. Two entries for one identity are refused by
+<code>credentials-apply</code> and <code>credentials-report</code> as they are by
+<code>credentials-add</code>, and so is an identity named twice with <code>--identity</code>. An
+empty value of any option (what a variable of the shell that is not set
+gives) ends the command with exit code 2 before anything is read or written,
+as does a <code>--manifest</code> that names a folder. An identity id and a credential
+domain hold printable ASCII alone (U+0020 to U+007E), with no blank at either
+end. Any other character - a line break, a control character, a blank such as
+U+00A0, an invisible one such as U+200B or U+034F, a letter outside ASCII such
+as ö - is refused with exit code 2 before anything is written or asked of SAS
+Viya, in a manifest, as an argument and as <code>--domain</code>; a manifest that lists
+such an id is refused by every credentials command that reads it. Every line names an id
+and a domain as they are and unquoted, and such a character can show as
+another one or as none.</p>
+<p>A value of the manifest is taken only as YAML reads it. <code>id</code>, <code>domain</code> and
+<code>source</code> must be text, <code>only</code> a list of texts and <code>verbatim</code> <code>true</code> or
+<code>false</code>. YAML reads an unquoted <code>0123</code> as the number 83 and <code>yes</code> as true,
+so such a value is refused with exit code 2
+before anything is written or asked of SAS Viya: <code>&lt;file&gt;: identity &lt;n&gt;: &#x27;id&#x27; must be a text, and YAML read a number there - put it in quotes (&#x27;0123&#x27;, &#x27;yes&#x27;) to have it read as it is written</code>. Write such a value in quotes
+(<code>id: &#x27;0123&#x27;</code>). <code>mdb credentials-init</code>, <code>mdb credentials-add</code> and
+<code>mdb credentials-remove</code> quote every value they write where YAML would read
+it otherwise, so <code>--domain 2024</code> is written <code>domain: &#x27;2024&#x27;</code>. An id that is
+missing, empty or <code>~</code> is refused as no id; a <code>domain</code> that is missing, empty or <code>~</code> is
+<code>agentic-ai-keys</code>. An empty name in <code>only</code> names an entry no source carries,
+so the identity is not equipped. This was tested, not run against SAS Viya.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="adding-an-identity-mdb-credentials-add">Adding an identity: <code>mdb credentials-add</code><a href="#adding-an-identity-mdb-credentials-add" class="hash-link" aria-label="Direct link to adding-an-identity-mdb-credentials-add" title="Direct link to adding-an-identity-mdb-credentials-add" translate="no">​</a></h3>
+<p><code>mdb credentials-add &lt;type&gt; &lt;id&gt;</code> adds a group or a user to the manifest, so
+the file need not be edited by hand. The type is <code>group</code> or <code>user</code>:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-add group LLMConsumers</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-add group RAGEngineers --only PGVECTOR_RAG_USER,PGVECTOR_RAG_PW</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-add group FraudAnalytics --source envs/production.env</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-add user sas-be-sa --manifest deployment/credentials.yaml</span><br></div></code></pre></div></div>
+<p>The command edits the manifest and makes no call to SAS Viya; the credential
+is written by the next <code>mdb credentials-apply</code>, and the command prints that
+as its next step (<code>mdb credentials-apply --manifest &lt;file&gt; --dry-run</code>).</p>
+<table><thead><tr><th>Option</th><th>Meaning</th></tr></thead><tbody><tr><td><code>--only</code></td><td>The entries this identity gets, named the way the domain spells them. Repeat the option or separate the names with commas.</td></tr><tr><td><code>--source</code></td><td>This identity&#x27;s own key file. The path is the one you type in the shell, relative to the working directory; it is written into the manifest relative to the manifest.</td></tr><tr><td><code>--manifest</code>, <code>-m</code></td><td>The manifest to edit. Default: <code>credentials.yaml</code> in the working directory.</td></tr><tr><td><code>--env-file</code></td><td>The <code>.env</code> a <strong>new</strong> manifest points at. Default: <code>.env</code> in the working directory. Not read when the manifest exists.</td></tr><tr><td><code>--domain</code></td><td>The credential domain a <strong>new</strong> manifest targets. Default: <code>agentic-ai-keys</code>. Not read when the manifest exists.</td></tr></tbody></table>
+<p>What it does with the file:</p>
+<ul>
+<li class=""><strong>Only that identity changes.</strong> Comments, blank lines, the order and the
+other identities stay byte for byte as they are - but for the two comment
+lines <code>credentials-init</code> writes above its placeholder, which leave with the
+placeholder. A new identity is written
+in block style (<code>- type: group</code> / <code>id: …</code>) after the last one; an identity
+that is written <code>{type: group, id: …}</code> keeps that style when it is updated.</li>
+<li class=""><strong>The placeholder is replaced.</strong> A manifest from <code>credentials-init</code> names
+the identity <code>CHANGE-ME-to-a-real-group</code>; the first identity that is added
+takes its place. The comment about the placeholder above it leaves with it.</li>
+<li class=""><strong>No manifest yet:</strong> it is written the way <code>credentials-init</code> writes it,
+from the <code>.env</code>, with the identity in place of the placeholder. Without a
+<code>.env</code> nothing is written.</li>
+<li class=""><strong>The identity is already listed:</strong> no second entry is written, and the
+command says so and ends with exit code 0. With <code>--only</code> or <code>--source</code> the
+entry that is there is updated and the change is printed. An identity is
+the same one when type and id are equal, the id letter for letter.</li>
+<li class=""><strong>A name the source does not carry is refused.</strong> An <code>--only</code> name that is
+not among the entries of the source, or a <code>--source</code> file that is not
+there, ends the command with exit code 2 and the message
+<code>credentials-apply</code> gives for it, and nothing is written.</li>
+</ul>
+<p>The edit is made in the text of the file, because the YAML library <code>mdb</code> uses
+would drop every comment on a rewrite. Before the file is written, the result
+is read back and has to be the manifest that was there plus the one change.
+These layouts are refused with a message, and the file is left alone:</p>
+<ul>
+<li class="">an <code>identities</code> list that is not written one <code>- </code> line per identity, for
+example <code>identities: [{…}, {…}]</code>, <code>identities: []</code> or <code>identities: null</code>;</li>
+<li class="">an identity that is listed more than once;</li>
+<li class="">an <code>only:</code> list that is to be rewritten and holds a comment between its
+entries, because nothing says which entry of the new list such a comment
+belongs to;</li>
+<li class="">any other layout whose result does not read back as the manifest plus the
+one change, for example an <code>only:</code> that is an alias or an identity that
+takes a key through a merge (<code>&lt;&lt;: *o</code>). It ends with <em>the manifest is laid
+out in a way this edit cannot be made in safely - nothing was written; edit
+the file by hand</em>.</li>
+</ul>
+<p>A file YAML cannot read is refused with the line and the column where the
+reader stopped, and nothing of its text is shown: a key file handed as the
+manifest would otherwise be printed with a value.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="removing-a-credential-state-absent">Removing a credential: <code>state: absent</code><a href="#removing-a-credential-state-absent" class="hash-link" aria-label="Direct link to removing-a-credential-state-absent" title="Direct link to removing-a-credential-state-absent" translate="no">​</a></h3>
+<p>A credential is removed through the manifest as well. An identity may carry
+<code>state: absent</code>:</p>
+<div class="language-yaml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-yaml codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token key atrule" style="color:#00a4db">identities</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  </span><span class="token punctuation" style="color:#393A34">-</span><span class="token plain"> </span><span class="token key atrule" style="color:#00a4db">type</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> group</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">id</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> FormerTeam</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">    </span><span class="token key atrule" style="color:#00a4db">state</span><span class="token punctuation" style="color:#393A34">:</span><span class="token plain"> absent</span><br></div></code></pre></div></div>
+<p><code>mdb credentials-remove &lt;type&gt; &lt;id&gt;</code> writes that line — on the identity that
+is listed, or as a new entry when the manifest does not list it — under the
+same rule as <code>credentials-add</code>: nothing else in the file changes. It does not
+contact SAS Viya. The credential is deleted by the next
+<code>mdb credentials-apply</code>:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-remove group FormerTeam</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply --dry-run         # the plan shows the action &quot;remove&quot;</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-apply                   # deletes the credential</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">mdb credentials-report                  # shows it as absent</span><br></div></code></pre></div></div>
+<ul>
+<li class=""><code>credentials-apply</code> plans the action <code>remove</code> for such an identity. A dry
+run shows it and removes nothing. A credential that is already gone is not
+an error: the run says that there was none to remove.</li>
+<li class="">An identity with <code>state: absent</code> needs no source and no entries, so a
+credential can be removed after its key file is gone. A run that only
+removes does not create or update the domain.</li>
+<li class=""><code>credentials-report</code> shows such an identity as
+<code>absent (as the manifest says)</code> once its credential is gone, and as
+<code>STILL THERE (manifest: absent)</code> while it exists. A credential that cannot
+be read is shown as <code>unreadable</code> with the answer of the service, and the
+lines below the table count it neither way: the line of the identities the
+manifest names ends <code>... hold a credential; &lt;n&gt; could not be read.</code>, and the
+line of those it marks absent <code>... hold none; &lt;n&gt; could not be read.</code></li>
+<li class=""><code>state: present</code> is the default and may be written. Any other value is
+refused when the manifest is read, with exit code 2, before anything is
+written or removed.</li>
+<li class=""><code>mdb credentials-add</code> on an identity that is marked absent sets it back to
+present and says so. The <code>state</code> line is taken out again, or rewritten to
+<code>state: present</code> where it is the first line of a block entry or where a
+comment stands on it. The comment stays as it is.</li>
+</ul>
+<p><strong>Nothing is removed because a line is missing from the manifest.</strong> The
+service cannot list who holds a credential, so <code>mdb</code> cannot know what a
+deleted line once said. Leave the entry in the file with <code>state: absent</code>
+until the report shows the credential as absent.</p>
+<p>A refused read, removal or write of a credential names the answer of the
+service. A write shows the reason only for a 404 - for a group that does not
+exist, errorCode 12310, measured on 2026-10-14 - and not where the answer
+holds a value the write carried. The values are compared as the line prints
+the answer, every run of blanks, tabs and line breaks as one blank, and with
+the whole answer, also past the 300 characters a line shows of an answer
+that is no JSON. A request that gets no answer - a connection reset, a
+timeout - ends with one line, <code>... failed: no answer (&lt;kind of exception&gt;)</code>,
+that names nothing of the request. No traceback of <code>mdb</code> shows the locals of
+a frame. The id of an identity is percent-encoded as
+one segment of the address, so an id with <code>#</code>, <code>?</code> or <code>/</code> names that identity
+and no other; <code>.</code> and <code>..</code> alone are refused. Measured on 2026-10-14 in a
+second pass: an identity <code>ZZ#X</code> marked absent was asked for as
+<code>.../groups/ZZ%23X</code>, and SAS Viya answered 404 (errorCode 12302), its
+answer for a credential that is not there. <code>?</code> and <code>/</code> were not tried.</p>
+<p><code>credentials-add</code> and <code>credentials-remove</code> were run on files. The removal by
+<code>state: absent</code>, the plan and the report that show it were measured on
+2026-10-14 in a credential domain and a group made for the pass, with the
+commands as they were before the fix-up of that day: the apply created the
+domain and the credential of the group with its three entries; after
+<code>credentials-remove</code> the next apply deleted it - HTTP 204 - without writing
+the domain, and the report said <code>absent (as the manifest says)</code>; an apply
+once more said that there was none to remove and ended with exit code 0; and
+a credential the manifest marked absent while it was there was
+<code>STILL THERE (manifest: absent)</code>. The lookup the Prompt Builder makes found
+the group credential with <code>lookupInGroup=true</code> and answered 404 without it.
+Of what the fix-up of that day changed, a second pass that day measured
+three things: a write for a group that does not exist printed the reason of
+the service - <code>storing the credential for group &#x27;&lt;group&gt;&#x27; failed: HTTP 404 The credential could not be created because the group identity &quot;&lt;group&gt;&quot; does not exist. (errorCode 12310)</code> - and ended with exit code 1; the report
+printed the line about a group credential once; and a <code>--domain</code> other
+than the one of the manifest ended <code>credentials-apply</code> with exit code 2
+before any request. The comment on the <code>state:</code> line, the refusal of an
+identity listed twice and the count of a credential that could not be read
+ran against a stand-in for the credentials service in the test suite of
+<code>mdb</code>, not against a SAS Viya server, as did everything changed after that
+pass.</p>
 <div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>A dry run cannot show you a diff</div><div class="admonitionContent_BuS1"><p>Reading a credential returns its metadata — who wrote it, and when — and
 <strong>never its contents, not even the entry names</strong>. So a dry run tells you an
-identity will be created or replaced, but not what it holds today. That is a
-privacy property rather than a gap: no identity can ever see another&#x27;s keys.</p><p>For the same reason there is no way to list who holds a credential. Both
+identity will be created, replaced or removed, but not what it holds today.
+That is a privacy property rather than a gap: no identity can ever see
+another&#x27;s keys.</p><p>For the same reason there is no way to list who holds a credential. Both
 commands report on the identities you <strong>name</strong>, which is why passing the same
-manifest you applied gives you the after-picture of that rollout.</p></div></div>
+manifest you applied gives you the after-picture of that rollout — and why a
+credential is removed by marking its identity <code>state: absent</code>, never by
+deleting its line.</p></div></div>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="inspecting-and-deleting-cli-and-environment-manager">Inspecting and deleting: CLI and Environment Manager<a href="#inspecting-and-deleting-cli-and-environment-manager" class="hash-link" aria-label="Direct link to Inspecting and deleting: CLI and Environment Manager" title="Direct link to Inspecting and deleting: CLI and Environment Manager" translate="no">​</a></h2>
-<p>Day-2 administration works with the standard tools (they can list and delete,
-but authoring the multi-entry map itself is the script&#x27;s job):</p>
+<p>A credential that is managed with a manifest is deleted through the manifest:
+<code>mdb credentials-remove</code>, then <code>mdb credentials-apply</code> (see
+<a href="#removing-a-credential-state-absent" class="">Removing a credential</a>). The standard
+tools delete as well — one credential, or the whole domain, which <code>mdb</code> never
+deletes — and they show the domain. Authoring the multi-entry map is the job
+of the scripts and of <code>mdb credentials-apply</code>:</p>
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">./sas-viya credentials domains list</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">./sas-viya credentials domains show-info --domain-id &quot;agentic-ai-keys&quot;</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain"># show-info never returns secret values</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">./sas-viya credentials users delete  --domain-id &quot;agentic-ai-keys&quot; --identity-id thatuser</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">./sas-viya credentials groups delete --domain-id &quot;agentic-ai-keys&quot; --identity-id LLMConsumers</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">./sas-viya credentials domains delete --domain-id &quot;agentic-ai-keys&quot;</span><br></div></code></pre></div></div>
+<p>A credential that is deleted with these tools while a manifest still lists
+its identity as present is written again by the next <code>mdb credentials-apply</code>:
+the apply writes every identity the manifest does not mark <code>state: absent</code>.</p>
 <p>In <strong>SAS Environment Manager</strong> (as an administrator), <strong>Security → Domains</strong>
 lists the domain and its credentials per identity, and supports deleting
 them.</p>
@@ -120,7 +315,16 @@ use, so a deployment that runs a script needs no configuration at all. The
 Builder fetches the signed-in user&#x27;s secrets map once at load time and
 disables models whose provider entry is missing (a note names the entry
 and domain). The domain is the only key source; enter <code>none</code> to skip the
-lookup in deployments that use exclusively key-less self-hosted models.</li>
+lookup in deployments that use exclusively key-less models - self-hosted
+ones, and definitions whose container holds the key
+(<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#auth-env"><code>--auth env</code></a>), which are never
+disabled for a missing entry.
+The setting is <strong>one option for every kind</strong> the Prompt Builder offers:
+prompt templates, decision templates and RAG setups read the same domain.
+<code>none</code> works for the two template kinds only. A RAG setup has no key-less
+mode — the vector store&#x27;s user, password and location come from the
+domain — so with <code>none</code> the RAG setup card is shown disabled with that
+reason, and nothing RAG is requested.</li>
 <li class="">The <strong>prompt-optimization job</strong> accepts the same domain name (<code>keyDomain</code>,
 same default) and resolves keys server-side under the identity its compute
 session runs as. <strong>That is only the launching user when the compute context
@@ -132,6 +336,34 @@ below.</li>
 stores at once. Ingestion (SAS Studio / Job Execution) runs under the
 calling user, so access to the vector store follows the same identity
 rules end to end.</li>
+<li class="">The <strong>SAS code of an LLM call</strong> that the custom steps <em>LLM - Create LLM
+Call</em> (1.7) and <em>LLM - Get Options</em> (1.6) and the program
+<code>Create-LLM-Call.sas</code> write keeps the entry name in <code>%let API_KEY=OpenAI;</code>
+and reads the key of that entry when it runs, from the domain named in its
+line <code>%let API_KEY_DOMAIN=agentic-ai-keys;</code> and under the identity of its
+SAS session; the call sends the key in the place of the name. That line is
+written as it stands: the steps and the program do not read the
+<em>Credential domain</em> option of the Prompt Builder (<code>credentialDomain</code>). A
+site whose keys are in another domain edits that one line of the
+generated code. The key is
+not written to the log, and the macro variable <code>options</code> - what
+<code>LLM-Call-Result-Table.sas</code> puts into the result table - keeps the name.
+The request goes through the temporary file <code>llmIn</code>, which then holds the
+key: the code clears that fileref right behind the call, also behind a
+call that failed, and SAS deletes the file. Code of <em>LLM - Create LLM
+Call</em> 1.6, <em>LLM - Get Options</em> 1.5 and the program before this release
+left the file in the WORK folder until the SAS session ended - generate
+it again, or add <code>filename llmIn clear;</code> behind its PROC HTTP step. The
+code finds an entry whose name has letters, digits, <code>.</code>, <code>_</code> and <code>-</code>
+only: it writes the name with <code>COMPRESS</code> (an entry named <code>Azure OpenAI</code>
+is looked up as <code>AzureOpenAI</code> and not found) and into a Perl expression
+that a <code>/</code> ends. The Model Definition Builder refuses any other name in
+<code>key_name</code> and in the <code>API_KEY</code> default of an <code>options.json</code>.
+Where the domain holds no such entry for that identity, the code writes
+<code>WARNING: No key was read for the entry ...</code> and sends an empty <code>API_KEY</code>.
+Code these programs wrote before sent the entry name as the key, and the
+provider refused it (401) - generate it again. See the README of
+<code>SAS-Viya-Integrations/SAS-Code-LLM-Calls</code>.</li>
 </ul>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="where-the-domain-applies--and-where-it-cannot">Where the domain applies — and where it cannot<a href="#where-the-domain-applies--and-where-it-cannot" class="hash-link" aria-label="Direct link to Where the domain applies — and where it cannot" title="Direct link to Where the domain applies — and where it cannot" translate="no">​</a></h2>
 <p>Resolving a credential requires a SAS Viya session: the browser (the
@@ -144,24 +376,71 @@ deployment time</strong>, using the same names as the <code>.env</code> and the 
 vector store: <code>&lt;BACKEND&gt;_RAG_USER</code> / <code>&lt;BACKEND&gt;_RAG_PW</code>, e.g.
 <code>PGVECTOR_RAG_USER</code>; connection config: the <code>RAGSTORE_*</code> variables; the
 embedding call: the <code>RAGEMBED_*</code> variables), exactly like the LLM containers
-receive their configuration today. The manifested retrieval code tries the
-credential domain first and falls back to the environment variables, so the
-same artifact runs on every destination. The LLM containers themselves are
+receive their configuration today. The manifested retrieval code takes the
+user and the password of the vector store from the <code>options</code> input of the
+call first, then from the environment variables, and asks the credential
+domain only for what is still missing after both, so the same artifact runs
+on every destination. Where the two variables are set, they are used and the
+domain is not asked. The LLM containers themselves are
 unaffected either way: they receive the API key per call via the options
-payload, resolved by the caller.</p>
+payload, resolved by the caller - except a definition built with
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#auth-env"><code>mdb add --auth env</code></a>, whose
+container reads the key from an environment variable filled from a
+Kubernetes Secret. Its <code>options.json</code> has no <code>API_KEY</code>, so no caller asks the
+domain for it and no identity needs an entry for it - once the callers built
+before the switch are rebuilt. RAG ingestion looks the entry of an embedding
+model or an enrichment LLM up in two static maps of <code>rag_core/providers.py</code>,
+and a model that is still in them is still asked for (<code>needs the &#x27;OpenAI&#x27; entry in the credential domain</code>). After a definition is switched, regenerate
+the maps from the fact sheets and replace them in the module:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">cd SAS-Viya-Integrations/RAG</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">python -m rag_core.providers --from ../../Embedding-Definitions/embedding_fact_sheet.csv</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">python -m rag_core.providers --llm-from ../../LLM-Definitions/llm_fact_sheet.csv</span><br></div></code></pre></div></div>
+<p>A model whose <code>options.json</code> has no <code>API_KEY</code> is left out of the map and
+needs no entry.</p>
+<p>Without the two variables of the vector store the retrieval model does not
+fail the decision: it answers <code>retrieval failed: RuntimeError: no vector-store credentials resolved: …</code> in <code>retrieval_status</code> and returns no
+chunk. That is what it answered on 2026-10-11 in a test of SAS Intelligent
+Decisioning and in the publishing validation on a SAS Micro Analytic
+Service destination, where neither runtime had them. With the user and the
+password passed per call instead, in the <code>options</code> input of the model, the
+retrieval model returned chunks in both places the same day.</p>
+<p>The two variables as environment variables were measured for SAS Micro
+Analytic Service, also on 2026-10-11: <code>PGVECTOR_RAG_USER</code> and
+<code>PGVECTOR_RAG_PW</code> were put into a Kubernetes secret and set on the
+containers of the deployment from it,</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">kubectl -n &lt;namespace&gt; set env deployment/sas-microanalytic-score --containers=* --from=secret/&lt;name&gt;</span><br></div></code></pre></div></div>
+<p>the pod restarted, and a call with <code>{}</code> as the <code>options</code> of the retrieval
+model returned <code>retrieval_status</code> <em>ok</em> and three hits. Not measured: the same
+variables for the test of SAS Intelligent Decisioning, which runs in CAS, and
+for a SAS Container Runtime container.
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#the-retrieval-model-in-a-decision">The retrieval model in a decision</a>
+lists every variable the model reads and where each destination takes
+them.</p>
 <p><strong>Service-account compute contexts.</strong> A compute context can be configured to
 run its servers under a <strong>shared service account</strong> instead of the requesting
 user (the stock <em>SAS Job Execution compute context</em> often is). A job running
 there resolves the domain as <strong>that service account</strong> — not as the person who
-clicked <em>Optimize</em> — so a personal credential is never found, and the job&#x27;s
-error names the identity it actually resolved as. Two remedies:</p>
-<ul>
-<li class="">Grant the credential to the <strong>service account&#x27;s identity or one of its
-groups</strong> with the admin script. Be deliberate: every job that runs under
-that account can then use those keys.</li>
-<li class="">Or prepare a <strong>dedicated compute context that runs as the requesting
-user</strong> and point the app&#x27;s compute-context Option at it — keys then follow
-the per-user/group rules above.</li>
-</ul></div></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/sas-agentic-ai-accelerator/Administration-Guide/Enabling-Prompt-Optimization"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Enabling Prompt Optimization</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">RAG Ingestion and Retrieval</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-model-one-domain-named-entries-per-identity-credentials" class="table-of-contents__link toc-highlight">The model: one domain, named entries, per-identity credentials</a></li><li><a href="#creating-and-updating-the-cli-workflow" class="table-of-contents__link toc-highlight">Creating and updating: the CLI workflow</a></li><li><a href="#equipping-many-identities-at-once" class="table-of-contents__link toc-highlight">Equipping many identities at once</a></li><li><a href="#inspecting-and-deleting-cli-and-environment-manager" class="table-of-contents__link toc-highlight">Inspecting and deleting: CLI and Environment Manager</a></li><li><a href="#how-the-applications-use-the-domain" class="table-of-contents__link toc-highlight">How the applications use the domain</a></li><li><a href="#where-the-domain-applies--and-where-it-cannot" class="table-of-contents__link toc-highlight">Where the domain applies — and where it cannot</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Support</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub Repository<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026, SAS Institute Inc., Cary, NC, USA. All Rights Reserved. Built with Docusaurus.</div></div></div></footer></div>
+clicked <em>Optimize</em> — so a personal credential is never found. Whether a
+context does this is its attribute <strong>runServerAs</strong>, which the answer of
+<code>GET /compute/contexts/&lt;id&gt;</code> holds as <code>attributes.runServerAs</code>. A context
+without the attribute runs as the requesting user. On SAS Viya 2026.09 the stock <em>SAS Job Execution compute
+context</em> has <code>runServerAs</code> set to a service account and <em>SAS Studio compute
+context</em> has none (read with the REST call on 2026-10-20).</p>
+<p>The remedy is a <strong>compute context that runs as the requesting user</strong>: point
+the app&#x27;s compute-context Option at it, and keys follow the per-user/group
+rules above. The Prompt Builder has two such options, one per job:
+<strong>Optimization: compute context</strong> (<code>computeContext</code>) for the
+prompt-optimization job and <strong>RAG: ingestion compute context</strong>
+(<code>ragComputeContext</code>) for the RAG ingestion and the retrieval test.</p>
+<p>Granting the credential to the <strong>service account&#x27;s identity or one of its
+groups</strong> with the admin script is no remedy for these two jobs. It makes the
+keys available to every job that runs under that account, and the jobs still
+fail: the optimization job writes its result to the prompt in SAS Model
+Manager, and the service account may not change the prompt of a user - on
+2026-10-20 the job, run under it, made all its model calls and was then
+refused the write with HTTP 403. From release 2.3.0 the optimization job
+compares the user its session runs as with the user who started it and ends
+before its first model call when the two differ; its message names the
+account the session runs as and the option to change. The RAG ingestion
+cannot reuse the CAS session it needs in such a context (see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#configuration-properties-panel">Deploying the Builder UIs</a>).</p></div></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/sas-agentic-ai-accelerator/Administration-Guide/Enabling-Prompt-Optimization"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Enabling Prompt Optimization</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">RAG Ingestion and Retrieval</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-model-one-domain-named-entries-per-identity-credentials" class="table-of-contents__link toc-highlight">The model: one domain, named entries, per-identity credentials</a></li><li><a href="#creating-and-updating-the-cli-workflow" class="table-of-contents__link toc-highlight">Creating and updating: the CLI workflow</a></li><li><a href="#equipping-many-identities-at-once" class="table-of-contents__link toc-highlight">Equipping many identities at once</a><ul><li><a href="#adding-an-identity-mdb-credentials-add" class="table-of-contents__link toc-highlight">Adding an identity: <code>mdb credentials-add</code></a></li><li><a href="#removing-a-credential-state-absent" class="table-of-contents__link toc-highlight">Removing a credential: <code>state: absent</code></a></li></ul></li><li><a href="#inspecting-and-deleting-cli-and-environment-manager" class="table-of-contents__link toc-highlight">Inspecting and deleting: CLI and Environment Manager</a></li><li><a href="#how-the-applications-use-the-domain" class="table-of-contents__link toc-highlight">How the applications use the domain</a></li><li><a href="#where-the-domain-applies--and-where-it-cannot" class="table-of-contents__link toc-highlight">Where the domain applies — and where it cannot</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Support</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub Repository<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026, SAS Institute Inc., Cary, NC, USA. All Rights Reserved. Built with Docusaurus.</div></div></div></footer></div>
 </body>
 </html>

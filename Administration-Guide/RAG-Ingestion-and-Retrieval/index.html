@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">RAG Ingestion and Retrieval | SAS Agentic AI Accelerator Documentation</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="RAG Ingestion and Retrieval | SAS Agentic AI Accelerator Documentation"><meta data-rh="true" name="description" content="The accelerator ingests a document corpus into a vector store and serves it"><meta data-rh="true" property="og:description" content="The accelerator ingests a document corpus into a vector store and serves it"><link data-rh="true" rel="icon" href="https://raw.githubusercontent.com/sassoftware/sas-agentic-ai-accelerator/refs/heads/main/static/sas.png"><link data-rh="true" rel="canonical" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval" hreflang="en"><link data-rh="true" rel="alternate" href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"RAG Ingestion and Retrieval","item":"https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval"}]}</script><link rel="stylesheet" href="/sas-agentic-ai-accelerator/assets/css/styles.f2f08132.css">
-<script src="/sas-agentic-ai-accelerator/assets/js/runtime~main.30eef88d.js" defer="defer"></script>
-<script src="/sas-agentic-ai-accelerator/assets/js/main.94e35372.js" defer="defer"></script>
+<script src="/sas-agentic-ai-accelerator/assets/js/runtime~main.194a6d73.js" defer="defer"></script>
+<script src="/sas-agentic-ai-accelerator/assets/js/main.5c338dcf.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -20,59 +20,188 @@ your data. For building a pipeline, see the
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-gets-deployed">What gets deployed<a href="#what-gets-deployed" class="hash-link" aria-label="Direct link to What gets deployed" title="Direct link to What gets deployed" translate="no">​</a></h2>
 <p>Everything lives in one governed SAS Content folder, by default
 <code>/SAS Agentic AI Accelerator/RAG</code>:</p>
-<table><thead><tr><th>Folder</th><th>Contents</th></tr></thead><tbody><tr><td><code>rag_core/</code></td><td>The Python runtime every step and job imports at run time</td></tr><tr><td><code>steps/</code></td><td>The nine custom steps, registered as dataFlows resources</td></tr><tr><td><code>jobs/</code></td><td><code>Ingest-Documents.sas</code>, the standalone schedulable job</td></tr><tr><td><code>models/</code></td><td>The retrieval model template, manifested per setup</td></tr><tr><td><code>generated/</code></td><td>Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what <strong>RAG - Register Setup</strong> writes. The Builder lets an author choose a different folder per setup</td></tr></tbody></table>
-<p>Deploy with the shipped script, which reads your local checkout and
-authenticates through the <code>sas-viya</code> CLI session:</p>
+<table><thead><tr><th>Folder</th><th>Contents</th></tr></thead><tbody><tr><td><code>rag_core/</code></td><td>The Python runtime every step and job imports at run time</td></tr><tr><td><code>steps/</code></td><td>The nine custom steps, registered as dataFlows resources</td></tr><tr><td><code>jobs/</code></td><td><code>Ingest-Documents.sas</code>, the standalone schedulable job, and <code>Test-Retrieval.sas</code>, the probe behind the Builder&#x27;s <em>Test retrieval</em></td></tr><tr><td><code>models/</code></td><td>The retrieval model template, manifested per setup</td></tr><tr><td><code>generated/</code></td><td>Default destination for per-setup artifacts — the ingestion job and the Studio flow the Builder generates, and what <strong>RAG - Register Setup</strong> writes. The Builder lets an author choose a different folder per setup</td></tr></tbody></table>
+<p>This is the <strong>RAG runtime</strong>. It holds no user interface: the RAG Builder that
+writes setups against it is part of the Prompt Builder — see
+<a href="#serving-the-rag-builder" class="">Serving the RAG Builder</a> below.</p>
+<p>Two ways put the runtime there:</p>
+<ol>
+<li class=""><strong>The transfer package.</strong> <code>mdb builders-import</code> imports the content folder,
+and the runtime is the folder <code>RAG</code> of it — see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-transfer-package">Install or upgrade with the transfer package</a>.
+The package is compared with the repository before it ships, file by file
+and step by step, so a site that imports the package of a release has the
+runtime the documentation and the changelog of that release describe, and
+needs no script.</li>
+<li class=""><strong>From a checkout.</strong> The shipped script publishes the runtime of your
+checkout — for a fix between two packages, or for a site that does not
+import the package:</li>
+</ol>
 <div class="language-powershell codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-powershell codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">./SAS-Viya-Integrations/Other/deploy-rag-content.ps1</span><br></div></code></pre></div></div>
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">./SAS-Viya-Integrations/Other/deploy-rag-content.sh</span><br></div></code></pre></div></div>
-<p>Re-run it after every change. <strong>Nothing is ever fetched from the internet at
-run time</strong>, so the same script works in an air-gapped deployment: the SAS
-Content folder is the distribution channel, not GitHub.</p>
-<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Why the script and not a manual upload</div><div class="admonitionContent_BuS1"><p>A <code>.step</code> file uploaded as a plain Content file renders as an empty step
-editor — steps are dataFlows <em>service</em> resources. The script also <strong>updates</strong>
+<p>The script calls <code>mdb content-deploy --only RAG --to &lt;the RAG content root&gt;</code>
+(see <a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#one-part-somewhere-else">One part, somewhere else</a>).
+It needs the Model Definition Builder installed and a sign-in it can use — a
+token, a password grant or the login of the SAS Viya CLI. The folder it deploys
+into is <code>/SAS Agentic AI Accelerator/RAG</code>; <code>-ContentRoot</code> (PowerShell) or <code>-r</code>
+(bash) names another one: the RAG content root itself, a folder of any name,
+which is what the option <strong>RAG: content root</strong> of the Prompt Builder holds.
+A site with such a content root deploys the runtime there after an import,
+because the import brings it into the folder <code>RAG</code> of the content folder.
+<code>-DryRun</code> / <code>-n</code> lists what would change and writes nothing. A folder that is
+not there is created only with <code>-Create</code> / <code>-c</code> (with every folder above it),
+so a mistyped path does not become a new folder. A warning <code>mdb</code> writes to the
+error stream - <code>InsecureRequestWarning</code> where TLS verification is off - does
+not stop the PowerShell script, also with its streams redirected, and both
+scripts end with the exit code of <code>mdb</code>. The command they call, <code>mdb content-deploy --only RAG --to &lt;folder&gt;</code>, created the 41 entries of the runtime
+directly in a test folder on SAS Viya 2026.09 on 2026-10-12. On 2026-10-13
+the PowerShell script ran as a dry run for a test folder, with every stream
+redirected into a file and its command line saved beside it: the file held
+the warning and <code>41 entries: 41 equal.</code>, and the request log GET requests
+only; the exit code of the script was not saved. <strong>Not run against SAS
+Viya</strong>: the bash script, a run without <code>-DryRun</code> / <code>-n</code>, and <code>-Create</code> / <code>-c</code>.</p>
+<p><strong>Nothing is ever fetched from the internet at run time</strong>, so both ways work
+in an air-gapped deployment: the SAS Content folder is the distribution
+channel, not GitHub.</p>
+<p>If a deploy ends with a line that says <code>FAILED</code>, read the line
+<code>Stopped at the first write that failed: ...</code> under it and run the deploy
+again: it stops at the first write that is refused or gets no answer, lists
+what it did not attempt, and removes nothing, so the folder holds the file
+it had or the new one. Up to release 2.2 a file was replaced by deleting it
+and uploading the new copy. Measured on 2026-10-11 on SAS Viya 2026.09 with
+<code>deploy-rag-content.ps1</code> as it was then — a script that uploaded the files
+itself —, against a content folder that held the runtime of release 2.0:
+the first run stopped after four files with <code>(409) Conflict</code> on the upload
+of a file (<code>POST /files/files</code>) whose old copy it had just deleted, and left
+that file missing. The same upload was answered 201 a minute later, and a
+second run of the script completed with <em>Deployed 35 files</em>. All nine steps
+had kept their ids, and every file equalled the checkout afterwards. A third
+run later the same day went through at the first attempt.
+<code>mdb content-deploy</code> deletes no file: it replaces the content of a file that
+differs in place, under the id the file has. That update has <strong>not run
+against SAS Viya</strong>.</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Why a deploy and not a manual upload</div><div class="admonitionContent_BuS1"><p>A <code>.step</code> file uploaded as a plain Content file renders as an empty step
+editor — steps are dataFlows <em>service</em> resources. The deploy also <strong>updates</strong>
 an already-registered step in place rather than replacing it. Re-registering a
 step mints a new id, and every saved flow referencing the old id breaks.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="after-an-upgrade">After an upgrade: manifest every setup once<a href="#after-an-upgrade" class="hash-link" aria-label="Direct link to After an upgrade: manifest every setup once" title="Direct link to After an upgrade: manifest every setup once" translate="no">​</a></h3>
+<p>A new runtime in the folder does not reach what a site made from the earlier
+one. After the package of a new release was imported, or its runtime deployed
+from a checkout:</p>
+<ul>
+<li class=""><strong>Open every RAG setup in the Prompt Builder and click Manifest setup.</strong> A
+retrieval model holds the score code it was manifested with, and the job
+definition of a setup holds a copy of <code>Ingest-Documents.sas</code> from the day it
+was manifested; the manifest writes the template and the program of the
+release into them. For release 2.3.0 that is what brings the endpoint a
+setup embeds at (<a href="#where-a-setup-embeds" class="">Where a setup embeds</a>), the TLS
+setting of the report, the lengths of the variables
+(<a href="#the-lengths-of-the-variables" class="">The lengths of the variables</a>), the saved
+ledger that is loaded back
+(<a href="#a-saved-ledger-is-loaded-back" class="">A saved ledger is loaded back</a>), the run
+lock that follows the column types of the ledger, and a failed run that ends
+as a failed job.</li>
+<li class=""><strong>Run the ingestion of each setup once.</strong> From release 2.3.0 on the job
+publishes <code>&lt;prefix&gt;_RUNS</code> and <code>&lt;prefix&gt;_DOC_EVENTS</code> beside the ledger, and
+that one run publishes every run the vector store holds for the collection
+(<a href="#run-history" class="">Run history</a>). A job definition that was not manifested
+again holds the program of the day it was made and publishes neither table.</li>
+<li class=""><strong>Publish the decisions that use the retrieval model again</strong>, so that the
+destinations run the new score code. No published decision has to be
+repaired for the lengths of the variables.</li>
+<li class=""><strong>A setup that was registered from a flow</strong> gets the new score code when the
+step <em>RAG - Register Setup</em> runs again
+(<a href="#tls-register-setup-step" class="">the checkbox of the step</a>). A job that the step
+generated from a flow is not written by <strong>Manifest setup</strong>: run the step
+again with the flow named under <em>Studio Flow to generate the scheduled job
+from</em>. A job that SAS Studio itself deploys from the flow does not have the
+statements that report a failed run as failed.</li>
+<li class=""><strong>A schedule, a monitor or a script that reads the state of the ingestion
+job</strong> has to expect a new state from release 2.3.0 on: a run that failed
+ends as <code>failed</code>. Up to 2.2.x, and with a job definition that was not
+manifested again, it ends as <code>completed</code> with <em>ERROR: RAG ingestion
+failed: …</em> as the last message of the program in its log.</li>
+</ul>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="serving-the-rag-builder">Serving the RAG Builder<a href="#serving-the-rag-builder" class="hash-link" aria-label="Direct link to Serving the RAG Builder" title="Direct link to Serving the RAG Builder" translate="no">​</a></h2>
-<p>The Builder is a single-file app served through SAS Job Execution, the same
-way as the Prompt Builder. Build it with <code>npm run build:rag</code> in
-<code>LLM-Prompt-Builder/</code> (unlike the Prompt Builder no prebuilt file is
-committed; the transfer package above carries the built app) and create a
-job definition whose <strong>form</strong> is that HTML:</p>
-<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Job definition</td><td><code>&lt;content root&gt;/RAG-Builder-UI</code></td></tr><tr><td><code>code</code></td><td>empty — this job never runs SAS</td></tr><tr><td><code>properties</code> entry named <code>form</code></td><td>the contents of <code>dist-rag/rag.html</code></td></tr><tr><td>URL</td><td><code>https://&lt;host&gt;/SASJobExecution/?_program=&lt;path&gt;&amp;_action=form</code></td></tr></tbody></table>
-<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>The HTML is the FORM, not the code — and the form is a <em>property</em></div><div class="admonitionContent_BuS1"><p><code>&amp;_action=form</code> serves the job&#x27;s <strong>form</strong>. Two ways to get this wrong, both
-of which look like something else:</p><ul>
-<li class="">HTML in <code>code</code> produces <em>&quot;Parameter Error — HTML form file was not found&quot;</em>,
-which reads like a missing file rather than the wrong field.</li>
+<p>The RAG Builder is not an application of its own. It is the <strong>RAG setup</strong> kind
+of the Prompt Builder: the same single-file app, the same job definition
+(<code>/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI</code>) and
+the same Data-Driven Content object in the <strong>Prompt Builder</strong> report. There is
+nothing to build and no job definition to create for it — deploy the Prompt
+Builder as described in
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs">Deploying the Builder UIs</a>, then switch RAG on:</p>
+<ol>
+<li class="">Import the package or deploy the runtime (above), so the content root holds <code>rag_core</code>, the
+steps, the jobs and the model template.</li>
+<li class="">Open the Prompt Builder report, select the object and open its <strong>Options</strong>
+pane. The release table <code>Public.ACCELERATOR_RELEASES</code> has to be assigned to
+the object, as for every use of it — see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#5-add-the-object-to-a-visual-analytics-report">step 5</a>.</li>
+<li class="">Tick <strong>Enable RAG setups</strong>. The options that start with <code>RAG:</code> appear
+below the checkbox.</li>
+<li class="">Fill them in: the <strong>embedding model project</strong>, the content root, the CAS
+server, the <strong>ingestion compute context</strong>, a checkbox per vector database
+the deployment offers, and the operational policy (TLS, deleted-document
+handling, history retention, run-history recording, embedding replicas,
+table persistence). The Model Manager repository, the SCR endpoint, the
+deployment type and the credential domain are the ones the Prompt Builder
+already has; they are set once and used by every kind. The whole list, with
+defaults, is in
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#configuration-properties-panel">Configuration</a>.</li>
+</ol>
+<p>The Setup card of the Prompt Builder then offers <em>RAG setup for a document
+collection</em> beside the template kinds, and choosing it shows the Builder&#x27;s own
+four steps. While the switch is not ticked — the default — the kind is not
+offered, nothing of the Builder is loaded and nothing RAG is requested from
+SAS Viya. With it enabled, the first request for RAG is made when a user
+chooses the kind.</p>
+<p>The policy values are recorded onto each setup as it is created, so a setup
+keeps what it was built with.</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Three settings worth checking when RAG does not behave as expected</div><div class="admonitionContent_BuS1"><ul>
+<li class=""><strong>The credential domain must not be <code>none</code>.</strong> Prompt and decision templates
+read <code>none</code> as &quot;look no key up&quot;. RAG has no such mode — the ingestion and the
+retrieval take the store&#x27;s user, password, host and database from the
+domain — so the RAG card is shown disabled and says why.</li>
+<li class=""><strong>The Model Manager repository ID must be set.</strong> Every kind needs it; without
+it the kind is not offered.</li>
+<li class=""><strong>The ingestion compute context is not the optimization compute context.</strong>
+The option is <code>ragComputeContext</code> (<strong>RAG: ingestion compute context</strong>); the
+option <code>computeContext</code> belongs to the prompt optimization job and is never
+read for an ingestion. A blank <code>ragComputeContext</code> does not hide the kind:
+it blocks <em>Launch ingestion</em> and <em>Test retrieval</em> with a message that names
+the setting.</li>
+</ul></div></div>
+<div class="theme-admonition theme-admonition-warning admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>These options live inside the report</div><div class="admonitionContent_BuS1"><p>Importing a newer Prompt Builder report from a transfer package replaces every
+value above with whatever the package was built against — silently, since the
+report still opens and the app still runs, with RAG switched off. Save them
+with <code>mdb options-save</code> before importing and restore them after: see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import">Preserving builder options across a report import</a>.
+That section also covers a site that still has the retired report named
+<strong>RAG Builder</strong> from release 2.2 or earlier.</p></div></div>
+<p>Served standalone rather than embedded, the same settings are query
+parameters of the Prompt Builder job — the switch included, because it is off
+by default:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">.../SASJobExecution/?_program=/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI&amp;_action=form&amp;enableRag=true&amp;modelRepositoryID=&lt;uuid&gt;&amp;embeddingProjectID=&lt;uuid&gt;&amp;ragComputeContext=&lt;context name&gt;</span><br></div></code></pre></div></div>
+<p>(The browser encodes the blanks.) Without an LLM project in the URL the page
+shows the RAG Builder alone; add <code>llmProjectID</code> and <code>SCREndpoint</code> to get the
+template kinds beside it. A URL written for the job definition
+<code>RAG-Builder-UI</code> of release 2.2 or earlier has to be rewritten this way: that
+definition is retired, its context parameter was called <code>computeContext</code>, and
+it needed no <code>enableRag</code>. <code>id</code> is no longer read from the URL. For your own builds: <code>npm run build:rag</code> is gone, and <code>npm run build</code> produces the one <code>dist/index.html</code> that holds all three kinds.</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>If you replace the app by hand: the HTML is the FORM, and the form is a <em>property</em></div><div class="admonitionContent_BuS1"><p><code>mdb builders-import</code> and the manual steps in
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#2-create-a-sas-job-execution-definition">Deploying the Builder UIs</a>
+put the built <code>dist/index.html</code> into the job definition for you. Updating the
+definition through the REST API instead has two ways to go wrong, both of
+which look like something else:</p><ul>
+<li class=""><code>&amp;_action=form</code> serves the job&#x27;s <strong>form</strong>. HTML in <code>code</code> produces
+<em>&quot;Parameter Error — HTML form file was not found&quot;</em>, which reads like a
+missing file rather than the wrong field.</li>
 <li class="">The form is an entry <strong>inside the definition&#x27;s <code>properties</code> list</strong>, named
 <code>form</code> — not a top-level <code>form</code> key. A PUT carrying a top-level key returns
 <strong>200 and silently drops it</strong>, so the deploy looks successful while the old
 app keeps serving. Verify by reading the property back, not by trusting the
 status code.</li>
-</ul><p>The Prompt Builder is served the same way, from
-<code>/SAS Agentic AI Accelerator/Prompt Builder/SAS-LLM-Prompt-Builder-UI</code>.</p></div></div>
-<p>The Content Security Policy directives in
-<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs">Deploying the Builder UIs</a> apply here too — the
-build base64-encodes its inline scripts so the Go template engine cannot
-corrupt them, and the CSP has to allow the decoded bundle to run.</p>
-<p>Assign the release table <code>Public.ACCELERATOR_RELEASES</code> to the object first
-(<code>mdb setup</code> / <code>mdb load-releases</code> load it; see <a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#5-add-the-object-to-a-visual-analytics-report">Deploying the Builder
-UIs</a>) -
-a Data-Driven Content object renders only with a data assignment. Then
-configure the Builder from its <strong>Options</strong> pane in Visual Analytics: the
-Model Manager repository, the <strong>embedding model project</strong>, SCR endpoint,
-credential domain, content root, CAS server, the ingestion compute context, a
-checkbox per vector database the deployment offers, and the operational policy
-(TLS, deleted-document handling, history retention, run-history recording,
-embedding replicas, table persistence). Those policy values are recorded onto
-each setup as it is created, so a setup keeps what it was built with.</p>
-<div class="theme-admonition theme-admonition-warning admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>These options live inside the report</div><div class="admonitionContent_BuS1"><p>Importing a newer Builder report from a transfer package replaces every value
-above with whatever the package was built against — silently, since the report
-still opens and the app still runs. Save them with <code>mdb options-save</code> before
-importing and restore them after: see
-<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#preserving-builder-options-across-a-report-import">Preserving builder options across a report import</a>.</p></div></div>
-<p>Served standalone rather than embedded, the same settings are query
-parameters:</p>
-<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">.../SASJobExecution/?_program=&lt;path&gt;&amp;_action=form&amp;embeddingProjectID=&lt;uuid&gt;&amp;modelRepositoryID=&lt;uuid&gt;</span><br></div></code></pre></div></div>
+</ul></div></div>
 <div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>What the Builder never asks a user</div><div class="admonitionContent_BuS1"><p>Three things a person building a corpus should not have to know are resolved
 rather than typed:</p><table><thead><tr><th></th><th>Comes from</th></tr></thead><tbody><tr><td>Vector store host, port, database</td><td>The credential domain — see below</td></tr><tr><td>Embedding model</td><td>Listed from the embedding model project</td></tr><tr><td>Embedding dimensions</td><td>The chosen model&#x27;s fact sheet</td></tr><tr><td>Maximum chunk size</td><td>Capped at the chosen model&#x27;s published token window</td></tr></tbody></table><p>A typed model name has nothing behind it until a container is published, and
 the failure surfaces as an HTTP 404 at the first embed call — after the crawl
@@ -97,10 +226,965 @@ remain in SAS Job Execution, as for any job run.</p>
 through <code>rag_core</code> exactly as the ingestion does, so a broken
 <code>retrieve_context.py</code> would still pass. Verifying that needs the published
 model.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="one-ledger-for-the-job-and-the-flow">One ledger for the job and the flow<a href="#one-ledger-for-the-job-and-the-flow" class="hash-link" aria-label="Direct link to One ledger for the job and the flow" title="Direct link to One ledger for the job and the flow" translate="no">​</a></h3>
+<p><strong>Manifest setup</strong> generates two things that ingest the same setup: the
+ingestion job, which is the one program <code>Ingest-Documents.sas</code>, and the SAS
+Studio flow, which is made of the RAG custom steps. Both keep the same
+ledger, <code>&lt;prefix&gt;_LEDGER</code>, and both take the same run lock on it: a row
+that the start of a run appends to the table. They do not store the ledger
+alike:</p>
+<table><thead><tr><th>The ledger was last written by</th><th>Its text columns are</th></tr></thead><tbody><tr><td>the ingestion job</td><td><code>CHAR</code>, with fixed lengths</td></tr><tr><td>the flow (<em>RAG - Load Vector Store</em>), or <em>RAG - Purge Documents</em></td><td><code>VARCHAR</code></td></tr></tbody></table>
+<p>CAS does not append a row whose column is <code>VARCHAR</code> where the table has
+<code>CHAR</code>, or the other way round. Up to release 2.2 each of the two declared
+its lock row the one way it stores the ledger itself. Seen on 2026-10-11 on
+SAS Viya 2026.09: a setup ingested with <strong>Launch ingestion</strong>, then its
+generated flow run in SAS Studio, stopped in the first step with</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">ERROR: The variable doc_id has been specified with incompatible data types.</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">ERROR: The action stopped due to errors.</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">ERROR: RAG - List Documents failed: the run lock could not be written to &lt;caslib&gt;.&lt;prefix&gt;_LEDGER - refusing to ingest unguarded</span><br></div></code></pre></div></div>
+<p>and left the ledger as it was. The append the other way round — a <code>CHAR</code>
+row to a <code>VARCHAR</code> table, which is the job on a ledger a flow wrote — was
+refused with the same text in a scratch caslib. The job itself was not run
+on a ledger a flow had written before the change; by its code it did not
+look whether its lock had been written, so it would have gone on without
+one.</p>
+<p>From release 2.3.0 the job, <em>RAG - List Documents</em> and <em>RAG - Purge
+Documents</em> ask the table for its column types (<code>table.columnInfo</code>) before
+they take the lock, and declare the lock row the way the table holds its
+text. The log of the run says which it found: <em>NOTE: the ledger … holds its
+text columns as char - the run lock is written the same way</em>, or <em>as
+varchar</em>. The steps that read the ledger compare its values without the
+blanks a <code>CHAR</code> column is padded with. Nothing has to be migrated: a ledger
+of either type is used as it is, and it still changes its type with the
+writer that last completed a run. The two were not made to store the ledger
+alike; that would have changed how the last step of a flow, or the job,
+writes the table, and neither change could be measured.</p>
+<p>The new lock is in the steps and in the job, which reach a site with
+the transfer package, or from a checkout with <code>deploy-rag-content</code>. The job definition of a setup holds a copy of
+<code>Ingest-Documents.sas</code> as it was when the setup was manifested, so manifest
+the setup again afterwards; whether a flow generated earlier runs the
+redeployed steps without that was not checked.</p>
+<p><strong>Measured on 2026-10-11 on SAS Viya 2026.09</strong>, with the ingestion job and
+the generated flow of one setup, in both directions:</p>
+<ul>
+<li class=""><strong>The job on the ledger it had written</strong> (<code>CHAR</code>). The log said <em>NOTE: the
+ledger Public.…_LEDGER holds its text columns as char - the run
+lock is written the same way</em>, the append added one row, and the run
+completed with 3 documents unchanged.</li>
+<li class=""><strong>The generated flow on that <code>CHAR</code> ledger</strong> — the case that had failed
+with <em>incompatible data types</em>. All five steps ended green. Afterwards the
+ledger was <code>VARCHAR</code>, with 3 rows of status <em>unchanged</em> and no lock row.</li>
+<li class=""><strong>The job on the <code>VARCHAR</code> ledger the flow had left.</strong> The log said <em>…
+holds its text columns as varchar - the run lock is written the same way</em>,
+the append added one row, and the run completed with 3 unchanged.</li>
+</ul>
+<p><strong>Measured again on 2026-10-11 on the same system, with pgvector and with
+SingleStore 9.0.40.</strong> The job and the flows ran as SAS Job Execution jobs
+in the <em>SAS Studio compute context</em>, the flows as the code SAS Studio
+generates for them and not clicked in SAS Studio, on ledgers in <code>CASUSER</code>:</p>
+<ul>
+<li class=""><strong>A project without a ledger, then the job twice.</strong> The first run found
+3 documents new, and the ledger it wrote was <code>CHAR</code>. The second run
+logged <em>as char</em>, appended the lock and completed with 3 unchanged.
+The same on SingleStore.</li>
+<li class=""><strong>The step <em>RAG - Purge Documents</em> in the mode purge</strong>, on a <code>CHAR</code> and on a
+<code>VARCHAR</code> ledger (pgvector), and on a <code>CHAR</code> ledger (SingleStore). The
+step logged the type it found and appended its lock, its log said
+<em>removed 1 chunk rows for 1 documents</em>, and the ledger held 2 documents
+afterwards and no lock row. The ingestion that followed — the flow in
+two of the three cases, the job in one — found the purged document as
+new and brought it back. On pgvector the removed chunk row is the
+step&#x27;s own log line; on SingleStore the collection was read and held 2
+chunks.</li>
+<li class=""><strong>A first step that fails and hands the lock back</strong>, on both types
+(pgvector). <em>RAG - List Documents</em> with a documents folder that does
+not exist appended its lock, failed, and wrote <em>NOTE: RAG - List
+Documents: the run lock was released so the run can be retried</em>. The
+ledger kept its 3 rows and its type and held no lock row, and the next
+run, less than three minutes later, was not refused.</li>
+<li class=""><strong>The job reads its lock back</strong> (see below). Every job run on a ledger
+that existed showed two <code>PROC JSON</code> steps before the Python program and
+completed.</li>
+</ul>
+<p>Not measured in those runs: a lock that CAS refuses, which is what the
+read-back of the job is there for; a first run of the flow without a
+ledger with these steps (a flow on a ledger of its own ran green earlier
+the same day, before the change); the fallback for a table whose column
+types cannot be read; two runs at the same time, and with them a run that
+the lock of another run refuses; and a lock older than 30 minutes. What
+the job does with its lock when its run fails was not measured either. By
+the code of that day it left its lock row in the ledger; it now takes its
+own row out again. All of these but the first and the third were measured
+later the same day, with the job and the steps as release 2.3.0 ships
+them — see <em>Measured with the runtime of release 2.3.0</em> at the end of
+this section.</p>
+<p><strong>The job reads its lock back.</strong> <em>RAG - List Documents</em> reads the lock it
+appended and refuses to go on without one. The job did not: by its code a
+lock that CAS had refused went unnoticed there, and the job went on without
+one. It now exports the ledger a second time, after the append, and looks
+for a lock row the first export did not hold. Without one it ends with
+<em>RAG ingestion failed: RuntimeError: the run lock could not be written to
+the ledger … - refusing to ingest unguarded</em>, and the
+ledger stays as it was. The check sees only that the row is not there, so
+the message names where to look and not one cause: the SAS log above it,
+for an ERROR of the append or of the export after it. The passing case
+was measured, as said above; the refusal was not provoked. To see it on a
+site: run the job of a setup whose ledger exists (<strong>Launch ingestion</strong>
+after <code>deploy-rag-content</code> and <strong>Manifest setup</strong>) — the run has to
+complete as before, and its log then shows two <code>PROC JSON</code> steps before
+the Python program where it showed one.</p>
+<p>What follows in this section was written after those measurements. It
+is in the steps and in the job of release 2.3.0 and was run on the same
+system later that day: <em>Measured with the runtime of release 2.3.0</em>, at
+the end of this section, says what was seen and what was not run. The
+test suite of <code>rag_core</code> holds the text of the macros and runs the Python
+of the job.</p>
+<p><strong>Who hands a lock back.</strong> A step that fails hands the run lock back by
+rewriting the ledger without that row — copy, drop, promote, save — and
+then writes a NOTE that begins with its name and says <em>the run lock was
+released so the run can be retried</em>. The steps measured above did that
+whether the run held a lock or not. Seen in those runs: a purge that had gone through, a preview of a
+purge and a <em>RAG - Register Setup</em> that failed after <em>RAG - Load Vector
+Store</em> had already written the ledger each rewrote the ledger once more
+and wrote the NOTE. A run that the lock of another run had refused did
+the same by the code, and saved the ledger with the lock row of the
+other run in it. Now only a failing run whose own lock row stands in the
+ledger rewrites it and writes the NOTE. A run that another run&#x27;s lock
+refused and a step that fails after the ledger was written leave the
+ledger alone, a purge that went through has written the ledger without
+its lock row and does not write it a second time, and none of them says
+that a lock was released. A preview of <em>RAG - Purge Documents</em> takes no
+lock at all (<a href="#retention-and-erasure" class="">retention and erasure</a>).</p>
+<p><strong>The job hands its lock back.</strong> Up to this change the job appended its
+lock row before its Python program looked for the lock of another run,
+and only a run that went through took the row out again, by storing the
+ledger. A run that failed left a fresh lock row behind, and a run that
+another lock had refused left a second one. The next run of the job or
+of the flow was then refused for 30 minutes with nothing running:
+<em>another ingestion run appears active for this ledger (run lock held) -
+retry later</em>. The row carried no run id, so nothing could tell it from
+the lock of another run. The job now makes its run id in SAS, as <em>RAG -
+List Documents</em> does, and writes it into the lock row. It looks for a
+fresh lock of another run before it appends; a run that is refused
+appends nothing, exports the ledger once and leaves the table and its
+saved file as they are. SAS refuses such a run before the Python program
+looks, so the message ends the run as it stands above, without
+<em>RuntimeError:</em> in front of it. A run that failed after it took the lock
+copies the ledger without the row that carries its own id, drops the
+table, promotes and saves the copy, and writes <em>NOTE: RAG ingestion: the
+run lock was released so the run can be retried</em>. The ledger keeps its
+column types. A lock row with an empty run id — written by a job
+definition that was not manifested again — is the lock of another run to
+the job and to the steps: it refuses while it is less than 30 minutes
+old, is ignored afterwards, and stays in the ledger until a run that
+goes through writes it.</p>
+<p>One limit, read from the code and not measured. A lock row carries the
+time of the SAS clock, and the Python programs of the job and of the
+steps compare it with their own clock, which is UTC. In a compute
+session whose SAS clock is not UTC — the option <code>TIMEZONE</code> — the two
+differ by the offset. East of UTC the Python program of the job then
+still takes for fresh a lock row that SAS took for stale: such a run has
+appended its own lock, hands it back, and its message does carry
+<em>RuntimeError:</em>. The sessions of the test system run in UTC.</p>
+<p><strong>More than one lock row.</strong> A run that crashes leaves its lock row
+behind; 30 minutes later the next run ignores it and appends its own
+beside it, and the stale row stays until a run that goes through writes
+the ledger. The job and the steps <em>RAG - List Documents</em>, <em>RAG - Load
+Vector Store</em> and <em>RAG - Purge Documents</em> take the newest lock row to
+decide whether another run holds the lock. They took one row, whichever
+CAS returned first or last, so a stale row could hide the lock of a run
+that was at work. No such ledger had come about on the test system by
+itself; the measurement below made one.</p>
+<p><strong>The job ends as failed when the run failed.</strong> <code>Ingest-Documents.sas</code>
+never raises a SAS error, so up to release 2.2 SAS Job Execution reported
+every run of it as completed and the outcome was in the log only. The
+program now sets <code>SYSCC</code> as its last statement when the run failed, and
+SAS Job Execution then reports the job as failed. It still runs to its
+last statement; nothing aborts. That statement was measured for the job
+<em>RAG - Register Setup</em> generates from a flow, which ended as <code>failed</code>
+(<a href="#tls-register-setup-step" class="">the job generated from a flow</a>), and later
+the same day for <code>Ingest-Documents.sas</code> (below). Two ways out of the
+program used to leave no
+milestone for the Prompt Builder either: a saved ledger that cannot be
+loaded, and a compute context without the <code>requests</code> package. Both now
+write the milestone <em>Ingestion failed: …</em> that every other failure
+writes, so <strong>Launch ingestion</strong> shows <em>The ingestion run did not
+succeed</em> where it showed <em>Run finished. The ingestion ledger is below.</em></p>
+<p><strong>The job stores a ledger only after a run that went through.</strong> The job
+stored <code>rag_ledger_out.json</code> whenever that file existed in WORK. In a SAS
+session that had run the job before, a later run that stopped early found
+the file of the earlier run and stored that ledger again, over the saved
+file. A job started by SAS Job Execution has a WORK of its own and was
+not affected. The two files the job reads the ledger and its lock from,
+<code>rag_ledger_in.json</code> and <code>rag_ledger_lock.json</code>, stayed in WORK as well:
+in a SAS session that had run the job before, a run that found no ledger
+in memory exported none and read the two files of the earlier run — that
+ledger as its own, and its lock as the lock that was written. The job
+now deletes both before it exports anything and says so (<em>NOTE: RAG
+ingestion: rag_ledger_in.json of an earlier run of this SAS session was
+deleted from WORK</em>); a file that is there and cannot be deleted stops
+the run. The line is written for each of the two files that is there:
+for both after a run that took a lock, for <code>rag_ledger_in.json</code> alone
+after a run that was refused, and for none after a run that had no
+ledger.</p>
+<p><strong>The run id.</strong> A run is named <code>run-&lt;epoch&gt;-&lt;ten digits&gt;</code>, and <code>rag_runs</code>
+is keyed on that name and shared by every project in the database. The
+digits were <code>&amp;sysjobid</code> in the steps and the process id in the job, and
+neither told two sessions apart: twelve flow runs of the measurements
+above, each in a compute server of its own, ended in <code>-344</code>, the four
+other runs with an id a step had made in <code>-343</code> or <code>-345</code>, and the job
+runs in <code>-400</code> to <code>-408</code>. Two runs that started in the same second could
+therefore get the same id; no such collision was seen. The steps and the
+job now take the ten digits from a UUID, in SAS (<code>&amp;sysjobid</code> only where
+<code>UUIDGEN</code> returns nothing); the lock row of the job carries the id. The
+Python program of the job makes an id with ten random digits only where
+SAS hands it none. Ids written before keep their form and are read as
+before. The epoch in the id is the time of the SAS clock — in the steps
+as before, and now in the job, whose Python program made the id from its
+own clock up to release 2.2. What that means for <code>started_at</code> is said
+under <a href="#run-history" class="">run history</a>.</p>
+<p><strong>Measured with the runtime of release 2.3.0</strong>, on 2026-10-11 on SAS Viya
+2026.09 with pgvector, in the <em>SAS Studio compute context</em>. The job ran
+in SAS Job Execution and, where one SAS session had to hold several
+runs, as a program in a compute session. The flows ran as the code SAS
+Studio generates for them and were not clicked in SAS Studio. The lock
+of another run was that of a flow that really ran; the old and the stale
+lock rows were appended by hand.</p>
+<ul>
+<li class=""><strong>A job run that fails after it took the lock</strong>, on a <code>CHAR</code> and on a
+<code>VARCHAR</code> ledger, with one parameter of the configuration changed. The
+log held, in this order: <em>NOTE: the ledger … holds its text columns as
+char - the run lock is written the same way</em> (or <em>as varchar</em>); the
+append of one row; <em>NOTE: Python-Subprocess - RAGINGEST Ingestion
+failed: RuntimeError: configuration drift: …</em>; a table <code>&lt;ledger&gt;_R</code>
+with the 4 rows the ledger had before the run, its promote and its
+save; <em>NOTE: RAG ingestion: the run lock was released so the run can be
+retried</em>; and <em>ERROR: RAG ingestion failed: RuntimeError: configuration
+drift: …</em>. The ledger then held the same 4 document rows, no lock row
+and the column type it had. The job run again five seconds later was
+not refused and completed.</li>
+<li class=""><strong>A job launched while the flow of the same ledger runs.</strong> No append
+and one <code>PROC JSON</code> step; the milestone <em>Ingestion failed: another
+ingestion run appears active for this ledger (run lock held) - retry
+later</em> and the same text behind <em>ERROR: RAG ingestion failed:</em>, without
+<em>RuntimeError:</em>; no <code>&lt;ledger&gt;_R</code> and no line about a released lock. The
+ledger held one lock row, the flow&#x27;s, and its saved file kept its size
+and time. The flow completed, and the job run again five seconds after
+it was not refused.</li>
+<li class=""><strong>A flow started while another flow of the same ledger runs</strong> ended in
+<em>RAG - List Documents</em> with <em>ERROR: RAG - List Documents failed: another
+ingestion run holds the lock on this ledger - wait for it to finish, or
+retry in 30 minutes if it crashed</em>. Its log held no rewrite of the
+ledger and no line about a released lock, the ledger kept the lock row
+of the first flow, and that flow completed.</li>
+<li class=""><strong>The lock row carries the run id.</strong> Read from another session while a
+job ran, the ledger held one row <code>__run_lock__</code> with the status <code>lock</code>
+and the <code>run_id</code> of the milestone <em>RAGINGEST run run-…: ledger has 4
+documents, config …</em>, which is also the id of the run in <code>rag_runs</code>.</li>
+<li class=""><strong>A lock row with an empty run id</strong>, as a job definition from before
+release 2.3.0 writes it. 60 seconds old, it refused the job and the
+flow, and it was still the only lock row afterwards. Older than 30
+minutes, it was ignored: the job logged <em>RAGINGEST stale run lock
+ignored (held &gt; 30 minutes)</em>, the steps <em>NOTE: RAG - List Documents: a
+stale run lock (held longer than 30 minutes) is ignored</em> and <em>RAGLIST
+stale run lock ignored (held longer than 30 minutes)</em>. A job run that
+failed kept it — <code>&lt;ledger&gt;_R</code> held 5 rows, the 4 documents and that
+row — and a run that went through left a ledger without lock rows. A
+job run that fails at the configuration drift does not write the line
+about the stale lock: the drift is looked at first.</li>
+<li class=""><strong>Two lock rows</strong>, a stale one and a fresh one with the id of another
+run, appended in either order: the job and <em>RAG - List Documents</em> were
+refused both ways and left both rows. With a flow that ran beside a
+stale row, the job and a second flow launched while it ran were
+refused. CAS does not fix the order of the rows of a table; what was
+varied is the order of the two appends.</li>
+<li class=""><strong>A step hands a lock back only when it holds one.</strong> A failing <em>RAG -
+List Documents</em> took its own row out and wrote the NOTE, on both column
+types, and the run after it was not refused. A <em>RAG - Register Setup</em>
+that failed after <em>RAG - Load Vector Store</em> and a purge that went
+through did not rewrite the ledger a second time and wrote no such
+NOTE.</li>
+<li class=""><strong>The job ends as failed.</strong> The nine job runs that failed ended as
+<code>failed</code> in SAS Job Execution after 16.5 to 20 seconds, the eight that
+went through as <code>completed</code>. The record of a failed job holds the error
+code 5713 of SAS Job Execution, <em>A procedure in the SAS program provided
+for the job completed execution with at least one error.</em>, and inside
+it an error with the code 1012 and the text of the program&#x27;s ERROR
+line. That line is the last message of the program, not the last line
+of the log: the timing lines of its DATA step and the echoed source of
+the last statement follow it.</li>
+<li class=""><strong>The job stores no ledger after a run that was refused</strong>, in a SAS
+session that had run it to success before: behind the Python program
+the log held no promote and no save, and the ledger, its saved file and
+the lock row of the running flow were as before.</li>
+<li class=""><strong>The exports of an earlier run.</strong> In one SAS session, a run for a
+second setup that had no ledger wrote the two NOTE lines, ran no <code>PROC JSON</code> step, logged <em>ledger has 0 documents</em> and found its documents
+new. No job started by SAS Job Execution wrote the lines. With
+<code>rag_ledger_in.json</code> replaced by a directory that held a file, the run
+ended with <em>… could not be deleted from WORK - stopped, because the run
+would read the ledger of that run as its own</em>. Above the milestone of
+that run stood three ERROR messages of <code>PROC JSON</code>, on six log lines:
+the export still runs after the delete failed (see
+<a href="#troubleshooting" class="">troubleshooting</a>).</li>
+<li class=""><strong>The run id.</strong> Every id ended in ten digits — 28 ids in the logs of
+the flows, the purges and the job of one pass, 15 of the job in
+another — and no two endings were alike. The ledger held the 25
+characters of the id, and <code>rag_runs.started_at</code> was the time the id
+names.</li>
+<li class=""><strong>Launched from the Prompt Builder page of this release.</strong> <strong>Launch
+ingestion</strong> of a setup on this runtime ended as completed, with run ids
+of the form <code>run-&lt;epoch&gt;-&lt;ten digits&gt;</code> and the run history recorded.
+Three runs of one setup showed 6 documents new, then 6 changed, then 6
+unchanged and 1 new.</li>
+</ul>
+<p><strong>Not run</strong>, and as the code and the tests have it: a job run that fails
+because a saved ledger cannot be loaded, with its milestone (see the
+next section); the lock that CAS refuses, which the read-back of the job
+is there for; the fallback for a table whose column types cannot be
+read; the texts the Prompt Builder shows for a run that failed — the
+page was not opened on one; a run that slips in between the steps of a
+flow that is running; a lock row left by a job definition of an earlier
+release that really failed; an export of an earlier run that cannot be
+deleted for another reason than being a directory; and a compute session
+whose SAS clock is not UTC.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="a-saved-ledger-is-loaded-back">A saved ledger is loaded back<a href="#a-saved-ledger-is-loaded-back" class="hash-link" aria-label="Direct link to A saved ledger is loaded back" title="Direct link to A saved ledger is loaded back" translate="no">​</a></h3>
+<p>The pipeline promotes and saves <code>&lt;project&gt;_LEDGER</code> and
+<code>&lt;project&gt;_EMBEDDED</code>. Up to release 2.2 every reader looked only at the
+table in memory and nothing loaded the saved file. After a restart of the
+CAS server — or for any ledger that was never loaded again — <em>RAG - List
+Documents</em> therefore found no ledger, started one that held only its run
+lock and classified the whole corpus as new: every chunk went through the
+enrichment prompts and the embedding model again, and the saved ledger was
+overwritten with the result.</p>
+<p>From release 2.3.0 the saved table is loaded before it is read, by one
+macro that is worded the same in all seven programs:</p>
+<table><thead><tr><th>Program</th><th>Loads back</th></tr></thead><tbody><tr><td><em>RAG - List Documents</em>, <em>RAG - Purge Documents</em>, <em>RAG - Register Setup</em>, <code>Ingest-Documents.sas</code></td><td><code>&lt;project&gt;_LEDGER</code></td></tr><tr><td><em>RAG - Embed Chunks</em>, <em>RAG - Enrich Chunks</em></td><td><code>&lt;project&gt;_EMBEDDED</code></td></tr><tr><td><em>RAG - Load Vector Store</em></td><td>both</td></tr></tbody></table>
+<p>The log then says <code>NOTE: RAG: &lt;caslib&gt;.&lt;table&gt; was saved but not in memory and has been loaded from its saved file.</code> The <code>.sashdat</code> is matched by
+name without regard to case. With the run lock above, the order is: load
+the saved table back, ask it for its column types, append the lock, read
+the lock back. What the macro finds decides how the run goes on:</p>
+<table><thead><tr><th>The macro finds</th><th>The run</th></tr></thead><tbody><tr><td>the table in memory</td><td>goes on with it; a table in memory is never replaced by its saved copy</td></tr><tr><td>no table in memory and no saved file</td><td>starts as before, without a previous run</td></tr><tr><td>a saved file, and loads it</td><td>goes on with the loaded table and writes the NOTE above. A load that a concurrent run got to first is not an error</td></tr><tr><td>a saved file that cannot be loaded</td><td>fails, before it takes a lock or starts a ledger: <em>the saved table … could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file</em>. In the job the Python program writes the milestone <em>Ingestion failed: the saved table …</em> and returns, and the job ends as failed</td></tr><tr><td>no table in memory, and the files of the caslib cannot be listed</td><td>goes on <strong>without the table</strong>, with two WARNING lines</td></tr></tbody></table>
+<p>The last row is the case the reload is there for, without the reload:
+where the ledger is not in memory, every document counts as new, the
+corpus is embedded again and the saved file is overwritten. The run does
+not stop there, because a caslib that cannot be listed says nothing about
+whether a saved copy exists; it says what it does:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">WARNING: RAG: &lt;caslib&gt;.&lt;table&gt; is not in memory, and the files of the caslib &lt;caslib&gt; could not be listed (CAS messages above) - a saved copy could not be looked for.</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">WARNING: RAG: the run continues without the table and saves over a copy that may be there. A ledger that is not in memory means that every document counts as new and is embedded again.</span><br></div></code></pre></div></div>
+<p>When <code>PROC CAS</code> ends before it says what it found, not even that much is
+known, and the first line reads <em>WARNING: RAG: could not look for … -
+PROC CAS ended before it said whether the table is in memory or saved
+(messages above). The run continues with what is in memory.</em> Up to this
+change both cases wrote one NOTE, <em>could not look for a saved copy of …</em>,
+which no longer exists. The two WARNING lines, the milestone of the job
+and the failed state of the job were written after the first
+measurements below. The wording of the two WARNING lines and the failed
+state of the job were measured later that day; a saved file that cannot
+be loaded, with the milestone of the job for it, was <strong>not run in SAS</strong>
+— see the end of this section.</p>
+<p><strong>Measured on 2026-10-11 on SAS Viya 2026.09, with pgvector</strong>, with the
+saved tables dropped from memory while their <code>.sashdat</code> files stayed —
+the CAS server was not restarted:</p>
+<ul>
+<li class=""><strong>The job</strong>, on a <code>CHAR</code> and on a <code>VARCHAR</code> ledger: the log held the
+NOTE for <code>&lt;project&gt;_LEDGER</code>, the lock was appended with the type of the
+loaded table, and the run found 3 documents unchanged and embedded
+nothing.</li>
+<li class=""><strong>The flow</strong>, on a <code>CHAR</code> and on a <code>VARCHAR</code> ledger: <em>RAG - List
+Documents</em> loaded the ledger back, appended its lock and listed 3
+documents as unchanged; <em>RAG - Embed Chunks</em> loaded
+<code>&lt;project&gt;_EMBEDDED</code> back and found nothing to embed.</li>
+</ul>
+<p><strong>Measured again later that day, with the runtime of release 2.3.0</strong>
+(pgvector, the saved ledger dropped from memory): the job and <em>RAG - List
+Documents</em> wrote the NOTE, loaded the ledger and found every document
+unchanged. And for the last row of the table, in <em>RAG - List Documents</em>
+with the ledger in a caslib of the CAS session whose files CAS could not
+list: the log held the two WARNING messages above, word for word, on
+four log lines below the CAS errors. That run did not reach its end. The step went on to its
+run lock, and a caslib of a session cannot hold the promoted table the
+lock is appended to, so it stopped with <em>the run lock could not be
+written to … - refusing to ingest unguarded</em>. Whether a run in a global
+caslib whose files cannot be listed ends, and what it saves, is not
+measured: the user of the test may add no path caslib.</p>
+<p><strong>Not run: a saved file that cannot be loaded.</strong> No file that CAS cannot
+load could be put into a caslib of the test. The compute server does not
+see the directory of the caslib, CAS refuses to save another format under
+a <code>.sashdat</code> name (<code>ERROR: Save exportoptions file type and name extension do not match.</code>), and the caslibs whose directories the compute
+server does see belong to other people. So the CAS errors of such a
+load, the ERROR of the step, the milestone <em>Ingestion failed: the saved
+table …</em> of the job and the untouched file are as the code and the tests
+have them. What a run of the job leaves behind that stops before it
+takes a lock was measured for a run that another lock refused: no lock
+row, no store, the saved file untouched
+(<a href="#one-ledger-for-the-job-and-the-flow" class="">one ledger for the job and the flow</a>).</p>
+<p>Not measured: a restart of the CAS server; a saved file that cannot be
+loaded; a global caslib whose files cannot be listed; the reload in <em>RAG -
+Purge Documents</em>, <em>RAG - Register Setup</em> and <em>RAG - Enrich Chunks</em>, which
+did not run in that state (<em>RAG - Enrich Chunks</em> did not run at all); the
+reload of <em>RAG - Load Vector Store</em> itself, because both tables were in
+memory again by the time it ran; and SingleStore. The <em>About</em> tabs of
+those four steps name the reload and claim no measurement for it. The
+test suite of <code>rag_core</code> holds the text of the macro, its place in every
+program and the order with the run lock.</p>
+<p>A job definition holds a copy of <code>Ingest-Documents.sas</code> from the day the
+setup was manifested, so the job of a setup loads its ledger back only
+once <strong>Manifest setup</strong> has run again after <code>deploy-rag-content</code>. Anything
+that reads the ledger outside the steps and the job — the ledger view of
+the Builder, for one — still sees no ledger after a restart until a run
+has loaded it, and <code>&lt;project&gt;_ELEMENTS</code> and <code>&lt;project&gt;_CHUNKS</code> are saved
+and not loaded back.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="where-a-setup-embeds">Where a setup embeds<a href="#where-a-setup-embeds" class="hash-link" aria-label="Direct link to Where a setup embeds" title="Direct link to Where a setup embeds" translate="no">​</a></h3>
+<p>The documents of a collection and the question asked of it have to be
+embedded by the same container: a question embedded somewhere else searches
+the collection with the wrong vectors, and nothing reports it. The Builder
+therefore resolves the embedding endpoint of a setup once — the <strong>SCR
+endpoint</strong> option of the Prompt Builder object, and <code>&lt;SAS Viya host&gt;/llm</code>
+where that option is blank, the host being the <strong>SAS Viya host</strong> option or
+the address the page is opened at — and gives the same value to everything
+it generates and starts. (A stored setup that names an endpoint of its own,
+<code>embedding.scrEndpoint</code>, keeps it ahead of the option; the Builder itself
+never writes one.)</p>
+<table><thead><tr><th></th><th>Receives it as</th></tr></thead><tbody><tr><td>The ingestion job, at <strong>Manifest setup</strong> and at <strong>Launch ingestion</strong></td><td>the parameter <code>scrEndpoint</code></td></tr><tr><td>The Embed step of the generated SAS Studio flow</td><td>the step option <code>_rgem_scrEndpoint</code></td></tr><tr><td><strong>Test retrieval</strong></td><td>the parameter <code>scrEndpoint</code></td></tr><tr><td>The retrieval model</td><td>the constant <code>EMBED_ENDPOINT</code> in its MANIFEST block</td></tr></tbody></table>
+<p>With a blank option, that address has to be reachable from the compute
+session of the ingestion and from the destination the retrieval model is
+published to. Where the page is opened under a name that is not — a
+port-forward, an alias of a reverse proxy — set the <strong>SCR endpoint</strong> option.</p>
+<p>The value is written at <strong>Manifest setup</strong>. A job definition, a flow and a
+retrieval model generated earlier keep what they were generated with until
+the setup is manifested again; a launch from the page always passes the
+current value, a scheduled run of the job and a run of the flow in SAS
+Studio do not.</p>
+<p>The retrieval model looks for the endpoint in this order and takes the first
+that is not blank:</p>
+<ol>
+<li class=""><code>scr_endpoint</code> in the <code>options</code> input of the call,</li>
+<li class="">the environment variable <code>RAGEMBED_ENDPOINT</code> on the destination,</li>
+<li class="">the manifested <code>EMBED_ENDPOINT</code>,</li>
+<li class=""><code>SAS_SERVICES_URL</code> + <code>/llm</code>, where the variable is set — a compute
+session sets it.</li>
+</ol>
+<p>Up to release 2.2 the fourth came before the third, so in a compute session
+the question was embedded at <code>&lt;SAS Viya host&gt;/llm</code> whatever the setup had
+been manifested for. The order is part of <code>retrieve_context.py</code>: a model
+has it once <code>deploy-rag-content</code> has published the current template and the
+setup has been manifested again.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="tls-verification-in-the-retrieval-model">TLS verification in the retrieval model<a href="#tls-verification-in-the-retrieval-model" class="hash-link" aria-label="Direct link to TLS verification in the retrieval model" title="Direct link to TLS verification in the retrieval model" translate="no">​</a></h3>
+<p>The retrieval model — registered by <strong>Manifest setup</strong> of the Builder, or by
+the custom step <em>RAG - Register Setup</em> in SAS Studio — makes two HTTPS calls
+itself: to the embedding container, to embed the question, and — only in a
+compute session, where a session token exists — to the credentials service.
+It verifies both against the CA bundle of the deployment, and two environment
+variables per call decide how:</p>
+<table><thead><tr><th>Call</th><th>CA bundle</th><th>Verification on or off</th></tr></thead><tbody><tr><td>Embedding container</td><td><code>RAGEMBED_CABUNDLE</code></td><td><code>RAGEMBED_SSLVERIFY</code></td></tr><tr><td>Credentials service</td><td><code>RAGSTORE_CABUNDLE</code></td><td><code>RAGSTORE_SSLVERIFY</code></td></tr></tbody></table>
+<ul>
+<li class=""><code>&lt;prefix&gt;_CABUNDLE</code> names the bundle and defaults to
+<code>/security/trustedcerts.pem</code>. When that file does not exist where the model
+runs, the model verifies against the certificates Python trusts by default,
+and a certificate signed by the deployment&#x27;s own CA is refused.</li>
+<li class=""><code>&lt;prefix&gt;_SSLVERIFY</code> set to <code>false</code>, <code>no</code> or <code>0</code> switches verification off
+on that destination; set to <code>true</code>, <code>yes</code> or <code>1</code> it switches verification
+on. The variable wins in both directions.</li>
+<li class="">When the variable is not set, or holds any other word, the constant
+<code>SSL_VERIFY</code> in the MANIFEST block of the model decides. The Builder writes
+it from the option <strong>Verify TLS certificates in manifested models</strong>
+(<code>sslVerify</code>) of the Prompt Builder object: <code>True</code> while the option is
+ticked, which is the default, and <code>False</code> while it is not. The custom
+step <em>RAG - Register Setup</em> writes it from a checkbox of its own, in the
+same way — see <a href="#tls-register-setup-step" class="">the checkbox of the custom step</a>.</li>
+</ul>
+<p>So the option is a default written when the setup is manifested. A retrieval
+model that is already registered keeps its constant until <strong>Manifest setup</strong>
+runs again, and <code>RAGEMBED_SSLVERIFY=true</code> and <code>RAGSTORE_SSLVERIFY=true</code> on a
+destination turn verification back on for a model manifested without it.
+While the option is not ticked, the step shows a warning at <strong>Manifest
+setup</strong> before the click, and the model it registers carries the tag
+<code>TLS-Verification-Off</code> in SAS Model Manager —
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#finding-the-models-that-do-not-verify">Deployment of Decisions</a>
+shows how to list such models. Manifesting the setup again with the option
+ticked writes <code>SSL_VERIFY = True</code> and removes the tag. The tag follows the
+score code the model holds: when SAS Model Manager refuses
+<code>retrieve_context.py</code>, the manifest stops at that stage with the HTTP status
+and leaves the score code and the tags as they were, and a tag that could
+not be written or removed is named in the outcome beside the button. When the
+upload of <code>retrieve_context.py</code> gets no usable answer — the connection
+drops, or an ingress answers with its error page — the page reads the file
+back: when the setup holds it, the manifest goes on; when it does not, the
+manifest stops at that stage and says so. Only when it cannot be read back
+either does the manifest stop with <em>it is not known whether SAS Model
+Manager stored retrieve_context.py</em>, leaving the tag as it was; until
+<strong>Manifest setup</strong> has run through again, the tag may then not match the
+<code>SSL_VERIFY</code> line the model holds. This was driven against a stand-in for
+SAS Viya, not against SAS Viya.</p>
+<p>What the option does not touch:</p>
+<ul>
+<li class=""><strong>The ingestion job</strong>, the generated flow and <em>Test retrieval</em>. They run in
+a compute session, where the bundle is mounted, and verify as before.</li>
+<li class=""><strong>The connection to the vector store.</strong> Its TLS is the option
+<strong>RAG: vector store TLS</strong> (<code>storeSslmode</code>) and the <code>sslmode</code> of the store.</li>
+<li class=""><strong>A model registered with the custom step <em>RAG - Register Setup</em>.</strong> The
+step does not read the options of the Prompt Builder object. It has a
+checkbox of its own for the same setting — see
+<a href="#tls-register-setup-step" class="">the checkbox of the custom step</a>.</li>
+<li class=""><strong>A template deployed before release 2.3.0.</strong> The <code>retrieve_context.py</code>
+under <code>&lt;content root&gt;/models</code> then has no <code>SSL_VERIFY</code> constant. <strong>Manifest
+setup</strong> succeeds with it, and the model verifies whatever the option says.
+With the option not ticked, the outcome beside the button says that
+verification is still ON and that the template has to be deployed again,
+and the model is not tagged. Run <code>deploy-rag-content</code> to publish the
+current <code>retrieve_context.py</code>: the next <strong>Manifest setup</strong> writes
+<code>SSL_VERIFY = False</code> and tags the model.</li>
+</ul>
+<p>Switching verification off is for a destination that runs Python where the
+bundle is not mounted — the case found with SAS Micro Analytic Service, which
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#mas-certificate-bundle">Deployment of Decisions</a>
+describes together with the mount that keeps verification on. That mount is
+the fix for production; verification off is for a test system on a closed
+cluster network. The mount was measured there with a decision template,
+and with a prompt template with the included LLM call. A retrieval model
+was published there after the mount as well. Without the credentials of the
+vector store it answered <em>no vector-store credentials resolved</em>; with them
+passed in <code>options</code> it returned chunks, with <code>SSL_VERIFY = True</code> in its
+score code — see
+<a href="#the-retrieval-model-in-a-decision" class="">the retrieval model in a decision</a>.
+The call to the credentials service is not made when the credentials come
+with the call or from the environment — the two cases that were run — so
+the verification of that one call in SAS Micro Analytic Service is not
+measured.</p>
 <p>Both <em>Launch ingestion</em> and <em>Test retrieval</em> need the <strong>ingestion compute
-context</strong> option to be set — SAS Job Execution rejects a job that does not name
-one, and the rejection carries no log. The Builder checks first and names the
-missing setting.</p>
+context</strong> option (<code>ragComputeContext</code>) to be set — SAS Job Execution rejects a
+job that does not name one, and the rejection carries no log. The Builder
+checks first and names the missing setting. The optimization compute context
+of the same Options pane does not count: it is a different option, for a
+different job.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="tls-register-setup-step">The checkbox of the custom step RAG - Register Setup<a href="#tls-register-setup-step" class="hash-link" aria-label="Direct link to The checkbox of the custom step RAG - Register Setup" title="Direct link to The checkbox of the custom step RAG - Register Setup" translate="no">​</a></h3>
+<p>The custom step <em>RAG - Register Setup</em> registers the same
+<code>retrieve_context.py</code> from SAS Studio. It does not read the options of the
+Prompt Builder object; its <em>Runtime</em> section has the checkbox
+<strong>Verify TLS certificates in the registered retrieval model</strong>
+(<code>_rgrg_sslVerify</code>), ticked by default:</p>
+<table><thead><tr><th>The checkbox</th><th>The registered model holds</th><th>The tag <code>TLS-Verification-Off</code></th><th>What the step says</th></tr></thead><tbody><tr><td>ticked</td><td><code>SSL_VERIFY = True</code></td><td>not set, and removed from a model that carried it</td><td><em>TLS certificate verification on</em> in the summary of its log and in the registration report</td></tr><tr><td>not ticked</td><td><code>SSL_VERIFY = False</code></td><td>set</td><td>WARNING lines at the end of its log, and <em>TLS certificate verification OFF</em> in the registration report</td></tr></tbody></table>
+<ul>
+<li class=""><strong>The warning.</strong> With the box not ticked, the log of the step ends with
+WARNING lines: the retrieval model does not verify the certificates of
+its two HTTPS calls — to the embedding container and to the credentials
+service — and <code>RAGEMBED_SSLVERIFY=true</code> and <code>RAGSTORE_SSLVERIFY=true</code> on
+the publishing destination turn verification back on. The registration
+report, the output table of the step, shows the state in the <em>Detail</em>
+column of the row of the model.</li>
+<li class=""><strong>The tag follows the score code that is stored.</strong> It is set or removed
+after <code>retrieve_context.py</code> has been stored on the model, so a
+registration that fails at that upload leaves the tag as it was — also
+when the model could not be read before the upload: the tag is then
+kept as the listing of the models shows it. Where the listing does not
+show the tags of the model either, nothing says whether it carries the
+tag, and the step writes it: a tag too many is put right by the next
+registration that goes through, a model that does not verify and is not
+tagged is found by nobody. When the upload then fails, the model carries
+a tag this run put there, and the log says so in WARNING lines of its
+own (<em>the model could not be read before this run updated it …</em>); that
+case was checked with the test suite and not run in SAS, and neither
+were the WARNING lines for a tag that could not be written or removed
+and for an upload without a usable answer. When the tag itself cannot be
+updated, the registration still goes through, and a WARNING says which
+way the tag is wrong: it could not be written to a model that does not
+verify, or could not be removed from one that does.</li>
+<li class=""><strong>A run that fails after the score code is stored.</strong> The step does more
+after the upload: it attaches the other artifacts and, when a flow is
+named under <em>Studio Flow to generate the scheduled job from</em>, generates
+the job. When one of these fails — the flow does not exist, say — the
+step ends with its ERROR, and the model in SAS Model Manager holds the
+new score code all the same. The log of the failing run then says so
+below the ERROR line, <em>the step failed after the score code of the
+retrieval model was stored</em>, followed by the same WARNING lines as a run
+that went through: that the model does not verify, and whether it
+carries the tag.</li>
+<li class=""><strong>An upload of the score code without a usable answer.</strong> When the
+connection drops, the request times out, or an ingress answers with a
+page of its own, the step cannot know whether SAS Model Manager stored
+the file. It reads nothing back. It ends with its ERROR and two WARNING
+lines: <em>it is not known whether SAS Model Manager stored the score code
+retrieve_context.py</em>, and <em>the tag TLS-Verification-Off was not updated
+and may not say what the stored score code does. Run this step again.</em>
+The Builder words the same case the same way beside <strong>Manifest setup</strong>.
+On a model whose tag the run wrote before the upload without knowing
+whether the model carried it (the bullet above), the second line says
+<em>was not updated after the upload</em>, as <code>rag_core</code> does, and the three
+lines about the tag written unseen follow; up to this change the step
+said there that the tag was not updated and, two lines on, that the run
+had written it. That wording was not run in SAS.
+An upload SAS Model Manager refuses with an answer of its own is
+certain: nothing was stored, and the model keeps the score code it had.
+It keeps the tag it had as well, with the one exception of the bullet
+above: a model that could not be read and whose tags the listing did
+not show got the tag before the upload, and carries it.</li>
+<li class=""><strong>The job generated from a flow.</strong> With a flow named under <em>Studio Flow
+to generate the scheduled job from</em>, the step creates the job definition
+<code>RAG Ingest - &lt;setup&gt;</code> from the code SAS Studio generates for the flow.
+Up to release 2.2 the job was that code unchanged, so a failing step ran
+<code>abort 42</code> as it does in an interactive flow — which in a job ends the
+session before SAS Job Execution gets its completion handshake. The job
+now begins with <code>%let RAG_ABORT_ON_ERROR = 0;</code> and <code>%let RAG_JOB_FAILED = 0;</code> and ends with a check that writes <em>ERROR: RAG ingestion failed - a
+step of this run reported an error (its ERROR line is above) and the
+steps after it were skipped.</em> and sets <code>SYSCC</code> when a step failed. The
+check reads <code>RAG_JOB_FAILED</code>, which every failing RAG step sets and no
+step clears; <code>RAG_PIPELINE_FAILED</code> is no use for it, because <em>RAG - List
+Documents</em>, <em>RAG - Purge Documents</em> and <em>RAG - Retrieve Context</em> clear
+it when they start. Both parts are added by the step and are not part of
+the flow: a job that SAS Studio itself deploys from the flow does not
+have them, and running the step again puts them back. <strong>Measured on
+2026-10-11 on SAS Viya 2026.09</strong>, with two jobs the step generated from
+a flow of List, Extract, Chunk, Embed and Load (pgvector), run in SAS
+Job Execution: the job in which <em>RAG - List Documents</em> failed ended as
+<code>failed</code> after 31 seconds, with the ERROR line of the step and the line
+of the check in its log and the four steps after it skipped; the job
+without a failure ended as <code>completed</code>. Not measured: the job that does
+not end, which the change is made to prevent, was not reproduced; a
+step other than <em>RAG - List Documents</em> that fails; a flow with a second
+chain or with a <em>RAG - Retrieve Context</em> node, and with it that
+<code>RAG_JOB_FAILED</code> rather than <code>RAG_PIPELINE_FAILED</code> is what fails the
+job — both flags were set in the measured flow. The <em>About</em> tabs of the
+eight other steps name the flag and claim no measurement for it.</li>
+<li class=""><strong>A template deployed before release 2.3.0.</strong> <code>rag_core</code> writes the line
+under the rule of the Builder: only where the MANIFEST block of the
+template has <code>SSL_VERIFY</code>. With an older template and the box not
+ticked, the step registers a model that still verifies, does not tag
+it, and warns that <em>TLS certificate verification is still ON</em> and that
+the RAG content has to be deployed again. Run <code>deploy-rag-content</code>, then
+the step once more.</li>
+<li class=""><strong>A flow that hands the step no value for the checkbox</strong> registers with
+verification on: a missing or blank value is read as ticked. Not ticked
+is a value that reads as the number zero — <code>0</code>, which is what SAS Studio
+hands over for a box that is not ticked, and equally <code>0.0</code>, <code>00</code> or
+<code>-0</code> — or the word <code>false</code> or <code>no</code>, in any case. Every other value, an
+unknown word included, is read as ticked.</li>
+</ul>
+<p>The checkbox changes the registered model and nothing else. The step
+itself, the other eight RAG steps and the ingestion job run in a compute
+session and verify the HTTPS calls they make themselves — to SAS Viya and
+to the embedding container — with the CA bundle of that session
+(<code>SSLCALISTLOC</code>, else <code>CAS_CLIENT_SSL_CA_LIST</code>, else the certificates
+Python trusts); none of them has a control or reads an environment
+variable that switches that off. A prompt that <em>RAG - Enrich Chunks</em> runs
+is a manifested model with the default it was manifested with. The
+connection to the vector store is a database connection: its TLS is the
+<em>SSL mode</em> (PostgreSQL) or <em>TLS</em> (SingleStore) control of the steps that
+connect to it, and for the registered model the <em>SSL mode</em> of this step.</p>
+<p>The step and <code>rag_core</code> reach a site with the transfer package, or from a checkout with <code>deploy-rag-content</code>. The step
+was run in SAS Studio on 2026-10-11, on SAS Viya 2026.09, as the last of a
+flow of six steps — List, Extract, Chunk, Embed, Load, Register Setup. The
+flow was created without a value for the checkbox, which is what a flow
+saved before the control existed hands the step:</p>
+<ul>
+<li class="">The checkbox shows in the <em>Runtime</em> section, ticked.</li>
+<li class="">Run that way, the step ended green and its log said <em>retrieval model: TLS
+certificate verification on</em>. The score code of the model held
+<code>SSL_VERIFY = True</code>, and the model carried the tags <code>LLM</code>, <code>RAG</code>,
+<code>all_minilm_l6_v2</code> and <code>pgvector</code>.</li>
+<li class="">With the box not ticked, the node of the step showed a warning badge in
+the flow. The log said <em>retrieval model: TLS certificate verification OFF
+(tag TLS-Verification-Off)</em> and held the WARNING lines, the score code
+held <code>SSL_VERIFY = False</code>, and the model carried <code>TLS-Verification-Off</code>
+beside the four tags.</li>
+<li class="">With the box ticked again, the score code held <code>SSL_VERIFY = True</code>, the
+tag was gone and the four tags were kept.</li>
+<li class="">With a <code>retrieve_context.py</code> without the <code>SSL_VERIFY</code> line under
+<code>&lt;content root&gt;/models</code> and the box not ticked, the log held three
+WARNING lines (verification still ON, the content predates the setting,
+deploy the RAG content again), the <em>Detail</em> of the report said <em>TLS
+certificate verification still ON - the retrieval model template predates
+the setting …</em>, the model was not tagged, and the score code held no
+<code>SSL_VERIFY</code> line.</li>
+</ul>
+<p>Not measured: a job generated from a flow that contains the step, and a
+retrieval model registered by the step running inside a decision or in SAS
+Micro Analytic Service.</p>
+<p>The WARNING lines of a run that fails after the upload were added after
+these runs and measured later the same day, with the step run as the
+code SAS Studio generates for a flow, in a compute session of the <em>SAS
+Studio compute context</em> and not clicked in SAS Studio:</p>
+<ul>
+<li class=""><strong>Box ticked, no flow named.</strong> The run ended with condition code 0 and
+no WARNING line. Its log said <em>retrieval model: TLS certificate
+verification on</em> and <em>no flow selected, so no scheduled job was
+generated</em>; the model held <code>SSL_VERIFY = True</code>, no tag
+<code>TLS-Verification-Off</code>, and its nine variables with the lengths of
+<a href="#the-lengths-of-the-variables" class="">the table below</a>.</li>
+<li class=""><strong>Box not ticked, and a flow that does not exist.</strong> The log held, in
+this order: the ERROR line of the step (<em>no flow named …</em>), the
+WARNING that the step failed after the score code of the retrieval
+model was stored, the three WARNING lines about a model that does not
+verify, the WARNING that the model carries the tag
+<code>TLS-Verification-Off</code>, and the ERROR of the <code>abort</code>. The same model
+then held <code>SSL_VERIFY = False</code> and the tag. The log held no <em>Apparent
+symbolic reference</em> line and no NOTE about a quoted string.</li>
+</ul>
+<p>Not run in SAS: the WARNING lines of an upload without a usable answer,
+of a tag that could not be written or removed, and of a tag written to a
+model that could not be read. Each needs a fault of SAS Model Manager —
+a model it does not return while its listing shows no tags, an upload it
+does not answer — and not a state a model of the test can be put in. The
+runs of 2026-10-11 with the steps of release 2.3.0 could not stage them
+either, and the logs of the two runs of the step made that day hold none
+of these lines. The test suite of <code>rag_core</code> runs the Python of the step
+for these cases and pins the SAS text.</p>
+<p>Two more things came out of those runs. Both are changed in this release,
+and both were measured afterwards on the same system:</p>
+<ul>
+<li class=""><strong>A SAS Model Manager project that does not exist yet.</strong> The step names
+the project the model is registered in (<em>RAG Engineering</em> unless
+changed) and creates it when it is missing. With a new name it stopped
+with <em>POST /modelRepository/projects returned 400 … You must specify a
+value for the &quot;folderId&quot; parameter</em>: the service places a project in a
+folder, and the request named the repository only. <code>rag_core</code> now
+creates the project in the <strong>default repository</strong> of SAS Model Manager —
+the one marked as default among the first 100 it lists, else the first
+of them — and sends the folder of that repository with the request; the
+same request with the folder added was answered 201 on that system. A
+repository that names no folder ends in a message that says so. To have
+the project in another repository, create it there in SAS Model Manager
+first: a project that exists is used as it is. Measured with a project
+name that did not exist: the step ended green, the project was created
+in the repository marked as default (<em>Public</em> on that system) with the
+folder of that repository and the tags <code>LLM</code> and <code>RAG-Engineering</code>, and
+the retrieval model was registered in it.</li>
+<li class=""><strong>A NOTE above the summary.</strong> Every run wrote <em>NOTE: The quoted string
+currently being processed has become more than 262 bytes long. You might
+have unbalanced quotation marks.</em> twice, above the summary of its log.
+The cause as it was read from the code: the summary was written into
+the program inside two quoted strings, and SAS writes that NOTE for a
+quoted string of more than 262 bytes. The same two strings stood in all
+nine RAG steps since release 2.0.0. The steps now read the summary with
+<code>symget</code>. The file of the step held one more pair of strings of that
+length, two docstrings of its Python program; nothing in the code
+suggests that SAS counts those, and they were shortened as well.
+Measured for <em>RAG - Register Setup</em>: the log of a run of the new step
+goes from <code>%_rgrg_status;</code> straight to <em>NOTE: ----- RAG - Register Setup
+-----</em>, with 0 errors and 0 warnings, and the two NOTE lines every
+earlier run had are gone. Which of the two changes removed them was not
+separated. The other eight steps got the same change. Measured later
+the same day with SingleStore: the log of a flow of List, Extract,
+Chunk, Embed and Load held no such NOTE. The logs of <em>RAG - Enrich
+Chunks</em>, <em>RAG - Purge Documents</em> and <em>RAG - Retrieve Context</em> were not
+read for it.</li>
+<li class=""><strong>The same NOTE above an ERROR line.</strong> A step that fails wrote its
+message, up to 500 characters, into one quoted string as well. Seen on
+2026-10-11: a failing <em>RAG - List Documents</em> wrote the NOTE directly
+above <em>ERROR: RAG - List Documents failed: …</em>. The closing line of
+<code>Ingest-Documents.sas</code> was written the same way, and its message for a
+run lock that was not read back is longer than 262 bytes with any
+table name. The nine steps and the job now put that line together in a
+variable, its text read with <code>symget</code>, as the summary is. Measured on
+2026-10-11 with a <em>RAG - List Documents</em> whose documents folder does
+not exist, run as a job and in a compute session: the line above the
+ERROR line was not the NOTE, and no log of that day&#x27;s runs of the
+steps and of the job held the NOTE. The ERROR line had 311 characters.
+The log of that system is 132 characters wide, and this line, which
+the step writes with <code>PUT</code>, was cut there, inside a word and with no
+prefix on what follows:
+<code>… { version :2, httpSta</code>, then <code>tusCode :404, …</code>. A long NOTE
+milestone and the WARNING lines of the steps were broken at a blank
+before that column in the same logs. All three log lines
+of the message were of the type error, and so were the four of a
+413-character ERROR line of the job. SAS Studio was not opened: that
+it shows such a line as an error is read from the type of the lines.</li>
+<li class=""><strong>A part of the summary longer than the log line.</strong> <em>RAG - Register
+Setup</em> printed the list of the artifacts it wrote as an empty <code>NOTE:</code>
+line followed by the text without the prefix (seen on 2026-10-11). A
+part of a summary is now written as one value with its <code>NOTE:</code> prefix,
+in all nine steps. Measured on 2026-10-11 for <em>RAG - Register Setup</em>
+without a flow: the line began <code>NOTE:   artifacts in …</code> and went on in
+the next log line — the break stood inside a word, <code>ingestio</code> and
+<code>n-manifest.json</code> — with no empty <code>NOTE:</code> line before it.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-retrieval-model-in-a-decision">The retrieval model in a decision<a href="#the-retrieval-model-in-a-decision" class="hash-link" aria-label="Direct link to The retrieval model in a decision" title="Direct link to The retrieval model in a decision" translate="no">​</a></h3>
+<p>A decision calls the retrieval model like any other Python model: inputs
+<code>question</code>, <code>k</code>, <code>filter_json</code>, <code>retrieval_mode</code> and <code>options</code>, outputs
+<code>context_dg</code>, <code>context_envelope</code>, <code>retrieval_status</code> and <code>run_time</code>. The
+model never raises. When it cannot retrieve, <code>retrieval_status</code> says why
+and the datagrid is empty — so a decision that uses the context should
+look at <code>retrieval_status</code>.</p>
+<p>Where a decision runs — the test of SAS Intelligent Decisioning, SAS Micro
+Analytic Service, a SAS Container Runtime container — there is no SAS Viya
+session, so the credential domain that serves the ingestion cannot be read
+there (<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials#where-the-domain-applies--and-where-it-cannot">Managing Credentials</a>
+has the boundary). The model then needs the user and the password of the
+vector store from one of two places:</p>
+<table><thead><tr><th>From</th><th>Names</th></tr></thead><tbody><tr><td>Environment variables of the runtime the Python runs in</td><td><code>&lt;BACKEND&gt;_RAG_USER</code> and <code>&lt;BACKEND&gt;_RAG_PW</code> — <code>PGVECTOR_RAG_USER</code> and <code>PGVECTOR_RAG_PW</code> for pgvector, <code>SINGLESTORE_RAG_USER</code> and <code>SINGLESTORE_RAG_PW</code> for SingleStore</td></tr><tr><td>The <code>options</code> input of the call, a JSON object</td><td><code>user</code> and <code>password</code> — for a caller that manages its own secrets; a decision should not store them</td></tr></tbody></table>
+<p>Host, port, database and SSL mode of the store, the embedding endpoint and
+the embedding model are in the model already, as they were manifested. A
+destination can override them with <code>&lt;BACKEND&gt;_HOST</code>, <code>_PORT</code>, <code>_DB</code> and
+<code>_SSLMODE</code> (or <code>RAGSTORE_HOST</code>, <code>RAGSTORE_PORT</code>, <code>RAGSTORE_DB</code>,
+<code>RAGSTORE_SSLMODE</code> for any backend), <code>RAGEMBED_ENDPOINT</code> and
+<code>RAGEMBED_MODEL</code>. An embedding model that calls a hosted API also needs its
+key: <code>RAGEMBED_API_KEY</code>, or <code>API_KEY</code> in <code>options</code>. The variables that
+decide TLS verification are in
+<a href="#tls-verification-in-the-retrieval-model" class="">TLS verification in the retrieval model</a>.</p>
+<p>Where the variables are set depends on the destination. For SAS Container
+Runtime they are part of the <code>env</code> of the container. For SAS Micro
+Analytic Service they belong to the container that runs the Python, which
+can be a separate runner —
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#the-variable-and-the-python-runner">the variable and the Python runner</a>
+shows the patch, with <em>LLMCONTAINERPATH</em> as its example. Measured for SAS
+Micro Analytic Service on 2026-10-11, with the two variables in a
+Kubernetes secret and set on every container of the deployment:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">kubectl -n &lt;namespace&gt; set env deployment/sas-microanalytic-score --containers=* --from=secret/&lt;name&gt;</span><br></div></code></pre></div></div>
+<p>The pod restarts, and a call of the published decision with <code>{}</code> as the
+<code>options</code> of the retrieval model then returned <code>retrieval_status</code> <em>ok</em> and
+three hits. Which of the containers needs the variables was not separated.
+The command changes the running deployment only: it is not part of the
+manifests the deployment is applied from. Not measured: the same variables
+for the test of SAS Intelligent Decisioning, where it was not established
+where they have to be set, and for a SAS Container Runtime container. The
+Python packages the model imports have to be there too: <code>requests</code>, and
+<code>psycopg2</code> or <code>singlestoredb</code> for the store.</p>
+<p><strong>What was measured, on 2026-10-11 on SAS Viya 2026.09.</strong> One decision with
+three model nodes, all manifested in the Prompt Builder — the retrieval
+model of a RAG setup on pgvector, a prompt template with the included LLM
+call that is given the <code>context_envelope</code> of the retrieval, and a decision
+template — was tested in SAS Intelligent Decisioning and published to the
+SAS Micro Analytic Service destination <code>maslocal</code>. TLS verification was on
+in the score code of all three models.</p>
+<p><em>Without credentials for the vector store.</em> All three nodes ran in both
+places; the publishing validation ended on three rows with HTTP status 201
+and an empty error column. The prompt and the decision template answered.
+The retrieval model answered, in both places and with no chunk:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">retrieval failed: RuntimeError: no vector-store credentials resolved: pass user/password in options, grant a agentic-ai-keys credential holding PGVECTOR_RAG_USER/PGVECTOR_RAG_PW, or set those environment variables on the destination</span><br></div></code></pre></div></div>
+<p>Neither runtime had the two variables, so this is the boundary above and
+the degradation the model is built for. What was measured is this status
+text; which requests the model made before it was not looked at.</p>
+<p><em>With the user and the password in <code>options</code>.</em> Every row passed
+<code>{&quot;user&quot;: …, &quot;password&quot;: …}</code> in the <code>options</code> input of the retrieval model.</p>
+<ul>
+<li class=""><strong>In the test of SAS Intelligent Decisioning</strong>: 3 rows,
+<code>retrieval_status</code> <em>ok</em> after 0.2 to 0.7 seconds, three hits per row with
+the right document first, and envelopes of about 2,000 characters. The
+LLM answered from the context, and the decision template routed. An empty
+<code>filter_json</code> was accepted.</li>
+<li class=""><strong>Published to <code>maslocal</code></strong>, called one row at a time: six single calls
+one after another each returned HTTP status 201, <code>retrieval_status</code>
+exactly <em>ok</em>, three hits, an envelope of 1969 characters and the answer
+of the LLM from the context. A whole call took 6.5 to 9 seconds.</li>
+<li class=""><strong>Published to <code>maslocal</code></strong>, in a publishing validation with the same
+three rows: runs of the same validation gave different results. In one,
+all 3 rows returned <code>retrieval_status</code> <em>ok</em>, the envelopes, the answers
+of the LLM from the context (<em>Last shuttle to the railway station departs
+at 19:10.</em>) and the routes. In others, rows came back with HTTP status
+201, an empty error column and <strong>every output of all three nodes
+empty</strong> — all three rows in one run, two of the three in the next run of
+the same module with the same table. SAS Micro Analytic Service had ended
+those executions after 30 seconds: the validation sends its rows at the
+same time, and the LLM and the decision model, both self-hosted on one
+CPU node, then took longer than that.
+<a href="#several-rows-at-once" class="">Several rows at once</a> has it.</li>
+</ul>
+<p>Direct calls of the published module without credentials, and with made-up
+ones, completed normally. To the made-up ones the database answered
+<em>password authentication failed</em>, so the PostgreSQL driver is there where
+SAS Micro Analytic Service runs the model on that system.</p>
+<p><em>With the user and the password as environment variables.</em> With
+<code>PGVECTOR_RAG_USER</code> and <code>PGVECTOR_RAG_PW</code> set on the containers of the
+deployment <code>sas-microanalytic-score</code> (the command is above) and <code>{}</code> as
+<code>options</code>, a call returned <code>retrieval_status</code> <em>ok</em> and three hits.</p>
+<p>Not measured: the two environment variables for the test of SAS
+Intelligent Decisioning and for a SAS Container Runtime container;
+SingleStore; outputs longer than 32000 characters; and a retrieval model
+registered with <em>RAG - Register Setup</em> inside a decision.</p>
+<p>One more thing showed in the first of these tests. A decision hands a
+character input to a model padded with blanks to the length the variable
+is declared with: a question declared with 1000 characters arrived with
+about 900 trailing blanks in the test of SAS Intelligent Decisioning, and
+with one in SAS Micro Analytic Service. Up to release 2.2 the model
+returned the padded text as <code>query</code> in <code>context_envelope</code> — 1134 characters
+for a short question — and sent it to the embedding model as it was. From
+release 2.3.0 the model drops the blanks around the question before it
+embeds it and before it returns it. It treats the other inputs the same
+way: a <code>filter_json</code> of blanks only is no filter, a <code>retrieval_mode</code> of
+blanks only is the default mode, and a <code>k</code> of blanks only is the default
+number of chunks. A <code>k</code> that is no number at all falls back to the default
+as well and says so in <code>retrieval_status</code> — <em>ok (k … is not a number - used
+4)</em> — where it failed the call before; a missing number and an infinity,
+also as the texts <code>nan</code> and <code>inf</code>, are the default without that note. A
+question of blanks only is still answered with <em>question is empty</em>.</p>
+<p>Measured with the model of release 2.3.0, on 2026-10-11: a question
+followed by 200 blanks arrived as 56 characters in <code>query</code> in SAS Micro
+Analytic Service, and in the test of SAS Intelligent Decisioning the three
+questions arrived with 103, 91 and 56 characters. A blank <code>retrieval_mode</code>,
+a <code>k</code> of 0, a missing <code>k</code> and a blank <code>filter_json</code> each gave
+<code>retrieval_status</code> exactly <em>ok</em>, in single calls of SAS Micro Analytic
+Service and in the test of SAS Intelligent Decisioning. The collection has
+three chunks, so these runs do not show that the default number of chunks
+was used: it cannot be told from 3. Not measured: a <code>k</code> that is no number.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="several-rows-at-once">Several rows at once<a href="#several-rows-at-once" class="hash-link" aria-label="Direct link to Several rows at once" title="Direct link to Several rows at once" translate="no">​</a></h3>
+<p>A decision that chains a retrieval model, an LLM and a decision model is
+as slow as its models are when they are called together, and SAS Micro
+Analytic Service ended an execution that took longer than 30 seconds
+(measured on 2026-10-11 on SAS Viya 2026.09). What comes back then does
+not say so: HTTP status 201, an empty error column and every output of
+every node empty. A direct REST call of the module answers
+<code>&quot;executionState&quot;: &quot;timedOut&quot;</code> with <code>&quot;outputs&quot;: []</code>.</p>
+<table><thead><tr><th></th><th>One call at a time</th><th>Three rows at once (publishing validation)</th></tr></thead><tbody><tr><td>Retrieval node</td><td>0.2 s</td><td>0.2 to 2.2 s</td></tr><tr><td>LLM node</td><td>1.3 to 4.2 s</td><td>5 to 6 s for the first row, more than 29 s for the two others</td></tr><tr><td>Decision model node</td><td>1.7 to 4.1 s</td><td>24 to 25 s while the LLM container was busy</td></tr><tr><td>A whole call</td><td>6.5 to 9 s</td><td>all three rows empty in one run; one row complete after 29.65 s and two empty in the next</td></tr></tbody></table>
+<p>The retrieval itself is the smallest part of it. What it adds is the
+prompt: with the retrieved context the prompt of the LLM was about 900
+characters instead of about 50, and the LLM and the decision model were
+self-hosted on the same CPU node. The
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Troubleshooting-Guide#empty-outputs-published-decision">Troubleshooting Guide</a>
+has how to recognise the case in the log of the service, the rest of what
+was measured and what a site can do: fewer calls at once, a faster model
+or models that do not share a node, a shorter prompt — a smaller <code>k</code> or
+smaller chunks. The lengths of the variables below have no part in it.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-lengths-of-the-variables">The lengths of the variables<a href="#the-lengths-of-the-variables" class="hash-link" aria-label="Direct link to The lengths of the variables" title="Direct link to The lengths of the variables" translate="no">​</a></h3>
+<p>SAS Model Manager keeps a length for every variable of a model, and SAS
+Intelligent Decisioning declares the model in the code it generates for a
+decision with those lengths. The Prompt Builder writes every variable of
+the retrieval model with a length, and the custom step <em>RAG - Register
+Setup</em> registers the same ones:</p>
+<table><thead><tr><th>Variable</th><th>Role</th><th>Length</th></tr></thead><tbody><tr><td><code>question</code></td><td>input</td><td>32000</td></tr><tr><td><code>k</code></td><td>input</td><td>8 (a number)</td></tr><tr><td><code>filter_json</code></td><td>input</td><td>4000</td></tr><tr><td><code>retrieval_mode</code></td><td>input</td><td>32</td></tr><tr><td><code>options</code></td><td>input</td><td>4000</td></tr><tr><td><code>context_dg</code></td><td>output</td><td>32000</td></tr><tr><td><code>context_envelope</code></td><td>output</td><td>32000</td></tr><tr><td><code>retrieval_status</code></td><td>output</td><td>512</td></tr><tr><td><code>run_time</code></td><td>output</td><td>8 (a number)</td></tr></tbody></table>
+<p>Up to release 2.2 the two did not agree. The Prompt Builder wrote
+<code>context_dg</code> and <code>context_envelope</code> without a length, for which SAS Model
+Manager stored 99, and the code of a decision then declared</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">in_out varchar(100) &quot;context_dg&quot;, in_out varchar(100) &quot;context_envelope&quot;</span><br></div></code></pre></div></div>
+<p>The step registered the two context outputs with 32000 and its inputs
+shorter than the Builder&#x27;s (4096, 1024, 16 and 2048). The lists are now
+the same, so that a model is the same model whichever of the two wrote its
+variables last, and a test of the repository compares them entry by entry.</p>
+<p><strong>A value that is longer than its declared length arrives complete.</strong> That
+was measured on 2026-10-11 on SAS Viya 2026.09, as a control: with
+<code>context_dg</code> and <code>context_envelope</code> set back to 99 on the model — the
+generated code of the decision then declared <code>in_out varchar(100)</code> for
+both — and the decision published again, single calls of the published
+module in SAS Micro Analytic Service returned HTTP status 201,
+<code>retrieval_status</code> <em>ok</em>, the correct answer and <code>context_envelope</code>
+complete, with its 1969 characters. The test of SAS Intelligent
+Decisioning had returned the longer values complete with the length 99 as
+well. So a longer value neither failed the execution nor was it cut there,
+and the lengths above describe the model; nothing that was measured
+depends on them. The empty outputs of a publishing validation, which were
+first seen with a model that held 99, are another matter: the execution
+had taken longer than 30 seconds
+(<a href="#several-rows-at-once" class="">several rows at once</a>).</p>
+<p><strong>What a site does.</strong> Nothing has to be repaired. A setup gets the lengths
+of this release the next time it is saved or manifested in the Prompt
+Builder of this release, which the upgrade asks for anyway; a published
+decision keeps the declaration it was published with until it is
+published again, and by the measurement above it runs the same with either.</p>
+<p>Measured on 2026-10-11 with the Prompt Builder page of this release, the
+bundle that ships: <strong>Manifest setup</strong> wrote <code>question</code> 32000, <code>k</code> 8,
+<code>filter_json</code> 4000, <code>retrieval_mode</code> 32, <code>options</code> 4000, <code>context_dg</code>
+32000, <code>context_envelope</code> 32000, <code>retrieval_status</code> 512 and <code>run_time</code> 8.
+Measured earlier that day with the page as it was before eleven of its
+German texts were reworded: the same nine lengths, and the code SAS
+Intelligent Decisioning then generated for a decision declared
+<code>varchar(32000)</code> for both context outputs. Measured the same day for the
+step: a model that <em>RAG - Register Setup</em> registered held the same nine
+lengths in SAS Model Manager. The verify suite of the page
+checks the same against a stand-in for SAS Viya: a save writes the nine
+lengths, every update of the model during a manifest carries 32000 for
+both context outputs, and a manifest of a setup that held 99 leaves 32000.</p>
+<p>Not measured: a datagrid or an envelope longer than 32000 characters. Both
+hold the text of every hit, so their length grows with <code>k</code> and with the
+size of the chunks; three hits of the measured setup made 1969 characters.
+Also not measured: a value longer than its declared length for a model of
+another kind, in a SAS Container Runtime container, and a retrieval model
+registered with <em>RAG - Register Setup</em> with these lengths inside a
+decision.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="enrichment-an-llm-call-per-chunk">Enrichment: an LLM call per chunk<a href="#enrichment-an-llm-call-per-chunk" class="hash-link" aria-label="Direct link to Enrichment: an LLM call per chunk" title="Direct link to Enrichment: an LLM call per chunk" translate="no">​</a></h2>
 <p>Off by default. A chunk that reads perfectly in place is often meaningless on
 its own — <em>&quot;revenue grew 12%&quot;</em> says nothing about whose revenue, or when — and
@@ -257,6 +1341,11 @@ verified running there as a job.</p>
 </blockquote>
 <p>Submit with that context explicitly:</p>
 <div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"> </span><span class="token property" style="color:#36acaa">&quot;arguments&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">{</span><span class="token plain"> </span><span class="token property" style="color:#36acaa">&quot;_contextName&quot;</span><span class="token operator" style="color:#393A34">:</span><span class="token plain"> </span><span class="token string" style="color:#e3116c">&quot;SAS Studio compute context&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">}</span><span class="token plain"> </span><span class="token punctuation" style="color:#393A34">}</span><br></div></code></pre></div></div>
+<p>For jobs launched from the Builder, that context is the option
+<strong>RAG: ingestion compute context</strong> (<code>ragComputeContext</code>) of the Prompt Builder
+object. It is deliberately not the option <strong>Optimization: compute context</strong>
+(<code>computeContext</code>): the prompt optimization job is commonly run in the stock
+context, which is exactly the one that does not work here.</p>
 <p>The same service-account mismatch also prevents credential-domain lookups, so
 one context change fixes both.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-a-credential-domain-holding-the-store-credentials">2. A credential domain holding the store credentials<a href="#2-a-credential-domain-holding-the-store-credentials" class="hash-link" aria-label="Direct link to 2. A credential domain holding the store credentials" title="Direct link to 2. A credential domain holding the store credentials" translate="no">​</a></h3>
@@ -313,6 +1402,39 @@ chunk rows <strong>including retired generations</strong> and drops the ledger e
 it again. Erasure has to happen at the source as well.</p></div></div>
 <p>On SingleStore, retention matters more than on pgvector: a vector index there
 cannot be limited to live rows, so retained history is index the search walks.</p>
+<p><strong>A preview only reads.</strong> <em>RAG - Purge Documents</em> in its default mode,
+<em>Preview</em>, says what a purge would remove and ends its summary with
+<em>PREVIEW - nothing was changed</em>. Measured on 2026-10-11 on SAS Viya
+2026.09 with SingleStore, with the step as it was before the change
+described here: the preview said <em>would remove 1 chunk rows for 1
+documents</em>, and the rows of the ledger were the same afterwards — but
+the step had appended a run lock, promoted and saved the ledger again
+and written <em>the run lock was released so the run can be retried</em>. A
+preview now takes no run lock and neither promotes nor saves the ledger.
+It is still refused while another run holds a lock that is less than 30
+minutes old, and an ingestion can start while a preview reads. A preview
+of a project that has no ledger fails with <em>no ledger table for this RAG
+project - check the project name and caslib</em> and no longer leaves a
+ledger behind. Measured on 2026-10-11 on SAS Viya 2026.09 with pgvector
+and the step of release 2.3.0, run as the code SAS Studio generates for
+a flow: a preview ended with <em>PREVIEW - nothing was changed</em> and <em>1
+documents named, 1 chunk rows would be removed (live and retired)</em>,
+appended no lock, promoted and saved nothing, and the saved file of the
+ledger kept its size and time. Under the lock of a flow that was
+running, and under a fresh lock row appended by hand, it ended with
+<em>ERROR: RAG - Purge Documents failed: another ingestion run holds the
+lock on this ledger - wait for it to finish, or retry in 30 minutes if it
+crashed</em>. On a project without a ledger it ended with <em>ERROR: RAG - Purge
+Documents failed: RuntimeError: no ledger table for this RAG project -
+check the project name and caslib</em>, and no ledger was in memory or saved
+afterwards. A purge in the mode purge promoted and saved the ledger
+once and wrote no line about a released lock. Not measured: an ingestion
+that starts while a preview reads.</p>
+<p><strong>A purge is not in the run history.</strong> <em>RAG - Purge Documents</em> writes no
+row to <code>rag_runs</code> or <code>rag_doc_events</code>. Measured on 2026-10-11 with
+SingleStore: both tables held the same number of rows before and after a
+purge, 13 and 50. The purged document shows in the history only when a
+later run brings it back, as a second <code>new</code> event.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="run-history">Run history<a href="#run-history" class="hash-link" aria-label="Direct link to Run history" title="Direct link to Run history" translate="no">​</a></h2>
 <p>Each run is recorded in three tables <strong>in the vector store&#x27;s own database</strong>,
 beside the chunks they describe:</p>
@@ -320,10 +1442,82 @@ beside the chunks they describe:</p>
 <p>They are not in CAS because a CAS table here is overwrite-in-place by
 construction, has no transactional append and no constraints, and an empty run
 deletes the saved file outright. The cost of that choice — history invisible to
-Visual Analytics — is paid explicitly: the Load step <strong>publishes <code>rag_runs</code> and
-<code>rag_doc_events</code> to CAS</strong> after each run as <code>&lt;project&gt;_RUNS</code> and
+Visual Analytics — is paid explicitly: both ingestion paths <strong>publish <code>rag_runs</code>
+and <code>rag_doc_events</code> to CAS</strong> after each run as <code>&lt;project&gt;_RUNS</code> and
 <code>&lt;project&gt;_DOC_EVENTS</code>. The database copy is authoritative; the CAS copy is
 disposable and rebuildable.</p>
+<p><em>RAG - Load Vector Store</em>, the step of the flow, and <code>Ingest-Documents.sas</code> —
+<strong>Launch ingestion</strong>, or the ingestion job of a setup — publish the same two
+tables: every run the store holds for the collection (the newest 500) and
+their document events (the newest 5,000), not only the run that publishes,
+with the 35 and 10 columns, the measures as numbers and everything else as
+text, promoted and saved in the caslib of the pipeline tables. For the job
+<code>&lt;project&gt;</code> is its ledger table without the ending <code>_LEDGER</code>, which is the
+table prefix of a setup. A run that finds nothing to do publishes too, so one
+more run of a setup brings the runs before it into CAS, as far as the store
+recorded them.</p>
+<p>The job publishes since release 2.3.0; before, only the step did. Measured on
+2026-10-11 on SAS Viya 2026.09, with the job as it was: <code>&lt;project&gt;_RUNS</code> still
+had 3 rows after a job run on pgvector, and on SingleStore the store held four
+runs of a collection while the CAS copy held three. On 2026-10-11 and on
+2026-10-12 the pull of the log chain found the ledger of a setup that the
+Prompt Builder had ingested in memory and its <code>&lt;project&gt;_RUNS</code> not.</p>
+<p>The job as it publishes ran on the test system later on 2026-10-12, in six
+SAS Job Execution jobs with a content folder, a table prefix and a collection
+of their own; every job ended as completed:</p>
+<ul>
+<li class=""><strong>A first run</strong> of three documents, with one file excluded: <code>&lt;project&gt;_RUNS</code>
+with 1 row and 35 columns - 13 VARCHAR and 22 DOUBLE - and
+<code>&lt;project&gt;_DOC_EVENTS</code> with 4 rows and 10 columns, both promoted and saved,
+with the NOTE below above the last line of the log. Set against a run
+table the step had published on 2026-10-11, no column differed in name,
+type or label; two differed in length, and one of the document events.</li>
+<li class=""><strong>A run that found nothing to do:</strong> 2 rows and 5 events. <strong>A run with one
+changed document:</strong> 3 rows and 7 events.</li>
+<li class=""><strong>With the run history switched off</strong> the log had no line about the
+history, and both tables and their saved files were as the run before had
+left them.</li>
+<li class=""><strong>Both tables dropped and their files deleted, then a run:</strong> 4 rows and 8
+events - every run the store held. The run with the history switched off
+is not among them: it is not in the store.</li>
+<li class=""><strong>With the <code>rag_core</code> of before this change</strong> in the content folder the job
+wrote the milestone <em>rag history: not read for CAS (ImportError: …) - the
+ingestion itself is unaffected</em> and the WARNING, left both tables as they
+were and ended as completed.</li>
+</ul>
+<p>The tables were read back in a compute session, not in jobs. The pull and the
+link of the log chain then found those runs - see
+<a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Logging-&amp;-Monitoring#the-third-run">The Third Run</a>. Not provoked: an
+upload that fails, a row count that differs, a promote or a save that is
+refused. Changed after those runs and <strong>not run in SAS</strong>: the reason of a
+history that could not be read reaches SAS through the function of the
+logging programs, so in the WARNING and in the milestone a quote shows as a
+backtick, <code>%</code> as <code>pct</code>, <code>&amp;</code> as <code>+</code> and a semicolon as a comma, a comment mark
+is split, and the reason ends after 200 characters.</p>
+<p>The two differ in three points. With the history switched off, and for a table
+the store holds no rows for, the step drops the CAS table and deletes its saved
+file (read from its program); the job leaves the table as it is. The job puts
+an upload in the place of a table only when it holds every row that was read.
+And a history the job cannot read or publish is a WARNING in its log —
+<code>WARNING: RAG ingestion: the run history ... was not published ...</code> — while the
+run stays one that went through; the next run publishes the history again. A
+run that published writes this line above its last line:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">NOTE: RAG ingestion: the run history was published to CAS, promoted and saved - &lt;caslib&gt;.&lt;project&gt;_RUNS with &lt;n&gt; rows and &lt;caslib&gt;.&lt;project&gt;_DOC_EVENTS with &lt;m&gt; rows.</span><br></div></code></pre></div></div>
+<p>The job definition <code>RAG Ingest - &lt;setup&gt;</code> holds a copy of <code>Ingest-Documents.sas</code>
+from the time the setup was manifested. After the RAG content is deployed
+again, <strong>Manifest setup</strong> has to run once for a setup before its job
+publishes. <em>RAG - Purge Documents</em> writes no row to either table
+(<a href="#retention-and-erasure" class="">retention and erasure</a>).</p>
+<p><code>started_at</code> of a run is the epoch in its run id, read as UTC, and the
+steps and the job take that epoch from the SAS clock of the compute
+session. On the test system, whose sessions run in UTC, <code>started_at</code>
+was the start of each run (measured on 2026-10-11, for 20 runs of one
+collection). In a compute session whose SAS clock is not UTC — the
+option <code>TIMEZONE</code> — it is off by the offset to UTC, while <code>finished_at</code>,
+which Python writes from its own clock, is not. For a run of the job
+that is new with release 2.3.0: up to release 2.2 the Python program of
+the job made the id from its own clock. Read from the code, not
+measured.</p>
 <p>History never fails a load. If the store refuses the write, the ingestion still
 stands and the log says so.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="skipped-is-not-failed">Skipped is not failed<a href="#skipped-is-not-failed" class="hash-link" aria-label="Direct link to Skipped is not failed" title="Direct link to Skipped is not failed" translate="no">​</a></h3>
@@ -334,10 +1528,60 @@ person can fix. Collapsing the two made every run look broken and hid the rows
 that were. Both are counted separately in <code>rag_runs</code> (<code>docs_skipped</code>,
 <code>docs_failed</code>), and every skipped document is <strong>named in the run log</strong>, grouped
 by reason.</p>
+<p>The summary of <em>RAG - Extract Text</em> counts such a document as skipped as
+well. A new document in which the extractor finds no text — an empty file,
+a PDF that holds only scans — was counted there under <em>documents extracted</em>
+and under <em>extractors used</em>, although <code>rag_core</code> hands it back as skipped.
+It is now counted as skipped, with the reason in the line
+<code>rag skipped: 1 - &lt;extractor&gt; found no text (empty or scanned-only document)</code>
+above the summary: three unchanged documents and one empty file give
+<code>0 documents extracted, 0 failed, 3 skipped as unchanged, 1 skipped</code> and no
+line <em>extractors used</em>. Measured on 2026-10-11 on SAS Viya 2026.09 with an
+empty <code>.txt</code> file: the step logged <code>rag extract: 0 extracted, 1 skipped, 0 failed</code> and <code>rag skipped: 1 - plaintext found no text (empty or scanned-only document)</code> with the path of the file, and no line
+<em>extractors used</em>. The summary of that run read <code>0 documents extracted, 0 failed, 3 skipped as unchanged, 1 deleted, 1 skipped</code>, because a file had
+been taken out of the folder before it. With one more new document it
+read <code>1 documents extracted, 0 failed, 3 skipped as unchanged, 1 skipped</code>,
+followed by <code>extractors used: plaintext=1</code>. Measured the same day for an
+excluded code file beside three unchanged documents: <code>0 documents extracted, 0 failed, 3 skipped as unchanged, 1 excluded</code>.</p>
 <p><code>docs_skipped</code> is added to an existing <code>rag_runs</code> table by an additive
-migration on the next run, so an upgraded deployment needs no manual DDL. The
-same applies to the six enrichment columns: a collection built before the
-Enrich stage existed keeps answering, and its runs simply record no LLM cost.</p>
+migration on the next run, and so are <code>docs_excluded</code> — the documents the
+deployment excludes, a source file with code ingestion off — and the six
+enrichment columns: a collection built before the Enrich stage existed keeps
+answering, and its runs simply record no LLM cost. A run reads which columns
+<code>rag_runs</code> has and adds only the missing ones, so an upgraded deployment
+needs no manual DDL <strong>where the store user of the ingestion may alter the
+table</strong> — on PostgreSQL that is its owner. Where it may not, the Load step
+logs <code>rag history: not recorded (… must be owner of table rag_runs</code>, nothing
+is written for that run and the ingestion itself is not affected, until the
+owner runs an ingestion or a DBA runs
+<code>ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0</code> once.</p>
+<p>Before release 2.3.0 a run wrote <code>docs_excluded</code> to a table that had no such
+column, so by the code every write to <code>rag_runs</code> failed and no run was
+recorded; the runs of that time are not backfilled.</p>
+<p>Measured on 2026-10-11 on SAS Viya 2026.09, with pgvector and with
+SingleStore 9.0.40:</p>
+<ul>
+<li class=""><strong>Every run wrote its row.</strong> The logs said <em>rag history: run … recorded</em>,
+and <em>rag history: not recorded</em> stood in none of them. On pgvector the
+CAS copy <code>&lt;project&gt;_RUNS</code> held 35 columns, <code>docs_excluded</code> among them,
+and grew with the runs of the flow, to 19 rows.</li>
+<li class=""><strong>The column is added to a table that exists.</strong> On SingleStore <code>rag_runs</code>
+had 34 columns and no <code>docs_excluded</code> before the first run and 35 with it
+after; the two runs in between added two rows to <code>rag_runs</code> and three
+events to <code>rag_doc_events</code>. That table is shared by every collection in
+the database, and the accelerator does not take the column out again:
+the first run of this release changes <code>rag_runs</code> for good.</li>
+<li class=""><strong>The count is written.</strong> With one source-code file in the documents
+folder and code ingestion off, the two runs that followed — the job and
+the flow, on pgvector — had <code>docs_excluded</code> 1, and the 17 runs before
+them 0.</li>
+</ul>
+<p>Not measured: a store whose user may not alter <code>rag_runs</code>, and with it
+the line <em>must be owner of table rag_runs</em>; a store that does not say
+which columns a table has; whether an older runtime that is still
+deployed elsewhere writes its rows to a <code>rag_runs</code> that has the new
+column; and <code>docs_excluded</code> other than 0 on SingleStore. The tests run
+the first two against a stand-in for the connection.</p>
 <p>The run log also states <strong>what the embedding and the enrichment cost</strong> while
 the run is still on screen, and spells out where the chunk token budget came
 from — it is the setup&#x27;s chunk window minus the estimator&#x27;s safety margin, not
@@ -348,6 +1592,24 @@ per identity at run time. They are never written to a flow, a CAS table, a
 WORK file or a log. The <code>.env</code> file is git-ignored and is read only by the
 admin scripts on your workstation. On SCR and MAS destinations — which have no
 SAS Viya session — the same names are supplied as environment variables.</p>
+<p><strong>The address of the vector store.</strong> Host and database are configuration,
+not a credential, and they stand in the log: the summary of <em>RAG - Load
+Vector Store</em> names the vector store. One line of it reads
+<code>NOTE: &lt;backend&gt; collection &lt;collection&gt; on &lt;host&gt;/&lt;database&gt;</code>, with the
+host as it is set for the step — an IP address on the test system (seen on
+2026-10-11 with SingleStore: <code>singlestore collection zz_verify_s2_v1 on &lt;host&gt;/SASModel</code>). The line after it names the credential domain and the
+name of the entry the user was read from (<code>&lt;BACKEND&gt;_RAG_USER</code>), not its
+value: user and password come from the credential domain, and the summary
+holds neither. Seen on 2026-10-11 with pgvector, as two lines that follow
+each other:
+<code>NOTE:   pgvector collection zz_verify_r12s_v1 on &lt;host&gt;/postgres</code> and
+<code>NOTE:   credentials resolved from domain agentic-ai-keys (PGVECTOR_RAG_USER)</code>.
+A search of that flow log for the words password, user name, credential,
+secret and API key found that one line outside the echoed program; such
+a search does not show that the name of the account stands nowhere as a
+bare value. The summary is part of the log of every run that reaches
+the step, so the address of the store is in the job log of every run of a
+flow that is scheduled as a job, for everyone who may read that log.</p>
 <p><strong>What crosses which boundary.</strong> Document text leaves the source only to reach
 the extractor, the embedding container and the vector store, all inside your
 deployment. The embedding model runs as a governed SCR container you publish.</p>
@@ -375,6 +1637,6 @@ your vector store in the clear. Encryption at rest is the database&#x27;s
 responsibility. TLS to the store is configurable per backend (<code>sslmode</code> for
 PostgreSQL, on/off for SingleStore) and defaults to enabled.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="troubleshooting">Troubleshooting<a href="#troubleshooting" class="hash-link" aria-label="Direct link to Troubleshooting" title="Direct link to Troubleshooting" translate="no">​</a></h2>
-<table><thead><tr><th>Symptom</th><th>Cause</th></tr></thead><tbody><tr><td><em>&quot;cannot run the RAG steps … different identities&quot;</em></td><td>Wrong compute context — see above</td></tr><tr><td><em>&quot;no credential resolved from domain&quot;</em></td><td>The running identity has no credential, or a service account is running the job</td></tr><tr><td>A step renders as an empty editor</td><td>The <code>.step</code> file was uploaded as a plain file instead of registered</td></tr><tr><td>A saved flow reports a missing step</td><td>A step was re-registered instead of updated, minting a new id</td></tr><tr><td>Code generation returns HTTP 500</td><td>The <code>.flw</code> was uploaded as a file, or a node declares an input port nothing is wired into</td></tr><tr><td>Retrieval returns fewer chunks than exist</td><td>A SingleStore ANN index is enabled — see the warning above</td></tr><tr><td>The run refuses to start</td><td>Another run holds the ledger lock; it expires after 30 minutes</td></tr><tr><td>The Builder says the store is unresolved</td><td>The domain has no <code>&lt;BACKEND&gt;_HOST</code> / <code>_DB</code> — rerun <code>create-credential-domain</code> after adding them to your <code>.env</code></td></tr><tr><td>The embedding model has to be typed</td><td>No <strong>embedding model project</strong> is configured, or the user cannot read it</td></tr><tr><td>Documents are missing from the collection</td><td>Read the run log&#x27;s <code>rag skipped:</code> lines — they name every document and why. Code files are skipped unless the setup opts in</td></tr><tr><td>The Builder points at the wrong environment after an upgrade</td><td>A report import replaced its Options — restore them with <code>mdb options-restore</code></td></tr><tr><td>Browsing the ledger shows nothing after a run</td><td>The ledger is written by the run&#x27;s final step; a large corpus takes minutes. The run panel&#x27;s clock shows whether it is still going</td></tr></tbody></table></div></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Managing Credentials</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Deployment of Decisions</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#what-gets-deployed" class="table-of-contents__link toc-highlight">What gets deployed</a></li><li><a href="#serving-the-rag-builder" class="table-of-contents__link toc-highlight">Serving the RAG Builder</a><ul><li><a href="#what-the-builders-buttons-create--and-what-they-clean-up" class="table-of-contents__link toc-highlight">What the Builder&#39;s buttons create — and what they clean up</a></li></ul></li><li><a href="#enrichment-an-llm-call-per-chunk" class="table-of-contents__link toc-highlight">Enrichment: an LLM call per chunk</a><ul><li><a href="#several-prompts-one-after-the-other" class="table-of-contents__link toc-highlight">Several prompts, one after the other</a></li><li><a href="#what-the-extracted-values-become" class="table-of-contents__link toc-highlight">What the extracted values become</a></li><li><a href="#latest-or-pinned" class="table-of-contents__link toc-highlight">Latest, or pinned</a></li><li><a href="#what-it-costs-and-what-that-buys" class="table-of-contents__link toc-highlight">What it costs, and what that buys</a></li><li><a href="#consequences-worth-knowing-before-you-turn-it-on" class="table-of-contents__link toc-highlight">Consequences worth knowing before you turn it on</a></li></ul></li><li><a href="#two-prerequisites-that-are-not-optional" class="table-of-contents__link toc-highlight">Two prerequisites that are not optional</a><ul><li><a href="#1-a-compute-context-that-runs-as-the-requesting-user" class="table-of-contents__link toc-highlight">1. A compute context that runs as the requesting user</a></li><li><a href="#2-a-credential-domain-holding-the-store-credentials" class="table-of-contents__link toc-highlight">2. A credential domain holding the store credentials</a></li></ul></li><li><a href="#python-packages" class="table-of-contents__link toc-highlight">Python packages</a></li><li><a href="#choosing-a-vector-store" class="table-of-contents__link toc-highlight">Choosing a vector store</a></li><li><a href="#retention-and-erasure" class="table-of-contents__link toc-highlight">Retention and erasure</a></li><li><a href="#run-history" class="table-of-contents__link toc-highlight">Run history</a><ul><li><a href="#skipped-is-not-failed" class="table-of-contents__link toc-highlight">Skipped is not failed</a></li></ul></li><li><a href="#security-posture" class="table-of-contents__link toc-highlight">Security posture</a></li><li><a href="#troubleshooting" class="table-of-contents__link toc-highlight">Troubleshooting</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Support</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub Repository<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026, SAS Institute Inc., Cary, NC, USA. All Rights Reserved. Built with Docusaurus.</div></div></div></footer></div>
+<table><thead><tr><th>Symptom</th><th>Cause</th></tr></thead><tbody><tr><td><em>&quot;cannot run the RAG steps … different identities&quot;</em></td><td>Wrong compute context — see above</td></tr><tr><td><em>&quot;no credential resolved from domain&quot;</em></td><td>The running identity has no credential, or a service account is running the job</td></tr><tr><td>A step renders as an empty editor</td><td>The <code>.step</code> file was uploaded as a plain file instead of registered</td></tr><tr><td>A saved flow reports a missing step</td><td>A step was re-registered instead of updated, minting a new id</td></tr><tr><td>Code generation returns HTTP 500</td><td>The <code>.flw</code> was uploaded as a file, or a node declares an input port nothing is wired into</td></tr><tr><td>Retrieval returns fewer chunks than exist</td><td>A SingleStore ANN index is enabled — see the warning above</td></tr><tr><td>The run refuses to start</td><td>Another run holds the ledger lock; it expires after 30 minutes</td></tr><tr><td><em>RAG - List Documents</em> fails with <em>the run lock could not be written to … - refusing to ingest unguarded</em>, below <code>ERROR: The variable doc_id has been specified with incompatible data types</code></td><td>The flow runs on a ledger the ingestion job wrote, with steps from before release 2.3.0 (or the job on a ledger a flow wrote) — see <a href="#one-ledger-for-the-job-and-the-flow" class="">one ledger for the job and the flow</a></td></tr><tr><td><em>RAG - Register Setup</em> fails with <code>POST /modelRepository/projects returned 400</code> and <em>You must specify a value for the &quot;folderId&quot; parameter</em></td><td>The SAS Model Manager project named in the step does not exist, and the <code>rag_core</code> on the site is from before release 2.3.0. Import the package of the release or run <code>deploy-rag-content</code>, or create the project in SAS Model Manager first — see <a href="#tls-register-setup-step" class="">the checkbox of the custom step</a></td></tr><tr><td>A RAG step writes <em>NOTE: The quoted string currently being processed has become more than 262 bytes long</em> above its summary or above its ERROR line</td><td>Steps from before release 2.3.0; nothing is wrong with the run. The steps of release 2.3.0 write neither the summary nor the ERROR line as a quoted string. Above the summary the NOTE was gone in <em>RAG - Register Setup</em> and in a flow of List, Extract, Chunk, Embed and Load; above the ERROR line it was gone in a failing <em>RAG - List Documents</em> (measured on 2026-10-11) — see <a href="#tls-register-setup-step" class="">the checkbox of the custom step</a></td></tr><tr><td>A publishing validation on a SAS Micro Analytic Service destination returns HTTP status 201, an empty error column and <strong>empty outputs</strong> in some or all rows, for a decision that uses a retrieval model</td><td>SAS Micro Analytic Service ended those executions after 30 seconds. The validation sends its rows at the same time, and the models behind the nodes took longer when they were called together; a direct call of the module answers <code>&quot;executionState&quot;: &quot;timedOut&quot;</code>. The lengths of the model&#x27;s variables are not the cause — see <a href="#several-rows-at-once" class="">several rows at once</a> and the <a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Troubleshooting-Guide#empty-outputs-published-decision">Troubleshooting Guide</a></td></tr><tr><td><em>RAG - Register Setup</em> fails, and its log holds <em>WARNING: … the step failed after the score code of the retrieval model was stored</em></td><td>A request after the upload failed (a flow that does not exist, an artifact that could not be attached). The model holds the new score code; the WARNING lines below say whether it verifies TLS certificates and whether it is tagged — see <a href="#tls-register-setup-step" class="">the checkbox of the custom step</a></td></tr><tr><td><em>RAG - Register Setup</em> fails, and its log holds <em>WARNING: … it is not known whether SAS Model Manager stored the score code</em></td><td>The upload of the score code got no usable answer. The tag <code>TLS-Verification-Off</code> was not updated; run the step again</td></tr><tr><td>The ingestion job ends with <em>the run lock could not be written to the ledger … - refusing to ingest unguarded</em></td><td>The lock row of the job was not in the ledger when the job read it back. Look in the SAS log above the message: CAS refused the append (its ERROR is there), or the second export of the ledger failed. The refusal of the job was not provoked on the test system: no measured run of the job of release 2.3.0 wrote it. The lock row with its run id was read from another session during one of those runs and is named in the release step of the runs that failed; for the other runs it is taken from the job not refusing. <em>RAG - List Documents</em> wrote the same refusal there once, for a ledger in a caslib of the CAS session, below <code>ERROR: The caslib &#x27;…&#x27; is a session caslib. You cannot promote tables to global scope in session caslibs.</code> See <a href="#one-ledger-for-the-job-and-the-flow" class="">one ledger for the job and the flow</a></td></tr><tr><td>The ingestion job ends with <em>another ingestion run appears active for this ledger (run lock held) - retry later</em></td><td>The ledger holds a lock row of another run that is less than 30 minutes old: a flow or a job is ingesting, or a run crashed, or a job definition from before release 2.3.0 failed and left its row. The run took no lock and did not touch the ledger. Wait for the other run, or 30 minutes. A run of the job of release 2.3.0 that fails takes its own lock out and writes <em>the run lock was released so the run can be retried</em> — see <a href="#one-ledger-for-the-job-and-the-flow" class="">one ledger for the job and the flow</a>. Measured on 2026-10-11: a job refused this way ended as <code>failed</code>, left no lock row of its own, and was not refused when it was run again after the other run had ended</td></tr><tr><td>A step fails with <em>the saved table … could not be loaded into memory (CAS messages above) - stopped, because an empty table would re-embed the corpus and overwrite the saved file</em></td><td>The ledger or the embedded chunks of the project are saved in the caslib but not in memory, and CAS could not load the file. The CAS messages above the ERROR say why. The step stops before it takes a lock or starts a ledger, and the job stores no ledger after a run that failed, so the saved file is not touched — also in a SAS session that ran the job before, where up to this release the job stored the ledger of the earlier run over it. A saved file that cannot be loaded could not be staged on the test system and was not run in SAS; that the job stores no ledger after a run that failed was measured for a run that the lock of another run refused. See <a href="#a-saved-ledger-is-loaded-back" class="">a saved ledger is loaded back</a></td></tr><tr><td>A run writes <em>WARNING: RAG: … is not in memory, and the files of the caslib … could not be listed (CAS messages above) - a saved copy could not be looked for.</em> and <em>WARNING: RAG: the run continues without the table and saves over a copy that may be there.</em></td><td>The table is not in memory and CAS could not list the files of the caslib, so the run could not look for a saved copy and goes on without the table. For a ledger that means that every document counts as new and is embedded again, and that a saved ledger is overwritten. Stop the run if a saved copy should exist, and look at the CAS messages above the WARNING and at the caslib. The wording of the two messages - they stood on four log lines - was measured on 2026-10-11 in <em>RAG - List Documents</em>, for a ledger in a caslib of the CAS session; a run that goes on to its end behind them was not. See <a href="#a-saved-ledger-is-loaded-back" class="">a saved ledger is loaded back</a></td></tr><tr><td><strong>Launch ingestion</strong> shows <em>The ingestion run did not succeed</em> with the milestone <em>Ingestion failed: the saved table … could not be loaded into memory</em></td><td>The ledger of the setup is saved in the caslib but not in memory, and CAS could not load the file. Nothing was ingested and the saved file is not touched; the CAS messages in the log of the job say why. The milestone was not run in SAS: no file that CAS cannot load could be staged on the test system. See <a href="#a-saved-ledger-is-loaded-back" class="">a saved ledger is loaded back</a></td></tr><tr><td>The ingestion job of a setup ends as <code>failed</code> in SAS Job Execution</td><td>The run failed: the last ERROR line of its log, <em>ERROR: RAG ingestion failed: …</em>, says why, and the record of the job holds the same text. SAS Job Execution reports its own error code there, 5713 (<em>A procedure in the SAS program provided for the job completed execution with at least one error.</em>), and inside it an error with the code 1012 and the text of that line. Up to release 2.2, and with a job definition that was not manifested again, the job ends as <code>completed</code> with the same ERROR line — see <a href="#one-ledger-for-the-job-and-the-flow" class="">one ledger for the job and the flow</a>. The failed state was measured for the job <em>RAG - Register Setup</em> generates from a flow and, on 2026-10-11, for <code>Ingest-Documents.sas</code>, with these two codes in the record of the job</td></tr><tr><td>The log of the ingestion job holds <em>NOTE: RAG ingestion: rag_ledger_in.json of an earlier run of this SAS session was deleted from WORK</em></td><td>The program ran before in the same SAS session. The file is the export of that run and is removed so that this run cannot read it; nothing is wrong. A job started by SAS Job Execution has a WORK of its own and does not write the line. The line comes once for each of the two files that is there, <code>rag_ledger_in.json</code> and <code>rag_ledger_lock.json</code> (measured on 2026-10-11)</td></tr><tr><td>The ingestion job ends with <em>… of an earlier run of this SAS session could not be deleted from WORK - stopped, because the run would read the ledger of that run as its own</em></td><td>The export of an earlier run is still in WORK and SAS could not delete it. Start a new SAS session and run the job there. The log of such a run also holds three ERROR messages of <code>PROC JSON</code> above its milestone, on six log lines - <em>ERROR: Invalid file, …/rag_ledger_in.json.</em>, <em>ERROR: Due to the previous error, the JSON output file is incomplete and invalid, …</em> and <em>ERROR: The JSON writer is in an error state at this point and no more items may be inserted.</em> They have the same cause: the export still runs after the delete failed, and writes to the file that is in the way. Measured on 2026-10-11 with a directory of that name in WORK; by the code, the last line names the lock instead of the file where another run holds a fresh lock at that moment</td></tr><tr><td><strong>Test retrieval</strong> says <em>The probe failed: the Python environment of this compute context lacks the requests package</em></td><td>The Python of the compute context named in <code>ragComputeContext</code> has no <code>requests</code> — see <a href="#python-packages" class="">Python packages</a>. Up to release 2.2 the page showed a probe that returned no chunks in that case. The line the page reads - <em>RAGRETRIEVE FAILED the Python environment of this compute context lacks the requests package - see the RAG administration guide</em> - was measured on 2026-10-11 in a session in which the import of <code>requests</code> was made to fail; the text of the page was not run in SAS, because the test system has no compute context without the package</td></tr><tr><td><code>deploy-rag-content</code> stops with <em>(409) Conflict</em> on the upload of a file</td><td>Seen on 2026-10-11 with <code>deploy-rag-content.ps1</code>, on a content folder that held an earlier runtime: the Files service refused the upload of a file whose old copy the script had just deleted, and answered the same upload with 201 a minute later. Run the script again - the second run completed. Until a run has completed, the file the script stopped at is missing from the folder. The script calls <code>mdb content-deploy</code> since release 2.3.0, which deletes no file - it replaces the content of a file that differs in place - and stops at the first write that fails; that has not run against SAS Viya — see <a href="#what-gets-deployed" class="">what gets deployed</a></td></tr><tr><td>The Load step logs <em>rag history: not recorded (… must be owner of table rag_runs</em></td><td>The store user of the ingestion may not alter <code>rag_runs</code>, which release 2.3.0 widens by the column <code>docs_excluded</code>. The ingestion itself is not affected. Let the owner of the table run an ingestion, or run <code>ALTER TABLE rag_runs ADD COLUMN docs_excluded integer DEFAULT 0</code> once — see <a href="#run-history" class="">run history</a></td></tr><tr><td>A job generated by <em>RAG - Register Setup</em> ends with <em>ERROR: RAG ingestion failed - a step of this run reported an error (its ERROR line is above) and the steps after it were skipped.</em></td><td>A step of the flow failed. The line is written by the job, not by a step: the ERROR of the step that failed is above it — see <em>The job generated from a flow</em> under <a href="#tls-register-setup-step" class="">the checkbox of the custom step</a></td></tr><tr><td><code>retrieval_status</code> of a retrieval model in a decision says <em>no vector-store credentials resolved</em></td><td>The runtime the decision runs in has no <code>&lt;BACKEND&gt;_RAG_USER</code> and <code>&lt;BACKEND&gt;_RAG_PW</code> — see <a href="#the-retrieval-model-in-a-decision" class="">the retrieval model in a decision</a></td></tr><tr><td>The Builder says the store is unresolved</td><td>The domain has no <code>&lt;BACKEND&gt;_HOST</code> / <code>_DB</code> — rerun <code>create-credential-domain</code> after adding them to your <code>.env</code></td></tr><tr><td>No embedding model can be chosen, and no setup can be saved</td><td>No <strong>embedding model project</strong> is configured (<code>embeddingProjectID</code>), it holds no registered embedding model, or the user cannot read it</td></tr><tr><td>Documents are missing from the collection</td><td>Read the run log&#x27;s <code>rag skipped:</code> lines — they name every document and why. Code files are skipped unless the setup opts in</td></tr><tr><td>The Setup card does not offer the RAG setup</td><td><strong>Enable RAG setups</strong> is not ticked in the Options pane of the Prompt Builder object (the default, and what a report import without saved options leaves), or the repository ID is blank</td></tr><tr><td>The RAG setup card is shown but cannot be chosen</td><td>The credential domain option is <code>none</code> — RAG needs a domain</td></tr><tr><td><em>Launch ingestion</em> or <em>Test retrieval</em> names a missing compute context</td><td><code>ragComputeContext</code> is blank. The optimization <code>computeContext</code> is a different option</td></tr><tr><td>A setup shows its vector database as <em>not offered for new setups</em></td><td>The deployment withholds that database in the Options pane. The setup keeps it and can still be saved, launched and tested</td></tr><tr><td>The Builder is switched off, or points at the wrong environment, after an upgrade</td><td>A report import replaced its Options — restore them with <code>mdb options-restore</code></td></tr><tr><td>A published retrieval model returns <code>CERTIFICATE_VERIFY_FAILED ... self-signed certificate in certificate chain</code> in <code>retrieval_status</code></td><td>The model runs where the CA bundle is not mounted — see <a href="#tls-verification-in-the-retrieval-model" class="">TLS verification in the retrieval model</a></td></tr><tr><td>A report named <strong>RAG Builder</strong> still exists and shows an older page</td><td>It is the retired standalone UI of release 2.2 or earlier — see <a class="" href="/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-retired-rag-builder-report">the retired RAG Builder report</a></td></tr><tr><td>Browsing the ledger shows nothing after a run</td><td>The ledger is written by the run&#x27;s final step; a large corpus takes minutes. The run panel&#x27;s clock shows whether it is still going</td></tr></tbody></table></div></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Managing Credentials</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Deployment of Decisions</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#what-gets-deployed" class="table-of-contents__link toc-highlight">What gets deployed</a><ul><li><a href="#after-an-upgrade" class="table-of-contents__link toc-highlight">After an upgrade: manifest every setup once</a></li></ul></li><li><a href="#serving-the-rag-builder" class="table-of-contents__link toc-highlight">Serving the RAG Builder</a><ul><li><a href="#what-the-builders-buttons-create--and-what-they-clean-up" class="table-of-contents__link toc-highlight">What the Builder&#39;s buttons create — and what they clean up</a></li><li><a href="#one-ledger-for-the-job-and-the-flow" class="table-of-contents__link toc-highlight">One ledger for the job and the flow</a></li><li><a href="#a-saved-ledger-is-loaded-back" class="table-of-contents__link toc-highlight">A saved ledger is loaded back</a></li><li><a href="#where-a-setup-embeds" class="table-of-contents__link toc-highlight">Where a setup embeds</a></li><li><a href="#tls-verification-in-the-retrieval-model" class="table-of-contents__link toc-highlight">TLS verification in the retrieval model</a></li><li><a href="#tls-register-setup-step" class="table-of-contents__link toc-highlight">The checkbox of the custom step RAG - Register Setup</a></li><li><a href="#the-retrieval-model-in-a-decision" class="table-of-contents__link toc-highlight">The retrieval model in a decision</a></li><li><a href="#several-rows-at-once" class="table-of-contents__link toc-highlight">Several rows at once</a></li><li><a href="#the-lengths-of-the-variables" class="table-of-contents__link toc-highlight">The lengths of the variables</a></li></ul></li><li><a href="#enrichment-an-llm-call-per-chunk" class="table-of-contents__link toc-highlight">Enrichment: an LLM call per chunk</a><ul><li><a href="#several-prompts-one-after-the-other" class="table-of-contents__link toc-highlight">Several prompts, one after the other</a></li><li><a href="#what-the-extracted-values-become" class="table-of-contents__link toc-highlight">What the extracted values become</a></li><li><a href="#latest-or-pinned" class="table-of-contents__link toc-highlight">Latest, or pinned</a></li><li><a href="#what-it-costs-and-what-that-buys" class="table-of-contents__link toc-highlight">What it costs, and what that buys</a></li><li><a href="#consequences-worth-knowing-before-you-turn-it-on" class="table-of-contents__link toc-highlight">Consequences worth knowing before you turn it on</a></li></ul></li><li><a href="#two-prerequisites-that-are-not-optional" class="table-of-contents__link toc-highlight">Two prerequisites that are not optional</a><ul><li><a href="#1-a-compute-context-that-runs-as-the-requesting-user" class="table-of-contents__link toc-highlight">1. A compute context that runs as the requesting user</a></li><li><a href="#2-a-credential-domain-holding-the-store-credentials" class="table-of-contents__link toc-highlight">2. A credential domain holding the store credentials</a></li></ul></li><li><a href="#python-packages" class="table-of-contents__link toc-highlight">Python packages</a></li><li><a href="#choosing-a-vector-store" class="table-of-contents__link toc-highlight">Choosing a vector store</a></li><li><a href="#retention-and-erasure" class="table-of-contents__link toc-highlight">Retention and erasure</a></li><li><a href="#run-history" class="table-of-contents__link toc-highlight">Run history</a><ul><li><a href="#skipped-is-not-failed" class="table-of-contents__link toc-highlight">Skipped is not failed</a></li></ul></li><li><a href="#security-posture" class="table-of-contents__link toc-highlight">Security posture</a></li><li><a href="#troubleshooting" class="table-of-contents__link toc-highlight">Troubleshooting</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Support</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/sassoftware/sas-agentic-ai-accelerator" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub Repository<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026, SAS Institute Inc., Cary, NC, USA. All Rights Reserved. Built with Docusaurus.</div></div></div></footer></div>
 </body>
 </html>
