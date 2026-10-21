@@ -1138,13 +1138,17 @@ class PackageSource:
         empty folder to bring in place."""
         return bool(self._at) or bool(self.empty_folders)
 
-    def manifest(self, content_root: str) -> "_content.ContentManifest":
+    def manifest(self, content_root: str, decisions: bool = True) -> "_content.ContentManifest":
         """The entries of the package as a manifest whose content root is
-        the folder they are brought into."""
+        the folder they are brought into. Without `decisions` the decisions
+        are left out - and with them a folder that holds nothing else, which
+        the in-place part would otherwise create for decisions that are not
+        imported."""
         entries = [_content.Entry(path=path, kind="folder") for path in self.empty_folders]
         entries += [_content.Entry(path=path, kind=kind) for kind, path in self._at]
         entries += [_content.Entry(path=item.path, kind="report") for item in self.reports]
-        entries += [_content.Entry(path=item.path, kind="decision") for item in self.decisions]
+        if decisions:
+            entries += [_content.Entry(path=item.path, kind="decision") for item in self.decisions]
         repo_root = self.checkout.repo_root if self.checkout is not None else Path(".")
         return _content.ContentManifest(repo_root=repo_root, content_root=content_root.rstrip("/"),
                                         package="", entries=entries)

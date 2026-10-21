@@ -773,7 +773,7 @@ def test_the_command_for_a_test_folder_runs_as_printed_for_a_folder_that_is_not_
                                    "--allow-differences")
     assert result.exit_code == 0, text
     printed, = re.findall(r"`(mdb builders-import [^`]*)`", text.rstrip().splitlines()[-1])
-    assert printed.endswith(' --content-root "<folder>" --no-releases --no-reports --create --no-files')
+    assert printed.endswith(' --content-root "<folder>" --no-releases --no-reports --no-decisions --create --no-files')
     viya, out = Viya(), io.StringIO()
     if there:
         viya.make_folder(folder)

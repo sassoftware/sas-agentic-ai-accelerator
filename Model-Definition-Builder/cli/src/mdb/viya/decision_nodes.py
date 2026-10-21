@@ -30,7 +30,13 @@ the move below is built on:
   transfer RE-IMPORT of the decision over itself, with a `dntStatic`
   connector mapping from the old address to the new one, rewrites EVERY
   version - locked ones included - and keeps the version ids. Published
-  modules (MAS, SCR) hold compiled code and are not touched.
+  modules (MAS, SCR) hold compiled code and are not touched;
+* an import of a package whose node type the site has under that id
+  overwrites it in place even where the site made its content (another
+  content id than the package's - a node created by the Create program or
+  by the move): the content keeps the site's content id and gets the code
+  and the terms of the package, and the decision of the package runs with
+  it (measured on 2026-10-21).
 
 THE MOVE (`mdb decision-node-migrate`): find the site's node type by its
 name; stop where it has the id already; refuse where the id is taken; list
@@ -41,6 +47,15 @@ one, move every decision by a re-import over itself, and read every version
 back. The old node type is kept unless --delete-old is given AND no version
 of any decision uses it any more. A run that stopped is run again: what is
 done is found done (the renamed node type says where the first run got to).
+
+WHERE THE TARGET IS THERE ALREADY - the package or the Create program made
+it after the old node type was renamed by hand to free its name - every
+decision is still read, and every version that calls a node type LIKE the
+target is listed: one whose name starts with the node's name (any case;
+this covers "<name> (before <id8>)") or whose code is the target's
+(`similar_node_types`). `--from-id <its id>` moves the decisions of one of
+them to the target and creates nothing. A version whose node lost its
+address (a node type deleted earlier) is a warning: no mapping moves it.
 
 Every request goes through a session with `get` / `post` / `put` /
 `delete` that take a path, and every call of the transfer service through
@@ -211,7 +226,7 @@ class Version:
     current: bool
     #: The node types the steps of this version call, by address.
     uris: list = field(default_factory=list)
-    #: The names of the nodes a step calls without an address (a deleted node type).
+    #: The names of the custom nodes a step calls without an address (a deleted node type).
     unnamed: list = field(default_factory=list)
 
     @property
@@ -237,6 +252,13 @@ class DecisionUse:
         return [version for version in self.versions if uri in version.uris]
 
 
+def is_node(custom: dict) -> bool:
+    """Whether a step's `customObject` is a custom node (`dntStatic`, or a
+    REST node) - a code file step has one too (`decisionPythonFile`), and its
+    address is that of the code file."""
+    return str(custom.get("type") or "").startswith("dnt") or bool(custom.get("isRestDNT"))
+
+
 def versions_of(session, decision_id: str) -> list:
     """Every version of a decision with the node types its steps call. The
     current version is the newest: a version is locked by making a new one."""
@@ -251,24 +273,25 @@ def versions_of(session, decision_id: str) -> list:
         versions.append(Version(
             id=summary["id"], label=f"{summary.get('majorRevision', '?')}.{summary.get('minorRevision', '?')}",
             current=index == len(listed) - 1, uris=node_type_uris(body),
-            unnamed=[str(c.get("name")) for c in custom_objects(body) if not c.get("uri")]))
+            unnamed=[str(c.get("name")) for c in custom_objects(body) if is_node(c) and not c.get("uri")]))
     return versions
+
+
+def scan_decisions(session, progress: Optional[Callable[[int], None]] = None) -> list:
+    """Every decision of the site with every version of it: [DecisionUse].
+    Each decision and each of its versions is read - a locked version keeps
+    the node type it was locked with."""
+    flows = _items(session, "/decisions/flows", "Listing the decisions failed")
+    if progress:
+        progress(len(flows))
+    return [DecisionUse(id=flow["id"], name=str(flow.get("name") or ""), versions=versions_of(session, flow["id"]))
+            for flow in flows]
 
 
 def decisions_using(session, uri: str, progress: Optional[Callable[[int], None]] = None) -> list:
     """Every decision of the site with a version whose steps call the node
-    type at `uri`: [DecisionUse] with every version of each. Each decision
-    and each of its versions is read - a locked version keeps the node type
-    it was locked with."""
-    flows = _items(session, "/decisions/flows", "Listing the decisions failed")
-    if progress:
-        progress(len(flows))
-    found = []
-    for flow in flows:
-        versions = versions_of(session, flow["id"])
-        if any(uri in version.uris for version in versions):
-            found.append(DecisionUse(id=flow["id"], name=str(flow.get("name") or ""), versions=versions))
-    return found
+    type at `uri`: [DecisionUse] with every version of each."""
+    return [use for use in scan_decisions(session, progress) if use.using(uri)]
 
 
 # ---------------------------------------------------------------------------
@@ -367,33 +390,116 @@ def _versions_text(versions: list) -> str:
     return ", ".join(version.shown for version in versions) or "none"
 
 
+def _code(content: Optional[dict]) -> str:
+    """The code of a node type's content - line ends, and blanks at the end
+    of a line, aside."""
+    text = str((content or {}).get("staticContent") or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def similar_node_types(session, nodes: list, name: str, target_id: str, target_content: Optional[dict]) -> list:
+    """[(node type, why)] of the node types other than the target that look
+    like an older copy of it, by ONE RULE: its name starts with `name`, in
+    any case - which covers the "<name> (before <id8>)" an earlier run of
+    the move gave the old node type and a name an administrator made by
+    adding to it - or its code is the code of the target (line ends and
+    blanks at the end of a line aside). The code is read only of a node type
+    whose name does not say it already."""
+    code = _code(target_content)
+    found = []
+    for node in nodes:
+        node_id = str(node.get("id") or "")
+        if node_id == target_id:
+            continue
+        if str(node.get("name") or "").lower().startswith(name.lower()):
+            found.append((node, f"its name starts with '{name}'"))
+            continue
+        if not code:
+            continue
+        try:
+            content = get_node_content(session, node_id)
+        except NodeError:
+            # a node type whose content cannot be read (a REST node type, a refusal) is not taken for a copy
+            continue
+        if _code(content) == code:
+            found.append((node, f"it has the code of {target_id}"))
+    return found
+
+
+def _broken_lines(broken: list, say: Say) -> None:
+    say(f"Warning: {len(broken)} decision version(s) call a node whose node type is gone - it was deleted, which "
+        "cleared the address of the node in every version that called it. They cannot run, and this command cannot "
+        "move them (there is no address to map):", "yellow")
+    for use, version in broken:
+        say(f"  '{use.name}' ({use.id}) version {version.shown}: step(s) "
+            + ", ".join(f"'{step}'" for step in version.unnamed), "yellow")
+
+
 def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, say: Say,
-            timeout: int = transfer.DEFAULT_TIMEOUT) -> int:
+            timeout: int = transfer.DEFAULT_TIMEOUT, from_id: Optional[str] = None,
+            command: Optional[Callable[[str], str]] = None) -> int:
     """`mdb decision-node-migrate`: the exit code - 0 where the site is as it
     has to be (or a dry run found the way there), 1 where something was
-    refused or failed. Every line goes through `say`."""
+    refused or failed, or where a run with --apply leaves decisions on a node
+    type like the target that it did not move. Every line goes through `say`.
+
+    `from_id` names a node type whose decisions are moved to the target,
+    which has to be there: nothing is created or renamed. `command(id)` is
+    the command line that moves the decisions of the node type `id` (for the
+    line that names it)."""
     target_uri = node_uri(target_id)
     old_name = renamed_name(name, target_id)
-    nodes = list_node_types(session)
+    nodes = list_node_types(session, missing_ok=True)
+    if nodes is None:
+        say("This site has no SAS Intelligent Decisioning (GET /decisions/decisionNodeTypes answers 404): there is no "
+            "node type and no decision to migrate.", "green")
+        return 0
+    by_id = {str(node.get("id")): node for node in nodes}
     named = [node for node in nodes if node.get("name") == name]
     renamed = [node for node in nodes if node.get("name") == old_name]
     target_found = get_node_type(session, target_id)
     target = target_found[0] if target_found else None
     need_rename = need_create = need_content = False
     old = None
+    #: (node type, why) of the node types like the target that this run does not move
+    others: list = []
+    moves = command or (lambda node_id: f"mdb decision-node-migrate --from-id {node_id} --apply")
 
-    if named and named[0].get("id") == target_id:
-        say(f"Node type '{name}': it has the id {target_id} already.", None)
-        if not renamed:
-            say(f"No node type '{old_name}' is on this site, so no earlier run of this command left one: there is "
-                "nothing to move.", None)
-            if delete_old:
-                say("--delete-old: there is no old node type to delete.", None)
-            say("Nothing to do.", "green")
-            return 0
-        old = renamed[0]
-        say(f"The old node type '{old_name}' ({old.get('id')}) is still there - an earlier run renamed it.", None)
-        need_content = get_node_content(session, target_id) is None
+    if from_id is not None:
+        if target is None:
+            say(f"Nothing was changed: --from-id moves the decisions of a node type to the node type {target_id}, and "
+                f"there is none of that id on this site. Run the command without --from-id - it creates {target_id} "
+                f"from the node type named '{name}' -, or import the package of the accelerator (`mdb "
+                "builders-import`), which brings it.", "red")
+            return 1
+        old = by_id.get(from_id)
+        if old is None:
+            found = get_node_type(session, from_id)
+            old = found[0] if found else None
+        if old is None:
+            say(f"The node type {from_id} (--from-id) is not on this site. Nothing was changed.", "red")
+            return 1
+
+    if target is not None and (from_id is not None or (named and named[0].get("id") == target_id)):
+        say(f"Node type '{target.get('name')}': it has the id {target_id} already.", None)
+        target_content = get_node_content(session, target_id)
+        similar = similar_node_types(session, nodes, name, target_id, target_content)
+        if old is not None:
+            why = next((reason for node, reason in similar if node.get("id") == from_id), None)
+            say(f"--from-id: the decisions that call the node type '{old.get('name')}' ({from_id}) are moved to "
+                f"{target_id}; no node type is created or renamed.", None)
+            if why is None:
+                say(f"  '{old.get('name')}' neither has a name that starts with '{name}' nor the code of {target_id}: "
+                    f"check that it is a copy of that node type - its decisions get the code and the terms of "
+                    f"{target_id}.", "yellow")
+        elif renamed:
+            old = renamed[0]
+            say(f"The old node type '{old_name}' ({old.get('id')}) is still there - an earlier run renamed it.", None)
+        others = [(node, reason) for node, reason in similar if old is None or node.get("id") != old.get("id")]
+        need_content = old is not None and target_content is None
+        if target_content is None and old is None:
+            say(f"The node type {target_id} has no content (code and terms): a decision that calls it cannot run. "
+                "Update-Custom-SAS-Intelligent-Decisioning-Node.sas gives it the content of the release.", "yellow")
     elif named:
         old = named[0]
         say(f"Node type '{name}': id {old.get('id')}, not {target_id}"
@@ -412,33 +518,77 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
         if target is not None:
             say(f"No node type is named '{name}', and the id {target_id} belongs to the node type "
                 f"'{target.get('name')}'. Nothing was changed: this command moves the node type named '{name}' to "
-                "that id, and there is none - check --node-name and --target-id.", "red")
+                f"that id, and there is none - check --node-name and --target-id; --from-id <the id of a node type> "
+                f"moves the decisions of that node type to {target_id}.", "red")
             return 1
         if not renamed:
-            say(f"No node type named '{name}' is on this site: there is nothing to move. The package of the "
-                f"accelerator brings it under the id {target_id} (`mdb builders-import`).", "green")
+            alike = [node for node in nodes if str(node.get("name") or "").lower().startswith(name.lower())]
+            say(f"No node type named '{name}' is on this site, and none under the id {target_id}: there is no node "
+                f"type to give that id. The package of the accelerator brings it (`mdb builders-import`).", "green")
+            if alike:
+                say(f"Node type(s) whose name starts with '{name}': "
+                    + "; ".join(f"'{node.get('name')}' ({node.get('id')})" for node in alike)
+                    + f". Decisions that call one of them keep calling it. Once {target_id} is there, "
+                    f"`{moves('<its id>')}` moves them to it.", "yellow")
             return 0
         old = renamed[0]
         say(f"No node type is named '{name}', and the old node type '{old_name}' ({old.get('id')}) is there: an "
             f"earlier run renamed it and did not create the node type under {target_id}.", None)
         need_create = need_content = True
 
-    old_id = str(old.get("id"))
-    old_uri = node_uri(old_id)
+    old_id = str(old.get("id")) if old is not None else None
+    old_uri = node_uri(old_id) if old_id else None
+    old_label = old_name if need_rename else (str(old.get("name")) if old is not None else "")
     old_content = get_node_content(session, old_id) if need_content else None
     if need_content and old_content is None:
         say(f"The node type {old_id} has no content (code and terms) to copy. Nothing was changed.", "red")
         return 1
 
-    say(f"Looking for every decision with a version that calls {old_uri} - every version of every decision is "
-        "read ...", None)
-    uses = decisions_using(session, old_uri, lambda n: say(f"  {n} decision(s) on this site.", None))
-    if uses:
+    say("Looking for every decision with a version that calls "
+        + (f"{old_uri}" if old_uri else "a node type like it") + " - every version of every decision is read ...",
+        None)
+    every = scan_decisions(session, lambda n: say(f"  {n} decision(s) on this site.", None))
+    uses = [use for use in every if old_uri and use.using(old_uri)]
+    if old_uri and uses:
         say(f"{len(uses)} decision(s) call the old node type:", None)
         for use in uses:
             say(f"  '{use.name}' ({use.id}): version(s) {_versions_text(use.using(old_uri))}", None)
-    else:
+    elif old_uri:
         say("No decision calls the old node type.", None)
+    left = []
+    for node, reason in others:
+        uri = node_uri(str(node.get("id")))
+        calling = [use for use in every if use.using(uri)]
+        if calling:
+            left.append(node)
+            say(f"The node type '{node.get('name')}' ({node.get('id')}) - {reason} - is called by {len(calling)} "
+                "decision(s), which this run does not move:", "yellow")
+            for use in calling:
+                say(f"  '{use.name}' ({use.id}): version(s) {_versions_text(use.using(uri))}", "yellow")
+            say(f"  `{moves(str(node.get('id')))}` moves them to {target_id}. Do not delete that node type while a "
+                "version calls it.", "yellow")
+        else:
+            say(f"The node type '{node.get('name')}' ({node.get('id')}) - {reason} - is called by no version of any "
+                "decision.", None)
+    broken = [(use, version) for use in every for version in use.versions if version.unnamed]
+    if broken:
+        _broken_lines(broken, say)
+
+    if old is None:
+        # the target is there, and this run names no node type to move from
+        if delete_old:
+            say("--delete-old: nothing is deleted - it deletes only a node type this run moves the decisions of "
+                "(--from-id, or the one an earlier run renamed)." if others else
+                "--delete-old: there is no old node type to delete.", None)
+        if left:
+            if not apply:
+                say("Dry run - nothing was changed.", "green")
+                return 0
+            say(f"Not everything is done: {len(left)} node type(s) like {target_id} are still called by decisions "
+                "(above). Move them with --from-id.", "red")
+            return 1
+        say("Nothing to do.", "green")
+        return 0
 
     steps = []
     if need_rename:
@@ -452,7 +602,7 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
                      f"the mapping {old_uri} -> {target_uri}, which rewrites every version - locked ones included - "
                      "and keeps the version ids; published modules are not touched")
     steps.append(f"delete the old node type {old_id} once no version of any decision calls it" if delete_old else
-                 f"keep the old node type {old_id} ('{old_name}') - --delete-old deletes it once no version calls it")
+                 f"keep the old node type {old_id} ('{old_label}') - --delete-old deletes it once no version calls it")
     if not apply:
         say("A run with --apply would:", None)
         for number, step in enumerate(steps, start=1):
@@ -466,6 +616,7 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
             rename_node_type(session, old_id, old_name)
             say(f"renamed     {old_id}: '{name}' -> '{old_name}'", None)
         if need_create:
+            # asked again right before the POST: a POST of an id that exists renames that node type
             if get_node_type(session, target_id) is not None:
                 say(f"The id {target_id} was taken in the meantime. Stopped: no node type was created.", "red")
                 return 1
@@ -521,19 +672,27 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
             else:
                 try:
                     delete_node_type(session, old_id)
-                    say(f"deleted     {old_id} ('{old_name}'): no version of any decision calls it", None)
+                    say(f"deleted     {old_id} ('{old_label}'): no version of any decision calls it", None)
                 except NodeError as exc:
                     say(f"FAILED      {one_line(str(exc))}", "red")
                     failed += 1
+    if broken:
+        say(f"Warning: the {len(broken)} decision version(s) listed above whose node type is gone still cannot run.",
+            "yellow")
     if failed:
         say("Not everything was done. Fix what is reported above and run the command again with --apply: what is "
             "done is found done.", "red")
         return 1
-    say(f"Done. Every decision that called the old node type calls '{name}' under {target_id}.", "green")
+    say(f"Done. Every decision that called the old node type calls '{target.get('name') if target else name}' "
+        f"under {target_id}.", "green")
     if not delete_old:
-        say(f"The old node type '{old_name}' ({old_id}) is kept; published modules do not need it. Delete it with "
+        say(f"The old node type '{old_label}' ({old_id}) is kept; published modules do not need it. Delete it with "
             "--delete-old once you are sure: a node type that is deleted cannot be brought back for the versions "
             "that call it.", None)
+    if left:
+        say(f"Not everything is done: {len(left)} other node type(s) like {target_id} are still called by decisions "
+            "(above). Move them with --from-id.", "red")
+        return 1
     return 0
 
 

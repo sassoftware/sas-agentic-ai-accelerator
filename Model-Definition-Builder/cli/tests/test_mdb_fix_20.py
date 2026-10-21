@@ -449,10 +449,10 @@ def test_the_command_for_a_test_folder_writes_nothing_but_the_folder(exporting, 
     assert result.exit_code == 0, text
     last = text.rstrip().splitlines()[-1]
     assert last.endswith("brings what it holds into a test folder, which it creates where it is not there, and "
-                         "nothing else: no report, no release table, no commands file.")
+                         "nothing else: no report, no decision, no release table, no commands file.")
     words = shlex.split(last.split("`")[1])
     assert words == ["mdb", "builders-import", elsewhere.as_posix(), "--content-root", "<folder>", "--no-releases",
-                     "--no-reports", "--create", "--no-files"]
+                     "--no-reports", "--no-decisions", "--create", "--no-files"]
     assert '--content-root "<folder>"' in last
 
 

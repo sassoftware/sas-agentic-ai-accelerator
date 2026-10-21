@@ -25,7 +25,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from content_fakes import Package, Viya, make_repo, package_of
+from content_fakes import CONTENT_ROOT, Package, Viya, make_repo, package_of
 from mdb import cli
 from mdb.core import content
 from mdb.core.content import ManifestError, load_manifest, parse_manifest
@@ -69,6 +69,8 @@ class SID:
         self.etags: dict = {}
         self.decisions: dict = {}     # id -> {"name", "versions": [{"id", "major", "uris"}]}
         self.writes: list = []
+        #: the most items a page holds, whatever limit is asked for (a service caps it)
+        self.page_cap = None
 
     def node(self, node_id, name, code="package x; endpackage;"):
         self.nodes[node_id] = {"id": node_id, "name": name, "type": "static", "themeId": "DNT_THEME1",
@@ -82,9 +84,10 @@ class SID:
         return node_id
 
     def decision(self, decision_id, name, *versions):
-        """`versions`: the node type ids the steps of each version call, oldest first."""
+        """`versions`: the node type ids the steps of each version call, oldest first - None for a step that
+        lost the address of its node (its node type was deleted)."""
         self.decisions[decision_id] = {"name": name, "versions": [
-            {"id": f"{decision_id}-v{major}", "major": major, "uris": [NODE + node for node in nodes]}
+            {"id": f"{decision_id}-v{major}", "major": major, "uris": [NODE + node if node else None for node in nodes]}
             for major, nodes in enumerate(versions, start=1)]}
 
     def uses(self, decision_id) -> list:
@@ -94,6 +97,8 @@ class SID:
     def get(self, path, params=None, headers=None, **kw):
         params = params or {}
         start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
+        if self.page_cap:
+            limit = min(limit, self.page_cap)
 
         def page(items):
             return Response(200, {"items": items[start:start + limit], "count": len(items)})
@@ -124,7 +129,8 @@ class SID:
                 if version is None:
                     return Response(404, {"message": "not found"})
                 return Response(200, {"id": version["id"], "flow": {"steps": [
-                    {"customObject": {"name": "node", "type": "dntStatic", "uri": uri}} for uri in version["uris"]]}})
+                    {"customObject": {"name": "node", "type": "dntStatic", **({"uri": uri} if uri else {})}}
+                    for uri in version["uris"]]}})
         return Response(404, {"message": "not found"})
 
     def post(self, path, params=None, data=None, headers=None, **kw):
@@ -166,10 +172,10 @@ class SID:
         node_id = path[len(NODE):]
         self.nodes.pop(node_id, None)
         self.contents.pop(node_id, None)
-        # what was measured: every version that called it loses the address
+        # what was measured: every step that called it, in every version, loses the address
         for decision in self.decisions.values():
             for version in decision["versions"]:
-                version["uris"] = [uri for uri in version["uris"] if uri != path]
+                version["uris"] = [None if uri == path else uri for uri in version["uris"]]
         return Response(204)
 
     def __enter__(self):
@@ -187,6 +193,8 @@ def sid(monkeypatch):
     makes meanwhile). `sid.mappings` holds the mapping of each import."""
     site = SID()
     site.fail_import, site.skip_import, site.mappings, site.deleted = set(), set(), [], []
+    #: decisions whose import ends completed with a task, and moves only their current version
+    site.half_import = set()
     site.after_import = None
     jobs: dict = {}
     uploads: dict = {}
@@ -202,7 +210,7 @@ def sid(monkeypatch):
         job = next(j for j in jobs.values() if j.get("packageUri") == package_uri)
         decision_id = job["decision"]
         built = Package(root="Team", above=())
-        used = sorted({node.rsplit("/", 1)[-1] for uris in site.uses(decision_id) for node in uris})
+        used = sorted({node.rsplit("/", 1)[-1] for uris in site.uses(decision_id) for node in uris if node})
         for node_id in used:
             built.node_type(node_id, site.nodes.get(node_id, {}).get("name", "gone"))
         uri = built.decision("Decisions/" + site.decisions[decision_id]["name"],
@@ -233,7 +241,8 @@ def sid(monkeypatch):
             tasks.append({"resourceType": "decision", "name": name_of, "state": "failed", "message": "locked"})
         elif decision_id not in site.skip_import:
             moves = {c["source"]: c["target"] for c in mapping["connectors"]["dntStatic"]}
-            for version in site.decisions[decision_id]["versions"]:
+            versions = site.decisions[decision_id]["versions"]
+            for version in versions[-1:] if decision_id in site.half_import else versions:
                 version["uris"] = [moves.get(uri, uri) for uri in version["uris"]]
             tasks.append({"resourceType": "decision", "name": name_of, "state": "completed"})
         uri = f"/transfer/importJobs/i{len(jobs)}"
@@ -435,7 +444,8 @@ def test_a_run_that_stopped_before_the_content_gives_the_node_its_content(sid):
 def test_no_node_of_the_name_is_nothing_to_move(sid):
     code, text = migrate("--apply")
     assert code == 0
-    assert "No node type named 'ZZ Call' is on this site: there is nothing to move." in text and sid.writes == []
+    assert (f"No node type named 'ZZ Call' is on this site, and none under the id {TARGET}: there is no node type to "
+            "give that id.") in text and sid.writes == []
 
 
 def test_a_refused_rename_stops_before_anything_else(sid, monkeypatch):
@@ -447,6 +457,229 @@ def test_a_refused_rename_stops_before_anything_else(sid, monkeypatch):
     assert "FAILED      Renaming the node type 0a0a0a0a-0000-4000-8000-000000000001 to 'ZZ Call (before 1b1b1b1b)' " \
            "failed: HTTP 403 no" in text
     assert TARGET not in sid.nodes and sid.mappings == []
+
+
+def test_the_target_id_is_asked_again_right_before_the_post(sid, monkeypatch):
+    """Somebody creates the target id between the first look and the POST: no POST of an id that exists."""
+    sid.node(OLD, "ZZ Call")
+    rename = sid.put
+
+    def put_and_meanwhile_create_the_target(path, data=None, headers=None, **kw):
+        answer = rename(path, data=data, headers=headers, **kw)
+        sid.node(TARGET, "Made meanwhile")
+        return answer
+    monkeypatch.setattr(sid, "put", put_and_meanwhile_create_the_target)
+    code, text = migrate("--apply")
+    assert code == 1
+    assert f"The id {TARGET} was taken in the meantime. Stopped: no node type was created." in text
+    assert ("POST", "/decisions/decisionNodeTypes") not in sid.writes
+    assert sid.nodes[TARGET]["name"] == "Made meanwhile"
+
+
+def test_a_locked_version_the_import_left_on_the_old_node_is_found_by_the_read_back(sid):
+    """The import job ends completed with a completed task, and moved only the current version."""
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Half moved", [OLD], [OLD])
+    sid.half_import.add("d1")
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 1
+    assert "FAILED      decision 'Half moved' (d1):" in text
+    assert f"version 1.0 (locked) calls {NODE}{OLD} after the import" in text
+    assert OLD in sid.nodes and ("DELETE", NODE + OLD) not in sid.writes
+
+
+def test_every_page_of_node_types_decisions_and_versions_is_read(sid):
+    """A service gives at most a few items a page, whatever limit is asked for."""
+    for number in range(3):
+        sid.node(f"5e5e5e5e-0000-4000-8000-00000000000{number}", f"Another node {number}")
+    sid.node(OLD, "ZZ Call")                                  # the last of four node types
+    for number in range(3):
+        sid.decision(f"d{number}", f"Other {number}", ["5e5e5e5e-0000-4000-8000-000000000000"])
+    sid.decision("d9", "Third version calls it", ["5e5e5e5e-0000-4000-8000-000000000001"],
+                 ["5e5e5e5e-0000-4000-8000-000000000001"], [OLD])  # the last decision, in its last version
+    sid.page_cap = 1
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert "  4 decision(s) on this site." in text
+    assert "  'Third version calls it' (d9): version(s) 3.0 (current)" in text
+    assert sid.uses("d9")[2] == [NODE + TARGET]
+
+
+def test_a_site_without_decisioning_has_nothing_to_migrate(monkeypatch):
+    class NoDecisioning:
+        def get(self, path, **kw):
+            return Response(404, {"message": "Not Found"})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+    monkeypatch.setattr(cli, "_viya_session", lambda: NoDecisioning())
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 0, text
+    assert text == ("This site has no SAS Intelligent Decisioning (GET /decisions/decisionNodeTypes answers 404): there "
+                    "is no node type and no decision to migrate.\n")
+
+
+# ---- the node type of the id is there, and decisions call another one like it ----
+HAND = "6f6f6f6f-0000-4000-8000-000000000006"
+
+
+def test_a_node_renamed_by_hand_is_listed_with_its_decisions_and_nothing_says_it_is_unused(sid):
+    """The site renamed its old node type by hand to free the name, then got the node type of the id (the package or
+    the Create program): the decisions still call the old one."""
+    sid.node(OLD, "ZZ Call old")
+    sid.node(TARGET, "ZZ Call")
+    sid.decision("d1", "Uses old", [OLD], [OLD])
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 1
+    assert (f"The node type 'ZZ Call old' ({OLD}) - its name starts with 'ZZ Call' - is called by 1 decision(s), which "
+            "this run does not move:") in text
+    assert "  'Uses old' (d1): version(s) 1.0 (locked), 2.0 (current)" in text
+    assert f'  `mdb decision-node-migrate --node-name "ZZ Call" --target-id {TARGET} --from-id {OLD} --apply` moves ' \
+           f"them to {TARGET}." in text
+    assert "--delete-old: nothing is deleted" in text
+    for wrong in ("there is nothing to move", "no old node type to delete", "Nothing to do"):
+        assert wrong not in text
+    assert sid.writes == [] and sid.uses("d1") == [[NODE + OLD], [NODE + OLD]]
+    # a dry run says the same and ends with 0
+    code, text = migrate()
+    assert code == 0 and "'Uses old' (d1): version(s) 1.0 (locked), 2.0 (current)" in text
+
+
+def test_from_id_moves_the_decisions_to_the_node_type_that_is_there_and_creates_nothing(sid):
+    sid.node(OLD, "ZZ Call old")
+    sid.node(TARGET, "ZZ Call")
+    sid.decision("d1", "Uses old", [OLD], [OLD])
+    code, text = migrate("--from-id", OLD)
+    assert code == 0, text
+    assert f"--from-id: the decisions that call the node type 'ZZ Call old' ({OLD}) are moved to {TARGET}" in text
+    assert "  1. move 1 decision(s)" in text and sid.writes == []
+    code, text = migrate("--from-id", OLD, "--apply", "--delete-old")
+    assert code == 0, text
+    assert sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]]
+    assert f"deleted     {OLD} ('ZZ Call old'): no version of any decision calls it" in text
+    # nothing was renamed or created: the writes are the delete of the old node type alone
+    assert sid.writes == [("DELETE", NODE + OLD)] and sid.nodes[TARGET]["name"] == "ZZ Call"
+
+
+def test_a_node_with_the_code_of_the_target_counts_whatever_its_name(sid):
+    sid.node(HAND, "Our LLM node", code="the code")
+    sid.node(TARGET, "ZZ Call", code="the code\r\n")
+    sid.node(OLD, "Something else", code="other code")
+    sid.decision("d1", "Uses the copy", [HAND])
+    sid.decision("d2", "Uses another node", [OLD])
+    code, text = migrate()
+    assert code == 0, text
+    assert (f"The node type 'Our LLM node' ({HAND}) - it has the code of {TARGET} - is called by 1 decision(s)") in text
+    assert "Something else" not in text and "Uses another node" not in text
+
+
+def test_a_node_type_whose_content_cannot_be_read_is_not_taken_for_a_copy(sid, monkeypatch):
+    sid.node(TARGET, "ZZ Call", code="the code")
+    sid.node(OLD, "A REST node type")
+    read = sid.get
+
+    def refusing_its_content(path, **kw):
+        if path == f"{NODE}{OLD}/content":
+            return Response(500, {"message": "not a static node type"})
+        return read(path, **kw)
+    monkeypatch.setattr(sid, "get", refusing_its_content)
+    code, text = migrate()
+    assert code == 0, text
+    assert "A REST node type" not in text and "Nothing to do." in text
+
+
+def test_a_node_like_the_target_that_no_decision_calls_is_said_so_and_kept(sid):
+    sid.node(OLD, "ZZ Call (before 1b1b1b1b) copy")
+    sid.node(TARGET, "ZZ Call")
+    code, text = migrate("--apply", "--delete-old")
+    assert code == 0, text
+    assert f"The node type 'ZZ Call (before 1b1b1b1b) copy' ({OLD}) - its name starts with 'ZZ Call' - is called by " \
+           "no version of any decision." in text
+    assert OLD in sid.nodes and sid.writes == []
+
+
+def test_from_id_of_a_node_like_no_rule_is_moved_with_a_warning(sid):
+    sid.node(OLD, "Something else", code="other code")
+    sid.node(TARGET, "ZZ Call")
+    sid.decision("d1", "Uses it", [OLD])
+    code, text = migrate("--from-id", OLD, "--apply")
+    assert code == 0, text
+    assert f"'Something else' neither has a name that starts with 'ZZ Call' nor the code of {TARGET}" in text
+    assert sid.uses("d1") == [[NODE + TARGET]]
+
+
+@pytest.mark.parametrize("args, expected, exit_code", [
+    (["--from-id", "F9EFCBB7"], "is no node type id", 2),
+    (["--from-id", TARGET], "--from-id names the node type of --target-id", 2),
+])
+def test_a_from_id_that_cannot_be_meant_is_refused_before_signing_in(monkeypatch, args, expected, exit_code):
+    monkeypatch.setattr(cli, "_viya_session", lambda: pytest.fail("signed in"))
+    code, text = migrate(*args)
+    assert code == exit_code and expected in text
+
+
+def test_from_id_needs_the_target_and_the_node_type_it_names(sid):
+    sid.node(OLD, "ZZ Call old")
+    code, text = migrate("--from-id", OLD, "--apply")
+    assert code == 1 and "there is none of that id on this site" in text and sid.writes == []
+    sid.node(TARGET, "ZZ Call")
+    code, text = migrate("--from-id", HAND, "--apply")
+    assert code == 1 and f"The node type {HAND} (--from-id) is not on this site." in text and sid.writes == []
+
+
+def test_a_name_that_starts_like_the_node_is_named_where_neither_the_node_nor_the_id_is_there(sid):
+    sid.node(OLD, "ZZ Call old")
+    code, text = migrate()
+    assert code == 0
+    assert f"Node type(s) whose name starts with 'ZZ Call': 'ZZ Call old' ({OLD})." in text
+
+
+# ---- versions whose node type was deleted earlier ----
+def test_versions_whose_node_lost_its_address_are_a_warning_of_the_dry_run_and_of_the_run(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD])
+    sid.decision("d2", "Broken earlier", [None], [OLD, None])
+    code, text = migrate()
+    assert code == 0, text
+    warning = "Warning: 2 decision version(s) call a node whose node type is gone"
+    assert warning in text
+    assert "  'Broken earlier' (d2) version 1.0 (locked): step(s) 'node'" in text
+    assert "  'Broken earlier' (d2) version 2.0 (current): step(s) 'node'" in text
+    code, text = migrate("--apply")
+    assert code == 0, text
+    assert warning in text
+    assert "Warning: the 2 decision version(s) listed above whose node type is gone still cannot run." in text
+    assert sid.uses("d2") == [[None], [NODE + TARGET, None]]
+
+
+def test_a_code_file_step_without_an_address_is_no_lost_node(sid, monkeypatch):
+    """A step that runs a code file has a customObject too (type decisionPythonFile), found on viya4-s2 without an
+    address where its code file was deleted: that is no node, and not a version this command speaks of."""
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD])
+    sid.decision("d2", "Code file gone", [OLD])
+    read = sid.get
+
+    def with_a_code_file_step(path, **kw):
+        answer = read(path, **kw)
+        if path == "/decisions/flows/d2/revisions/d2-v1":
+            answer._body["flow"]["steps"].append(
+                {"customObject": {"isRestDNT": False, "name": "a python file", "type": "decisionPythonFile"}})
+        return answer
+    monkeypatch.setattr(sid, "get", with_a_code_file_step)
+    code, text = migrate()
+    assert code == 0, text
+    assert "Warning" not in text and "a python file" not in text
+
+
+def test_a_site_without_broken_versions_gets_no_warning(sid):
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "Moves", [OLD])
+    code, text = migrate()
+    assert code == 0 and "Warning" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +955,100 @@ def test_a_dry_run_asks_the_site_and_uploads_nothing(importing, no_discovery):
     assert "not on this site - the import creates it under this id." in text
     assert importing.uploaded == {}
     assert [method for method, _path in importing.viya.wrote()] == []
+
+
+def test_a_node_type_the_job_left_out_without_a_task_fails_the_run(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = [{"resourceType": "decision", "name": "Call LLM Node", "state": "completed"}]
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 1
+    assert "      decisionNodeType 'Call LLM': no completed task - the job did not import it" in text
+
+
+def test_a_decisions_job_that_did_not_end_completed_fails_the_run(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision(),
+                                    fails="SAS Agentic AI Accelerator - decisions")
+    assert result.exit_code == 1
+    assert "    import ended failed with 0 error(s):" in text
+    assert "imported 4 object(s)" not in text
+
+
+def test_a_decisions_job_that_counts_an_error_fails_the_run(importing, no_discovery, monkeypatch):
+    """completed, with errorCount 1: the reports' job is waited for first, the decisions' job second."""
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    waited = []
+
+    def wait_for_job(session, uri, timeout=600):
+        waited.append(uri)
+        return {"state": "completed", "errorCount": len(waited) - 1, "links": [{"rel": "self", "href": uri}]}
+    monkeypatch.setattr(transfer, "wait_for_job", wait_for_job)
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert len(waited) == 2
+    assert result.exit_code == 1
+    assert "    import ended completed with 1 error(s):" in text
+
+
+def test_another_content_root_refuses_the_decisions_and_the_repeat_leaves_them_out(importing, no_discovery):
+    """The decisions are refused for another content root like the reports; the command to repeat names both
+    options, and runs to the end."""
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), "--content-root", "/Team/Accelerator",
+                                    "--create", package=_with_decision())
+    assert result.exit_code == 1
+    assert ("  Decisions (Decisions/Call LLM Node): NOT imported - the package was exported from /SAS Agentic AI "
+            "Accelerator and its content goes to /Team/Accelerator: the transfer service imports a decision into the "
+            "folder it was exported from") in text
+    assert "imports a report into" not in text.split("  Decisions (")[1]
+    repeat = text.split("then run:\n", 1)[1].splitlines()[0]
+    assert repeat == ('mdb builders-import --content-root /Team/Accelerator --no-releases --no-reports --no-decisions '
+                      '--create')
+    assert "; --no-reports and --no-decisions are added here, because the reports and the decisions are not imported " \
+           "into /Team/Accelerator" in text
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), *repeat.split()[2:],
+                                    package=_with_decision())
+    assert result.exit_code == 0, text
+    assert "Decisions (Decisions/Call LLM Node): left out (--no-decisions)" in text
+
+
+@pytest.mark.parametrize("case", ["--no-decisions", "a clash", "another content root"])
+def test_decisions_that_are_not_imported_get_no_folder_in_place(importing, no_discovery, case):
+    no_discovery()
+    importing.viya.node_types = {OLD: {"id": OLD, "name": "Call LLM"}} if case == "a clash" else {}
+    importing.tasks = DONE_TASKS
+    args = {"--no-decisions": ["--no-decisions"], "a clash": [],
+            "another content root": ["--content-root", "/Team/Accelerator", "--create", "--no-reports"]}[case]
+    root = "/Team/Accelerator" if case == "another content root" else CONTENT_ROOT
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), *args, package=_with_decision())
+    assert "SAS Agentic AI Accelerator - decisions" not in importing.uploaded
+    assert importing.viya.folder_id(f"{root}/Decisions") is None
+    assert "Decisions  " not in text and "folder        Decisions" not in text
+    # the rest of the content arrived in place
+    assert importing.viya.folder_id(root) is not None
+
+
+def test_decisions_that_are_imported_keep_their_folder_in_the_in_place_part(importing, no_discovery):
+    no_discovery()
+    importing.viya.node_types = {}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 0, text
+    assert importing.viya.folder_id(f"{CONTENT_ROOT}/Decisions") is not None
+
+
+def test_the_help_of_the_migration_names_from_id_and_the_one_section_of_the_guide():
+    result = CliRunner().invoke(cli.app, ["decision-node-migrate", "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    flat = " ".join(result.output.split())
+    assert "--from-id" in flat and "Deployment-of-Decisions#call-llm-node-uuid" in flat
+    assert "the-call-llm-node" not in flat
 
 
 def test_the_decision_nodes_module_holds_no_host():
