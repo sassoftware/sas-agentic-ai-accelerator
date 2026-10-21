@@ -13,7 +13,7 @@ One transfer package carries the whole content folder, the RAG part of the Promp
 **Everyone.** The import brings the content folder of this release and keeps the options set on the Prompt Builder report.
 
 1. Update the checkout to 2.3.0 and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
-2. `mdb builders-import`, then reload the Prompt Builder report; the command keeps its options and those of the report `RAG Builder` ([First install and upgrade](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#first-install-and-upgrade)). A site that had the report `RAG Builder` and does not use RAG reads [The retired RAG Builder report](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-retired-rag-builder-report) first.
+2. `mdb builders-import`, then reload the Prompt Builder report; the command keeps its options and those of the report `RAG Builder` ([First install and upgrade](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#first-install-and-upgrade)). Where it names `mdb decision-node-migrate`, run that first ([The Call LLM node and its id](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#call-llm-node-uuid)). A site that had the report `RAG Builder` and does not use RAG reads [The retired RAG Builder report](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#the-retired-rag-builder-report) first.
 3. Review and run the two commands of `sas-viya-cli-content-commands.txt`, which step 2 wrote: the package carries no authorization rule, and they give the *LLM Consumers* group Read on the content folder ([Access to the content folder](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#access-to-the-content-folder)).
 4. Open [Start Here](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#start-here) (`/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here`) and fix every line that says `missing`. Where it says that its session does not run as you, add `&_contextName=<a compute context that runs as you>`; where every request was refused, ask for the rights or about the sign-in.
 5. Only if you publish Python models to SAS Micro Analytic Service: mount the CA bundle into its Python runner, or such a model returns `CERTIFICATE_VERIFY_FAILED` ([the certificate bundle](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Deployment-of-Decisions#mas-certificate-bundle)).
@@ -81,6 +81,9 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Six model definitions: GPT-6 Luna, GPT-6.1 Sol, Claude Haiku 5.5, Claude Sonnet 5.5, Claude Opus 5.5 and Mercury Decide** (`gpt_6_luna`, `gpt_61_sol`, `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5`, and the decision model `mercury_decide` through OpenRouter), with fact-sheet rows and catalog entries.
 - **`reasoning_effort` per model.** A `value_map` translates the five levels into the words a model accepts; Claude gets it as `output_config.effort`, not combinable with `thinking_budget`.
 - **Finalize says when a manifested prompt or decision template would have no input,** which SAS Intelligent Decisioning cannot use.
+- **The content folder brings the *Call LLM* node under one id,** in a decision of its own in the folder `Decisions`. `mdb builders-import` imports both in a job of their own; where a *Call LLM* node has another id it uploads neither and names the migration. `--no-decisions` leaves them out.
+- **`mdb decision-node-migrate` gives a site's *Call LLM* node that id.** It renames the old node, creates `f9efcbb7-f57b-4a62-b56d-1a89595e2039` and moves every decision, locked versions included; `--from-id` moves the decisions of a node renamed by hand.
+- **Guide: The *Call LLM* node and its id.** Deployment of Decisions says why decisions need one node id, what a new and an existing site do, and why a node a decision uses is never deleted.
 
 ### Changed
 
@@ -106,6 +109,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Decision runs in the Prompt Builder: the box that Manifest takes is called *Best Decision Model*,** one per run.
 - **German: the prompt part of the Prompt Builder says "manifestieren" too.**
 - **Claude 5.5 definitions send no sampling options:** `mdb add` writes `reasoning_effort` (`medium`) and `max_tokens` 4000. The live Anthropic catalog reads each model's limits; catalog prices are rounded to 12 significant digits.
+- **The Create and Update programs of the Call LLM node use its fixed id.** The Create program creates nothing where the node or another *Call LLM* is there; the Update program finds the node by the id first, then by its name.
 
 ### Fixed
 
