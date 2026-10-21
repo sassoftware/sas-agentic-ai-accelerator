@@ -69,8 +69,12 @@ class SID:
         self.etags: dict = {}
         self.decisions: dict = {}     # id -> {"name", "versions": [{"id", "major", "uris"}]}
         self.writes: list = []
-        #: the most items a page holds, whatever limit is asked for (a service caps it)
+        #: the most items a page of decisions or versions holds, whatever limit is asked for (a service caps it)
         self.page_cap = None
+        #: the most node types the listing gives - it names that limit in its answer
+        self.node_type_cap = None
+        #: the parameters of each listing of the node types
+        self.node_type_listings: list = []
 
     def node(self, node_id, name, code="package x; endpackage;"):
         self.nodes[node_id] = {"id": node_id, "name": name, "type": "static", "themeId": "DNT_THEME1",
@@ -97,15 +101,20 @@ class SID:
     def get(self, path, params=None, headers=None, **kw):
         params = params or {}
         start, limit = int(params.get("start", 0)), int(params.get("limit", 20))
+        if path == "/decisions/decisionNodeTypes":
+            # a listing gives the summary of a node type, not its settings (measured: a POST of such a
+            # summary is refused with 400 'The required property "hasInputs" is missing'); its count is the
+            # size of the page, not the total (measured on 2026-10-21)
+            self.node_type_listings.append(dict(params))
+            limit = min(limit, self.node_type_cap or limit)
+            items = [{"id": n["id"], "name": n["name"], "type": n.get("type")}
+                     for n in self.nodes.values()][start:start + limit]
+            return Response(200, {"items": items, "count": len(items), "start": start, "limit": limit})
         if self.page_cap:
             limit = min(limit, self.page_cap)
 
         def page(items):
             return Response(200, {"items": items[start:start + limit], "count": len(items)})
-        if path == "/decisions/decisionNodeTypes":
-            # a listing gives the summary of a node type, not its settings (measured: a POST of such a
-            # summary is refused with 400 'The required property "hasInputs" is missing')
-            return page([{"id": n["id"], "name": n["name"], "type": n.get("type")} for n in self.nodes.values()])
         if path.startswith(NODE):
             parts = path[len(NODE):].split("/")
             if parts[0] not in self.nodes:
@@ -491,8 +500,9 @@ def test_a_locked_version_the_import_left_on_the_old_node_is_found_by_the_read_b
     assert OLD in sid.nodes and ("DELETE", NODE + OLD) not in sid.writes
 
 
-def test_every_page_of_node_types_decisions_and_versions_is_read(sid):
-    """A service gives at most a few items a page, whatever limit is asked for."""
+def test_every_page_of_decisions_and_versions_is_read_and_the_node_types_in_one(sid):
+    """A service gives at most a few decisions or versions a page, whatever limit is asked for. The node types are
+    asked for in one page of 1000: their listing gives no total, and `start` does not page them."""
     for number in range(3):
         sid.node(f"5e5e5e5e-0000-4000-8000-00000000000{number}", f"Another node {number}", code=f"other {number}")
     sid.node(OLD, "ZZ Call")                                  # the last of four node types
@@ -503,9 +513,35 @@ def test_every_page_of_node_types_decisions_and_versions_is_read(sid):
     sid.page_cap = 1
     code, text = migrate("--apply")
     assert code == 0, text
-    assert "  4 decision(s) on this site." in text
+    assert sid.node_type_listings and all(params == {"start": 0, "limit": 1000} for params in sid.node_type_listings)
+    assert "  4 decision(s) on this site." in text and "full page" not in text
     assert "  'Third version calls it' (d9): version(s) 3.0 (current)" in text
     assert sid.uses("d9")[2] == [NODE + TARGET]
+
+
+FULL_PAGE = "custom node types, a full page, and does not say how many there are: the list may be incomplete"
+
+
+@pytest.mark.parametrize("count, warned", [(3, True), (2, False)])
+def test_a_full_page_of_node_types_is_a_warning_and_fewer_are_not(sid, monkeypatch, count, warned):
+    monkeypatch.setattr(decision_nodes, "NODE_TYPE_LIMIT", 3)
+    sid.node(TARGET, "ZZ Call")
+    for number in range(count - 1):
+        sid.node(f"5e5e5e5e-0000-4000-8000-00000000000{number}", f"Another node {number}", code=f"other {number}")
+    code, text = migrate()
+    assert code == 0, text
+    assert sid.node_type_listings == [{"start": 0, "limit": 3}]
+    assert (f"Warning: SAS Intelligent Decisioning listed 3 {FULL_PAGE}, and a node type past it is not looked "
+            "at." in text) is warned, text
+
+
+def test_a_page_of_node_types_the_service_capped_is_full_at_its_own_limit(sid):
+    sid.node(TARGET, "ZZ Call")
+    sid.node(OLD, "Another node", code="other")
+    sid.node_type_cap = 2
+    code, text = migrate()
+    assert code == 0, text
+    assert f"Warning: SAS Intelligent Decisioning listed 2 {FULL_PAGE}" in text
 
 
 def test_a_site_without_decisioning_has_nothing_to_migrate(monkeypatch):
@@ -612,6 +648,45 @@ def test_from_id_of_a_node_like_no_rule_is_moved_with_a_warning(sid):
     assert code == 0, text
     assert f"  'Something else' does not have the code of {TARGET}: check that it is a copy of that node type" in text
     assert sid.uses("d1") == [[NODE + TARGET]]
+    assert f"The old node type 'Something else' ({OLD}) is kept; published modules do not need it. Delete it in SAS " \
+           "Intelligent Decisioning once you are sure" in text
+
+
+def test_delete_old_keeps_a_from_id_node_type_that_is_no_copy(sid):
+    """Its decisions are moved, and the node type stays as it was: deleting a node type that is not ours cannot be
+    undone. The run ends with 0, as a move does."""
+    sid.node(OLD, "Something else", code="other code")
+    sid.node(TARGET, "ZZ Call")
+    sid.decision("d1", "Uses it", [OLD], [OLD])
+    code, text = migrate("--from-id", OLD, "--delete-old")
+    assert code == 0, text
+    assert f"keep the old node type {OLD} ('Something else') - it is no copy of {TARGET}, so --delete-old does not " \
+           "delete it" in text
+    assert f"delete the old node type {OLD}" not in text and sid.writes == []
+    code, text = migrate("--from-id", OLD, "--apply", "--delete-old")
+    assert code == 0, text
+    assert f"its decisions get the code and the terms of {TARGET}; --delete-old does not delete it, as it is no " \
+           "copy." in text
+    assert sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]]
+    assert f"not deleted {OLD} ('Something else'): it does not have the code of {TARGET}, so it is no copy and " \
+           "--delete-old keeps it. Delete it in SAS Intelligent Decisioning once you are sure it is not needed." in text
+    assert OLD in sid.nodes and ("DELETE", NODE + OLD) not in sid.writes
+    assert "deleted     " not in text and "Not everything" not in text
+
+
+def test_delete_old_deletes_a_from_id_node_type_whose_code_the_target_gets(sid):
+    """A target without content gets the code and the terms of the --from-id node type: that one is a copy then,
+    and --delete-old deletes it once no version calls it."""
+    sid.node(OLD, "Something else", code="other code")
+    sid.node(TARGET, "ZZ Call")
+    del sid.contents[TARGET]
+    sid.decision("d1", "Uses it", [OLD], [OLD])
+    code, text = migrate("--from-id", OLD, "--apply", "--delete-old")
+    assert code == 0, text
+    assert "does not have the code of" not in text and "not deleted" not in text
+    assert sid.contents[TARGET]["staticContent"] == "other code"
+    assert sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]]
+    assert f"deleted     {OLD} ('Something else'): no version of any decision calls it" in text and OLD not in sid.nodes
 
 
 # ---- a node type named like the target, with other code, is no copy ----
@@ -647,9 +722,10 @@ def test_a_node_named_like_the_target_with_other_code_is_a_warning_and_never_fai
     code, text = migrate("--from-id", OTHER, "--apply", "--delete-old")
     assert code == 0, text
     assert f"  'ZZ Call Streaming' does not have the code of {TARGET}, though its name starts with 'ZZ Call': check " \
-           f"that it is a copy of that node type - its decisions get the code and the terms of {TARGET}, and " \
-           "--delete-old then deletes it." in text
+           f"that it is a copy of that node type - its decisions get the code and the terms of {TARGET}; " \
+           "--delete-old does not delete it, as it is no copy." in text
     assert sid.uses("d2") == [[NODE + TARGET], [NODE + TARGET]]
+    assert OTHER in sid.nodes and f"not deleted {OTHER} ('ZZ Call Streaming')" in text
 
 
 def test_a_first_run_that_leaves_decisions_on_a_copy_ends_with_1(sid):
@@ -1139,6 +1215,18 @@ def test_a_failed_node_type_task_fails_the_run(importing, no_discovery):
     result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
     assert result.exit_code == 1
     assert "      decisionNodeType 'Call LLM': failed - names must be unique" in text
+
+
+@pytest.mark.parametrize("limit, warned", [(1, True), (2, False)])
+def test_a_full_page_of_node_types_is_a_warning_of_the_import(importing, no_discovery, monkeypatch, limit, warned):
+    no_discovery()
+    monkeypatch.setattr(decision_nodes, "NODE_TYPE_LIMIT", limit)
+    importing.viya.node_types = {CALL_LLM_NODE_ID: {"id": CALL_LLM_NODE_ID, "name": "Call LLM"}}
+    importing.tasks = DONE_TASKS
+    result, _fake, text = importing(Site(**{"Prompt Builder": NO_CONTEXT}), package=_with_decision())
+    assert result.exit_code == 0, text
+    assert ("    Warning: SAS Intelligent Decisioning listed 1 custom node types, a full page, and does not say how many "
+            "there are" in text) is warned, text
 
 
 def test_a_site_without_decisioning_gets_a_line_and_no_failure(importing, no_discovery):

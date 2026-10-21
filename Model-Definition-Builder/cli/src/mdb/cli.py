@@ -2701,7 +2701,7 @@ def _import_decisions(session, path: Path, package: dict, source, root: str, no_
     reduced, held, carried = decisions_package(package, source.root_uri)
     say(f"  Decisions, through the transfer service ({len(held)} object(s)): {names}")
     try:
-        verdicts = nodes.site_check(session, carried)
+        verdicts = nodes.site_check(session, carried, warn=lambda text: say(f"    {text}", "yellow"))
     except NodeError as exc:
         say(f"    {one_line(str(exc))}", "red")
         return True, False
@@ -3423,7 +3423,7 @@ def decision_node_migrate(
     delete_old: bool = typer.Option(
         False, "--delete-old",
         help="With --apply: delete the old node type at the end - only when no version of any decision calls it "
-             "any more."),
+             "any more, and not a --from-id node type that is no copy."),
     timeout: int = typer.Option(600, "--timeout", help="Seconds to wait for each transfer job."),
 ):
     """Give the site's Call LLM node type the id the package of the
@@ -3465,8 +3465,9 @@ def decision_node_migrate(
     there already - the package or the Create program brought it, after the
     old node type was renamed by hand to free its name - --from-id <its id>
     moves the decisions of one of them to it, with a warning where that node
-    type is no copy, and --delete-old then deletes it once no version calls
-    it.
+    type is no copy. --delete-old then deletes a copy once no version calls
+    it, and keeps a node type that is no copy: delete that one in SAS
+    Intelligent Decisioning once you are sure.
 
     Versions whose node lost its address - a node type deleted earlier -
     are listed as a warning: they cannot run, and no mapping can move them.

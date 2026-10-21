@@ -127,14 +127,11 @@ def _ok(what: str, response, allowed=()):
     return response
 
 
-def _items(session, path: str, what: str, params: Optional[dict] = None, missing_ok: bool = False):
-    """Every item of a collection, page by page; None where the collection
-    answers 404 and `missing_ok` says that means 'not on this site'."""
+def _items(session, path: str, what: str, params: Optional[dict] = None):
+    """Every item of a collection, page by page."""
     found, start = [], 0
     while True:
         response = _call(what, lambda: session.get(path, params={**(params or {}), "start": start, "limit": 100}))
-        if response.status_code == 404 and missing_ok and start == 0:
-            return None
         page = _ok(what, response).json()
         items = page.get("items") or []
         found.extend(items)
@@ -146,10 +143,28 @@ def _items(session, path: str, what: str, params: Optional[dict] = None, missing
 # ---------------------------------------------------------------------------
 # node types
 # ---------------------------------------------------------------------------
-def list_node_types(session, missing_ok: bool = False):
-    """Every custom node type of the site; None where SAS Intelligent
-    Decisioning does not answer (404) and `missing_ok` allows it."""
-    return _items(session, NODE_TYPES, "Listing the custom node types failed", missing_ok=missing_ok)
+#: The custom node types are read in one page of this many. SAS Intelligent
+#: Decisioning gives no total for them - `count` was the size of the page -,
+#: and `start` does not page them (measured on 2026-10-21).
+NODE_TYPE_LIMIT = 1000
+
+
+def list_node_types(session, missing_ok: bool = False, warn: Optional[Callable[[str], None]] = None):
+    """The custom node types of the site, in one page; None where SAS
+    Intelligent Decisioning does not answer (404) and `missing_ok` allows
+    it. `warn(text)` gets a line where the page is full: there may be more."""
+    what = "Listing the custom node types failed"
+    response = _call(what, lambda: session.get(NODE_TYPES, params={"start": 0, "limit": NODE_TYPE_LIMIT}))
+    if response.status_code == 404 and missing_ok:
+        return None
+    page = _ok(what, response).json()
+    items = page.get("items") or []
+    # a page the service capped below the limit it was asked for is full at its own limit
+    full = min(NODE_TYPE_LIMIT, int(page.get("limit") or NODE_TYPE_LIMIT))
+    if warn and items and len(items) >= full:
+        warn(f"Warning: SAS Intelligent Decisioning listed {len(items)} custom node types, a full page, and does not "
+             "say how many there are: the list may be incomplete, and a node type past it is not looked at.")
+    return items
 
 
 def get_node_type(session, node_id: str):
@@ -485,7 +500,7 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     line that names it)."""
     target_uri = node_uri(target_id)
     old_name = renamed_name(name, target_id)
-    nodes = list_node_types(session, missing_ok=True)
+    nodes = list_node_types(session, missing_ok=True, warn=lambda text: say(text, "yellow"))
     if nodes is None:
         say("This site has no SAS Intelligent Decisioning (GET /decisions/decisionNodeTypes answers 404): there is no "
             "node type and no decision to migrate.", "green")
@@ -497,6 +512,8 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     target = target_found[0] if target_found else None
     need_rename = need_create = need_content = False
     old = None
+    #: whether the old node type is a copy of the target - only a copy is deleted by --delete-old
+    old_copy = True
     moves = command or (lambda node_id: f"mdb decision-node-migrate --from-id {node_id} --apply")
 
     if from_id is not None:
@@ -521,12 +538,15 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
         if old is not None:
             say(f"--from-id: the decisions that call the node type '{old.get('name')}' ({from_id}) are moved to "
                 f"{target_id}; no node type is created or renamed.", None)
-            if not any(copy for _node, _reason, copy in
-                       similar_node_types(session, [old], name, target_id, target_content)):
+            # a target without content gets the code of the old node type from this run: the old one is a copy then
+            old_copy = target_content is None or any(
+                copy for _node, _reason, copy in similar_node_types(session, [old], name, target_id, target_content))
+            if not old_copy:
                 say(f"  '{old.get('name')}' does not have the code of {target_id}"
                     + (f", though its name starts with '{name}'" if _named_alike(old, name) else "")
                     + ": check that it is a copy of that node type - its decisions get the code and the terms of "
-                    f"{target_id}" + (", and --delete-old then deletes it." if delete_old else "."), "yellow")
+                    f"{target_id}" + ("; --delete-old does not delete it, as it is no copy." if delete_old else "."),
+                    "yellow")
         elif renamed:
             old = renamed[0]
             say(f"The old node type '{old_name}' ({old.get('id')}) is still there - an earlier run renamed it.", None)
@@ -653,7 +673,10 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
         steps.append(f"move {len(uses)} decision(s) to {target_uri}: each is exported and imported over itself with "
                      f"the mapping {old_uri} -> {target_uri}, which rewrites every version - locked ones included - "
                      "and keeps the version ids; published modules are not touched")
-    steps.append(f"delete the old node type {old_id} once no version of any decision calls it" if delete_old else
+    steps.append(f"delete the old node type {old_id} once no version of any decision calls it"
+                 if delete_old and old_copy else
+                 f"keep the old node type {old_id} ('{old_label}') - it is no copy of {target_id}, so --delete-old "
+                 "does not delete it" if not old_copy else
                  f"keep the old node type {old_id} ('{old_label}') - --delete-old deletes it once no version calls it")
     if not apply:
         say("A run with --apply would:", None)
@@ -713,6 +736,10 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     if delete_old:
         if failed:
             say(f"not deleted {old_id}: {failed} decision(s) were not moved and still call it.", "yellow")
+        elif not old_copy:
+            say(f"not deleted {old_id} ('{old_label}'): it does not have the code of {target_id}, so it is no copy "
+                "and --delete-old keeps it. Delete it in SAS Intelligent Decisioning once you are sure it is not "
+                "needed.", "yellow")
         else:
             # read again where decisions were moved: one made meanwhile with the old node type counts too
             still = decisions_using(session, old_uri) if uses else []
@@ -738,9 +765,10 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
     say(f"Done. Every decision that called the old node type calls '{target.get('name') if target else name}' "
         f"under {target_id}.", "green")
     if not delete_old:
-        say(f"The old node type '{old_label}' ({old_id}) is kept; published modules do not need it. Delete it with "
-            "--delete-old once you are sure: a node type that is deleted cannot be brought back for the versions "
-            "that call it.", None)
+        say(f"The old node type '{old_label}' ({old_id}) is kept; published modules do not need it. Delete it "
+            + ("with --delete-old" if old_copy else "in SAS Intelligent Decisioning")
+            + " once you are sure: a node type that is deleted cannot be brought back for the versions that call it.",
+            None)
     if left:
         say(f"Not everything is done: {len(left)} other node type(s) like {target_id} are still called by decisions "
             "(above). Move them with --from-id.", "red")
@@ -754,14 +782,15 @@ def migrate(session, name: str, target_id: str, apply: bool, delete_old: bool, s
 CREATE, OVERWRITE, CLASH, NO_DECISIONING = "create", "overwrite", "clash", "no decisioning"
 
 
-def site_check(session, nodes) -> list:
+def site_check(session, nodes, warn: Optional[Callable[[str], None]] = None) -> list:
     """For each (name, id) of a package: (name, id, verdict, what the site
     has). CREATE - neither the id nor the name is there; OVERWRITE - the id
     is there (the import writes the package's node type over it, its code
     included); CLASH - the name is there under another id (the import would
     fail for the node type and skip the decisions of the package);
-    NO_DECISIONING - SAS Intelligent Decisioning does not answer on the site."""
-    listed = list_node_types(session, missing_ok=True)
+    NO_DECISIONING - SAS Intelligent Decisioning does not answer on the site.
+    `warn(text)` gets a line where the listing of the node types is full."""
+    listed = list_node_types(session, missing_ok=True, warn=warn)
     if listed is None:
         return [(name, node_id, NO_DECISIONING, None) for name, node_id in nodes]
     verdicts = []
