@@ -57,6 +57,10 @@ The Job itself is named `stage-weights-<job name>`, where the job name is the `m
 
 The first call a model container answers loads the weights from the volume - tens of seconds for a checkpoint of a few GB on Azure Files - and every later call of that container reuses them: the score code keeps the loaded model for the life of the worker process, because SAS Container Runtime runs the score file again for each request.
 
+So a running container keeps the weights it loaded. After you stage new weights into the same directory, restart the model's Deployment (`kubectl -n llm rollout restart deploy/<model deployment>`), or scale it to 0 and back to 1 where a node lacks the CPU for a second pod. Until then the container answers with the old model.
+
+Measured on 2026-10-20 on the test system, from a workstation through the Ingress: with the score code before 2.3.0, which loaded the model on every call, a call of `von_1_2` took 2.4 to 2.8 seconds. With the score code of 2.3.0 the first call after the restart took 14.3 seconds and every later call about 0.6 seconds, about four times faster. Four calls sent at once right after the start each took about 15 seconds, the time of one shared load. The models with weights in the image gained less: `qwen_25_05b` went from about 1.3 to 0.75 seconds a call, `all_minilm_l6_v2` from about 0.65 to 0.45 seconds.
+
 Check that it landed:
 
 ```bash

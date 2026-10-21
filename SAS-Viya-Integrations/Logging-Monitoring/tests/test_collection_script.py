@@ -4,6 +4,8 @@ writes exactly like the unredacted log.
 
 The redaction is run for real: the sed expressions are taken from the guide and handed
 to sed. That needs GNU sed, as the script itself does; without it these tests are skipped.
+On Windows, run the Logging suite from Git Bash (or put Git's usr/bin first on PATH):
+from PowerShell `bash` is the WSL launcher and there is no sed, so 33 tests of this file skip.
 
 The guide also says where the parser reads the collected file and what it writes to the
 SAS log. Those parts are held against the program they describe.

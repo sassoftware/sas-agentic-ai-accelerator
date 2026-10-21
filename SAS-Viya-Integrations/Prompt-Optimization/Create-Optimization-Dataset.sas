@@ -25,6 +25,10 @@
          CAS server / caslib / table dropdowns (the lists show loaded tables,
          which is why the load + promote below matters).
 
+    The table lives in memory only: it is promoted, not saved. After a
+    restart of the CAS server it is gone, and the dropdowns no longer list
+    it - run this program again.
+
     The optimize job snapshots the exact rows it used into the prompt's model
     (Prompt-Optimization-Dataset-<n>.json), so later edits to this table never
     orphan the provenance of past runs.
