@@ -1,7 +1,16 @@
 # Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
+import os
 import time
 from pathlib import Path
+
+#: typer (0.27.3, `typer.rich_utils`, read once at its import) forces a terminal - colours, and the help in
+#: boxes of the terminal's width - where one of these is set, and GitHub Actions sets GITHUB_ACTIONS: the tests
+#: that read the help or an error of mdb then found `\x1b[1m...` in place of its text (PR #48, 3.11 and 3.12;
+#: on Windows without these the same tests passed). The tests read what a pipe gets, so the session drops them
+#: before anything imports typer; the processes the tests start inherit that.
+for _name in ("GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS"):
+    os.environ.pop(_name, None)
 
 import pytest
 import yaml
