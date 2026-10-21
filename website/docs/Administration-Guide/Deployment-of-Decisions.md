@@ -52,19 +52,6 @@ The tag follows the score code the model holds, with one case the page cannot de
 
 To read the setting in the score code itself, open the model in SAS Model Manager and look for one line. The score code of a prompt template with the included LLM call and of a decision template holds `sslVerifyDefault = True` or `sslVerifyDefault = False`. The `retrieve_context.py` of a retrieval model holds `SSL_VERIFY = True` or `SSL_VERIFY = False` in its MANIFEST block. A prompt manifested for the *Call LLM* node holds neither line. Nothing else in the score code of a prompt or decision template carries the name `sslVerifyDefault`: the Prompt Builder refuses a variable, an output variable or a question of that name.
 
-## The Call LLM node: one id on every site {#the-call-llm-node}
-
-A step of a decision names its custom node type only by its id: a decision that calls the *Call LLM* node runs on another site only where that site has the node under the same id. From release 2.3.0 the transfer package of the accelerator brings the node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`, as the dependency of the decision `Decisions/Call LLM Node` - a decision that holds only that node and is not meant to be published. `mdb builders-import` imports both: it creates the node type under that id, or overwrites the node type of that id in place, which replaces local edits of its code and its terms.
-
-A site that created the node with `Create-Custom-SAS-Intelligent-Decisioning-Node.sas` has it under an id of its own. A node type cannot be given another id, and its name is unique, so the import cannot bring the node there: `mdb builders-import` leaves the decision and the node out and ends with exit code 1. Run this once, before the import:
-
-```bash
-mdb decision-node-migrate           # dry run: the node type and every decision version that uses it
-mdb decision-node-migrate --apply
-```
-
-The command renames your node type to `Call LLM (before f9efcbb7)`, creates `Call LLM` under the id of the package with the same code and terms, and moves every decision that uses the old node type - every version, the locked ones included, keeping the version ids - by a transfer re-import of the decision over itself. Published MAS and SCR modules hold compiled code and need nothing. The old node type is kept; `--delete-old` deletes it, and only when no version of any decision calls it any more. Do not delete it by hand while a version calls it: SAS Intelligent Decisioning then clears the node of every such version, locked ones included, and creating the id again does not bring it back. [Moving the Call LLM node to its id](./Model-Definition-Builder.md#decision-node-migrate) has the details.
-
 ## Kubernetes vs Azure Container Apps/Instances
 
 Please note that it is not supported to change the type of deployment between environments so if you have the LLM containers deployed in Kubernetes in one environment, they will have to be deployed in the same fashion in all other environments as well.
@@ -107,33 +94,45 @@ This transformer adds the variable to the first container of the pod, the main c
 
 A decision references a custom node by its **id**, not by its name: the step of the node holds the address `/decisions/decisionNodeTypes/<id>`, and the code of the node is read from that address every time the decision is tested, its code is generated or it is published. A transfer package of a folder with a decision carries the node it uses, with its id, and an import matches the node by that id alone. Where every site creates the node under an id of its own, a decision built on one site does not find its node on another.
 
-The accelerator ships the *Call LLM* node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`. The content folder holds a decision that uses only this node, so the transfer package carries the node under that id, and a decision built with it on one site imports on another without a mapping.
+The accelerator therefore ships the *Call LLM* node under one id, `f9efcbb7-f57b-4a62-b56d-1a89595e2039`. The content folder holds the decision `Decisions/Call LLM Node`, which uses only this node and is not meant to be published: the transfer package carries the node under that id as its dependency, and a decision built with it on one site imports on another without a mapping.
 
 ### A new site
 
-- **The import of the package creates the node** under the id, with the content of the release — see [Install or upgrade with the transfer package](./Setup-Additional-UIs.md#the-transfer-package). An import into a site that has the node under that id already replaces its content in place.
+- **The import of the package creates the node** under the id, with the content of the release: `mdb builders-import` imports the decision and the node type in a transfer job of their own - see [Install or upgrade with the transfer package](./Setup-Additional-UIs.md#the-transfer-package). On a site that has the node under that id already, the import overwrites it in place - its code and its terms become the ones of the release, and local edits of them are gone -, also where the node was made on the site by the program below or by the migration.
 - **Or run `Create-Custom-SAS-Intelligent-Decisioning-Node.sas`** (folder [`SAS-Intelligent-Decisioning-Integration`](https://github.com/sassoftware/sas-agentic-ai-accelerator/tree/main/SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration)). It creates the node under the id. It asks for the id first and creates nothing where the node is there already: the log then names `Update-Custom-SAS-Intelligent-Decisioning-Node.sas`, which brings the content of the node to the one of the release. It creates nothing either where a node named *Call LLM* is there under another id, and its ERROR lines name the migration below. It never sends the request that creates a node for an id that is taken: SAS Viya answers such a request with an error, and renames the node of that id to the name of the request before it does.
 
 `Update-Custom-SAS-Intelligent-Decisioning-Node.sas` looks for the node under the id first. Where no node is there, it updates the node named *Call LLM* and says in a NOTE that the node of the site is not under the shipped id yet.
 
 ### A site that has the node under another id
 
-A site that created the node with the program of an earlier release has it under an id of its own. Node names are unique, so the node of the release cannot be created beside it. The migration `mdb decision-node-migrate` moves the site to the shipped id. Run it first as a dry run: it lists the node and every decision that uses it, and changes nothing. A run then:
+A site that created the node with the program of an earlier release has it under an id of its own. A node cannot be given another id, and node names are unique, so the node of the release cannot be created beside it. Run the migration once, before the import:
 
-1. renames the node of the site, so that its name is free;
-2. creates the node under the shipped id, with the content of the node of the site;
-3. moves every decision that uses the old node to the new one, by a transfer re-import of the decision over itself with a mapping of the node from the old id to the new one. This rewrites **every version** of the decision, the locked ones included, and keeps the ids of the versions. An edit in SAS Intelligent Decisioning, or a change over REST, reaches the current version only: a locked version cannot be changed any other way;
-4. keeps the old node. It is deleted only when you ask for it and no version of any decision references it anymore.
+```bash
+mdb decision-node-migrate           # dry run: the node and every decision version that calls it - changes nothing
+mdb decision-node-migrate --apply
+mdb builders-import
+```
 
-Published modules — in SAS Micro Analytic Service or in a SAS Container Runtime image — hold the compiled code of the decision and are not affected: they keep running as they are. A moved decision uses the new node from its next test, code generation or publish on.
+With `--apply` the command:
 
-**Never delete a node that a decision uses.** SAS Viya does not refuse the delete. It removes the reference to the node from every version of every decision that uses it, the locked ones included: their tests fail with *customObjectURI is null*, and their code cannot be generated. Creating a node under the old id again does not bring the reference back — there is no undo. A transfer re-import of each decision with a mapping to an existing node is the only repair.
+1. renames the node of the site to `Call LLM (before f9efcbb7)`, so that its name is free;
+2. creates `Call LLM` under the shipped id, with the settings, the code and the terms of the node of the site;
+3. moves every decision that calls the old node to the new one, by a transfer re-import of the decision over itself with a mapping of the node from the old id to the new one. This rewrites **every version** of the decision, the locked ones included, and keeps the ids of the versions. An edit in SAS Intelligent Decisioning, or a change over REST, reaches the current version only: a locked version cannot be changed any other way. The tasks of each import job are read, and every version is read back;
+4. keeps the old node. `--delete-old` deletes it at the end, and only when a fresh look finds no version of any decision that calls it.
+
+Published modules - in SAS Micro Analytic Service or in a SAS Container Runtime image - hold the compiled code of the decision and are not affected: they keep running as they are. A moved decision uses the new node from its next test, code generation or publish on. A run that stopped is run again: what was done is found done.
+
+**A node renamed by hand.** A site that renamed its old node itself, to free the name, and then imported the package or ran the Create program has the node under the shipped id and its decisions still on the old one. `mdb decision-node-migrate` reads every decision there as well and lists every version that calls a node like *Call LLM* - one whose name starts with *Call LLM*, or whose code is the code of the node under the shipped id. `mdb decision-node-migrate --from-id <id of the old node> --apply` moves the decisions of that node to the one under the shipped id; it creates and renames nothing.
+
+**Never delete a node that a decision uses.** SAS Viya does not refuse the delete. It removes the reference to the node from every version of every decision that uses it, the locked ones included: their tests fail with *customObjectURI is null*, and their code cannot be generated. Creating a node under the old id again does not bring the reference back - there is no undo. The dry run of the migration lists such versions as a warning. A transfer re-import of each decision with a mapping to an existing node is the only repair.
+
+[Moving the Call LLM node to its id](./Model-Definition-Builder.md#decision-node-migrate) lists the options of the command.
 
 ### Importing the package on such a site
 
-Where a node named *Call LLM* is there under another id, the import of the package fails for the node with *Decision node type names must be unique* (409), and the decision of the same package is not imported at all — while the import job still ends `completed`. Read the tasks of the job, not only its state. Run the migration before the import.
+`mdb builders-import` asks the site before it uploads anything of the decisions. Where a node named *Call LLM* is there under another id, it leaves the decision and the node out, imports the rest of the package, and ends with exit code 1 and the migration command; `--no-decisions` leaves them out on purpose. A transfer import of the package by other means - in SAS Environment Manager, or with the transfer service directly - goes ahead: the task of the node fails with *Decision node type names must be unique* (409), and the decision of the same package is skipped without a task of its own, while the import job still ends `completed`. Read the tasks of such a job, not only its state, and run the migration before the import.
 
-Measured on 2026-10-20 on the test system with nodes and decisions of a test, not with *Call LLM*: the creation under a chosen id, the rename that a create request for a taken id caused, the delete that cleared the reference in a locked version and the re-import that repaired it, the unaffected MAS module, and the failed import with its skipped decision. A decision moved by the re-import was then checked in SAS Intelligent Decisioning: its current and its locked version ran with the new node.
+Measured on 2026-10-20 on the test system with nodes and decisions of a test, not with *Call LLM*: the creation under a chosen id, the rename that a create request for a taken id caused, the delete that cleared the reference in a locked version and the re-import that repaired it, the unaffected MAS module, and the failed import with its skipped decision. A decision moved by the re-import was then checked in SAS Intelligent Decisioning: its current and its locked version ran with the new node. Measured on 2026-10-21: the import of a package over a node of the same id whose content was made on the site - as the Create program and the migration make it - completed, gave the node the code and the terms of the package, and the decision of the package ran with it.
 
 ## Publishing to SAS Micro Analytic Service: the certificate bundle {#mas-certificate-bundle}
 

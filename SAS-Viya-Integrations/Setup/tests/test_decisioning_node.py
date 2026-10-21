@@ -311,7 +311,25 @@ def test_the_guide_has_the_section_the_programs_point_to():
     flat = " ".join(section.split())
 
     assert NODE_ID in flat and "mdb decision-node-migrate" in flat
-    for said in ("Create-Custom-SAS-Intelligent-Decisioning-Node.sas", "dry run", "locked", "published", "no undo"):
+    for said in ("Create-Custom-SAS-Intelligent-Decisioning-Node.sas", "dry run", "locked", "published", "no undo",
+                 "mdb builders-import", "mdb decision-node-migrate --apply", "--delete-old", "--from-id",
+                 "Never delete a node that a decision uses", "before it uploads anything", "ends `completed`"):
         assert said in flat, said
     readme = " ".join(read(REPOSITORY / "SAS-Viya-Integrations" / "README.md").split())
     assert NODE_ID in readme and GUIDE in readme and "mdb decision-node-migrate" in readme
+
+
+def test_the_guide_has_one_section_on_the_node_id_and_every_link_finds_it():
+    """One section, one anchor: the SAS programs print the link to it, and no page keeps a second section or a link to
+    an anchor that is gone."""
+    docs = REPOSITORY / "website" / "docs"
+    texts = {path: read(path) for path in docs.rglob("*.md")}
+    anchors = [path.name for path, text in texts.items() for _ in range(text.count("{#call-llm-node-uuid}"))]
+    assert anchors == ["Deployment-of-Decisions.md"]
+    assert read(DOCS).count("## The Call LLM node") == 1
+    sources = list(texts.items()) + [(path, read(path)) for path in (
+        REPOSITORY / "SAS-Viya-Integrations" / "README.md", CREATE, UPDATE)]
+    for path, text in sources:
+        assert "#the-call-llm-node" not in text, path
+    for program in (CREATE, UPDATE):
+        assert GUIDE in read(program)
