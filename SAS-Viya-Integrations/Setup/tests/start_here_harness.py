@@ -43,9 +43,11 @@ MEMBER_TYPE = {"folder": "folder", "file": "file", "step": "flowStep", "jobDefin
                "decision": "decision"}
 URI_OF = {"folder": "/folders/folders/", "file": "/files/files/", "step": "/dataFlows/steps/", "jobDefinition": "/jobDefinitions/definitions/",
           "report": "/reports/reports/", "decision": "/decisions/flows/"}
-TABLES = ("ACCELERATOR_RELEASES", "LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET")
-# The tables of the logging chain that no report binds (round 19)
-CHAIN_TABLES = ("DECISION_FACT_SHEET", "PROMPT_OPTIMIZATIONS", "RAG_SETUPS", "RAG_RUNS", "MODEL_CATALOG")
+TABLES = ("ACCELERATOR_RELEASES", "LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET",
+          "DECISION_FACT_SHEET", "RAG_SETUPS", "RAG_RUNS")
+# The tables of the logging chain that no report binds (round 19; the LLM Usage Report binds the other three since
+# its Decision Models and RAG pages)
+CHAIN_TABLES = ("PROMPT_OPTIMIZATIONS", "MODEL_CATALOG")
 
 
 def program():

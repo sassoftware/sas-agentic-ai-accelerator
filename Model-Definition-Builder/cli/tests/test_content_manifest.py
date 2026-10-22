@@ -699,7 +699,8 @@ def test_the_two_setup_jobs_are_listed_with_the_parameters_their_programs_read(s
     assert reports == {
         "Prompt Builder/Prompt Builder": {"optionSet": "prompt-builder", "tables": ["ACCELERATOR_RELEASES"]},
         "Logging and Monitoring/LLM Usage Report": {
-            "tables": ["LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET"]}}
+            "tables": ["LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SHEET", "EMBEDDING_FACT_SHEET", "DECISION_FACT_SHEET",
+                       "RAG_SETUPS", "RAG_RUNS"]}}
 
 
 def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sites(shipped):

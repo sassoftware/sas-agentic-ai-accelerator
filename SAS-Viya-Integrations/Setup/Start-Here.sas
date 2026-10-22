@@ -48,8 +48,8 @@
  *     and fails none over a reference. A reference to an object of
  *     another kind is no part of the check
  *   - the CAS tables the two reports bind: there, rows, loaded when
- *   - the CAS tables of the logging chain that no report binds: the fact sheet
- *     of the decision models and the four further tables of Get-All-Prompts.sas
+ *   - the CAS tables of the logging chain that no report binds: two further
+ *     tables of Get-All-Prompts.sas
  *   - SAS Model Manager: the repository and the projects of the LLM, the
  *     embedding model and the decision model definitions, with their models;
  *     a project without a model is missing
@@ -175,15 +175,15 @@ REPORT_TABLES = (
     ('PROMPT_EXPERIMENTS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
     ('LLM_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
     ('EMBEDDING_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
+    ('DECISION_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
+    ('RAG_SETUPS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
+    ('RAG_RUNS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
 )
-# The CAS tables of the logging chain that no report binds: the fact sheet of the decision models, and the four
-# tables Get-All-Prompts.sas writes beside PROMPT_EXPERIMENTS, which Link-Logs-To-Models.sas reads
+# The CAS tables of the logging chain that no report binds: two of the tables Get-All-Prompts.sas writes beside
+# PROMPT_EXPERIMENTS, which Link-Logs-To-Models.sas reads
 GET_ALL_PROMPTS = 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'
 CHAIN_TABLES = (
-    ('DECISION_FACT_SHEET', 'the costs of the decision models', LOADER_JOB + ', or mdb load-facts.'),
     ('PROMPT_OPTIMIZATIONS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
-    ('RAG_SETUPS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
-    ('RAG_RUNS', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
     ('MODEL_CATALOG', 'Link-Logs-To-Models.sas', GET_ALL_PROMPTS),
 )
 # The Python packages of each part: (part, name to install, module, names its version is found under, the least version, needed for)

@@ -162,6 +162,10 @@ The file in SAS Content holds the prompts and the responses like the log itself,
 - **`Log-Parser-Code.sas`** starts a CAS session itself (`cas mysess;`) when neither the session the SAS option `SESSREF` names nor a session `mysess` is connected - a connected `mysess` is used, and the option is set to it -, assigns the librefs `public` and `casuser` and takes each of its settings where the macro variable is not set when it starts ([Settings that stay yours](#settings-that-stay-yours)). The session and the two librefs stay when the program ends. `_log_target_table_lib` names a libref: the program looks up the caslib behind it and, when no libref of that name is assigned, hands the value to CAS as the name of the caslib.
 - **The custom step** is the same program without those first lines, so it takes the following from the SAS session it runs in.
 
+:::warning Run the chain in a compute context that runs as you
+The parser and the link program hand their rows to CAS from Python, in the CAS session of the SAS session they run in. In a compute context whose servers run as a service account - on the test system the *SAS Job Execution compute context*, which runs as `sas-be-sa` - that fails: `Session reconnect failed: Users can only reconnect to their own sessions`, then `ERROR: The log could not be parsed, the table Public.LLM_LOGS was left as it is.`, and `Get-All-Prompts.sas` cannot read SAS Model Manager either. Measured on 2026-10-22; in the *SAS Studio compute context*, which runs as the user, the same code ran. For a scheduled chain pick such a context (`_contextName` of the job, or the context of the compute session you submit to).
+:::
+
 ### Settings that stay yours {#settings-that-stay-yours}
 
 The five programs of the folder `Logging and Monitoring` - `Log-Parser-Code.sas`, `Get-All-Prompts.sas`, `Link-Logs-To-Models.sas`, `Load-Fact-Sheets.sas` and `Build-RAG-Cost-View.sas` - take a setting only where its macro variable is not set when the program starts. Up to release 2.2 the settings were `%let` lines at the top of each file, so a newer file, or an import of the content folder, replaced the values of a site with the defaults. Keep your values in a program of your own that sets them and includes the shipped file from the content folder; the shipped file can then be replaced without a value of yours in it:
@@ -880,26 +884,49 @@ neither.
 
 ## Prerequisites — the tables it reads
 
-The report builds on four CAS tables, **all expected in the `Public` caslib by
+The report builds on seven CAS tables, **all expected in the `Public` caslib by
 default**. Load them (promoted and saved) before or after importing so the report
 has data to bind to:
 
 | Table | Produced by |
 |---|---|
-| `LLM_LOGS` | Parsing the collected container logs — `Log-Parser-Code.sas` or the *LLM - Log Parser* SAS Studio custom step |
-| `LLM_FACT_SHEET` / `EMBEDDING_FACT_SHEET` | `mdb load-facts` (or `Load-Fact-Sheets.sas`) — see [Model Definition Builder](./Model-Definition-Builder.md) |
-| `PROMPT_EXPERIMENTS` | `Get-All-Prompts.sas` or the *LLM - Get All Prompts* SAS Studio custom step - see [The Experiments of Every Kind](#what-it-reads) |
+| `LLM_LOGS` | Parsing the collected container logs — `Log-Parser-Code.sas` or the *LLM - Log Parser* SAS Studio custom step, then `Link-Logs-To-Models.sas` |
+| `LLM_FACT_SHEET` / `EMBEDDING_FACT_SHEET` / `DECISION_FACT_SHEET` | `mdb load-facts` (or `Load-Fact-Sheets.sas`) — see [Model Definition Builder](./Model-Definition-Builder.md) |
+| `PROMPT_EXPERIMENTS` / `RAG_SETUPS` / `RAG_RUNS` | `Get-All-Prompts.sas` or the *LLM - Get All Prompts* SAS Studio custom step - see [The Experiments of Every Kind](#what-it-reads) |
 
-The report reads the twelve columns `LLM_LOGS` had before release 2.3.0 and the columns `PROMPT_EXPERIMENTS` had before it. `LLM_LOGS` keeps those twelve with their names, order and types. `PROMPT_EXPERIMENTS` keeps its columns with their names and types, and in the order they had among themselves, but not at their places: the pull writes new columns in between. Measured on 2026-10-13 against the table the test system had, 212 rows and 38 columns: the table as pulled had 312 rows and 61 columns, and the 38 stood in their order, from the fifteenth on at other positions. The columns this release adds, and the four further tables of the pull, are for reports of your own.
+Every metric is a calculated item of the report; the joins and aggregations are
+data sources of the report too, so no table is written for it:
 
-Measured on the test system on 2026-10-13, on a copy of the `LLM_LOGS` of release 2.2 that a collected log of 1,024 requests was appended to, with the report's own join - `LLM_LOGS.model` to `LLM_FACT_SHEET.model_id`, an inner join - run as a query; the report itself was not opened on the copy:
+- **Model Calls (all kinds)** - `LLM_LOGS` left-joined to the three fact sheets
+  on the model. Cost per call is the input tokens times the token price (plus the
+  output tokens times the output price), or the run time times the price per
+  second for a model priced by the second. Behind the *Overview*, *Decision
+  Models* and *RAG* pages.
+- **LLM Calls** - `LLM_LOGS` left-joined to `LLM_FACT_SHEET`; every object on it
+  counts the calls of LLMs only (`kind` is `llm`, or missing in rows of a release
+  before 2.3.0). Behind the LLM pages.
+- **Templates (experiments and calls)** and **RAG Setups (ingestion and calls)** -
+  the templates of `PROMPT_EXPERIMENTS` and the setups of `RAG_SETUPS`, each
+  left-joined to its calls in `LLM_LOGS` (by the caller the link program found,
+  and by the setup whose collection a prompt carried), the setups also to their
+  ingestion runs in `RAG_RUNS`. A template or setup without calls is listed as
+  *Never called*.
 
-- **The totals of the earlier rows were the same** before and after the append: the join and its 15 totals for the 3,630 rows.
-- **The rows of embedding and decision models do not reach the report.** Their models are not in `LLM_FACT_SHEET`, so the join drops them: of the 1,024 new rows the 242 of LLMs were left. All 242 count as calls, also the 83 that failed and carry no token count and no run time.
-- **`model_id` is a column of both tables of the join** once `LLM_LOGS` has its 36 columns: `LLM_LOGS.model_id`, which the link fills, and `LLM_FACT_SHEET.model_id`.
-- **The detail table lists a request only where its `prompt_length` lies between 1 and 8946.** That range is a fixed filter of the report - of the one on the test system and of the report in the package of this repository -, so a request with more input tokens, or without a token count, is not listed there: 83 of the 242 were not.
-- **With its defaults the pull replaces `Public.PROMPT_EXPERIMENTS`** and creates `PROMPT_OPTIMIZATIONS`, `RAG_SETUPS`, `RAG_RUNS` and `MODEL_CATALOG` beside it; on that day the run wrote to tables in `CASUSER`.
-- **A job that gets no compute session writes nothing.** One of 18 jobs of that day ended as failed with `The SAS Compute server was unable to create a session for the submitted request.` Its log was empty and the tables were as before; it was submitted again and ran.
+The pages:
+
+| Page | What it shows |
+|---|---|
+| Overview | What LLMs, decision models and RAG are; calls, estimated cost, failed calls and response time; calls per month and cost per 1,000 calls by kind of model |
+| Prompting Overview, LLM Usage Overview, LLM Usage Details, LLM Details | Prompt experiments and LLM calls as before; *LLM Usage Details* also lists every prompt template with its experiment runs and calls |
+| Decision Models | Calls, confidence, answers below 0.7, failed calls, time and cost; calls by template and model; answers by confidence band; the experiments of each template and model with the accuracy of their first answer against the expected one; every decision template with its calls; the calls |
+| RAG | Grounded LLM calls, collections, chunks and questions embedded, tokens embedded, cost; per setup the ingestion summary (runs, last run, documents, chunks, embedding tokens, failed documents) and its calls; the grounded calls |
+
+`RAG_RUNS` holds the runs of a setup only where its run table was in memory when
+`Get-All-Prompts.sas` ran; load the saved `<prefix>_RUNS` tables first, or a setup
+shows *No ingestion run recorded*. The first-answer accuracy compares the answer
+to the first question of a decision template with the first expected answer.
+
+The report reads the twelve columns `LLM_LOGS` had before release 2.3.0 by their names, and the link columns of release 2.3.0. A table that a parser of an earlier release wrote, and that was not appended to with the parser of release 2.3.0, lacks them: run the parser of this release and the link program once.
 
 ## Import the report
 
@@ -915,26 +942,25 @@ for what the command does, and
 [Importing without `mdb`](./Setup-Additional-UIs.md#importing-without-mdb) for
 SAS Environment Manager and the `sas-viya` CLI. After the import the report is
 under **SAS Content > SAS Agentic AI Accelerator > Logging and Monitoring > LLM
-Usage Report**. The two fact sheets are loaded by `mdb load-facts`, or by the
+Usage Report**. The three fact sheets are loaded by `mdb load-facts`, or by the
 job `Data/Load-Accelerator-Tables` of the content folder
 ([The tables of the reports](./Setup-Additional-UIs.md#load-accelerator-tables)).
 
 ## Change the CAS library (default: `Public`)
 
-The report binds each of its four tables to
+The report binds each of its seven tables to
 `server=cas-shared-default;library=Public`. If your tables live in a **different
 CAS library**, repoint them one of two ways:
 
-- **`mdb builders-import --report-caslib <library>`** points `LLM_LOGS`,
-  `LLM_FACT_SHEET`, `EMBEDDING_FACT_SHEET` and `PROMPT_EXPERIMENTS` at the tables
-  of the same name in that library, through the import mapping of the transfer
+- **`mdb builders-import --report-caslib <library>`** points every table of the
+  report at the table of the same name in that library, through the import mapping of the transfer
   service. The file is not edited. The release table of the Prompt Builder
   report follows `--caslib` / `SAS_CAS_LIBRARY`. The option has not run against
   SAS Viya.
 
 - **SAS Environment Manager / SAS Visual Analytics** — import the package as-is,
   then open **LLM Usage Report** in SAS Visual Analytics and, in the **Data** pane,
-  use **Edit → Change data source** on each of the four tables to point to the same
+  use **Edit → Change data source** on each of the seven tables to point to the same
   table in your library.
 
 :::note
