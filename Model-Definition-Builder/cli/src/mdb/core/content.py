@@ -956,8 +956,9 @@ def _git(repo_root, *args) -> Optional[subprocess.CompletedProcess]:
         return None
 
 
-def commit_standing(repo_root, commit: str) -> str:
-    """Where `commit` stands to HEAD of the checkout at `repo_root`, as git
+def commit_standing(repo_root, commit: str, within: str = "HEAD") -> str:
+    """Where `commit` stands to HEAD of the checkout at `repo_root` - or to
+    the commit `within` names, such as the base of a pull request -, as git
     answers: ANCESTOR (HEAD or a commit HEAD descends from), NOT_ANCESTOR
     (the clone holds it elsewhere), NOT_HELD (`git cat-file` does not know
     it - a commit of a branch that was squashed and deleted, which a fresh
@@ -987,10 +988,31 @@ def commit_standing(repo_root, commit: str) -> str:
         return NOT_HELD
     if held.stdout.strip() != "commit":
         return OTHER_OBJECT
-    done = _git(repo_root, "merge-base", "--is-ancestor", commit, "HEAD")
+    done = _git(repo_root, "merge-base", "--is-ancestor", commit, within)
     if done is None:
         return UNKNOWN
     return {0: ANCESTOR, 1: NOT_ANCESTOR}.get(done.returncode, UNKNOWN)
+
+
+def resolve_commit(repo_root, name: str) -> str:
+    """The commit id in full that `name` - a branch, a tag, an id - names in
+    the clone at `repo_root`, or "" where it names no commit the clone holds
+    or git cannot say."""
+    # a name that starts with "-" would be read by git as an option
+    if repo_root is None or not str(name or "").strip() or str(name).startswith("-"):
+        return ""
+    done = _git(repo_root, "rev-parse", "--verify", "--quiet", f"{name}^{{commit}}")
+    return done.stdout.strip() if done is not None and done.returncode == 0 else ""
+
+
+def released_commit(package_info: bytes) -> str:
+    """The commit a release.json names, or "" where it is unreadable or
+    names none."""
+    try:
+        info = json.loads(package_info.decode("utf-8"))
+    except (ValueError, AttributeError):
+        return ""
+    return str(info.get("commit") or "") if isinstance(info, dict) else ""
 
 
 def commit_date(repo_root, commit: str) -> str:

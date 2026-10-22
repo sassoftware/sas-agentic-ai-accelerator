@@ -56,7 +56,7 @@ _NAMES_NO = {
     **dict.fromkeys(("manifest", "file", "env_file", "keys_file", "source", "options", "changelog", "csv",
                      "packages", "files", ("package-export", "out")), "file"),
     "out": "folder", "domain": "credential domain", "caslib": "CAS library", "report_caslib": "CAS library",
-    "server": "CAS server", "ids": "model id", "only": "entry name", "to": "target",
+    "server": "CAS server", "ids": "model id", "only": "entry name", "to": "target", "base": "commit",
 }
 
 
@@ -3556,6 +3556,11 @@ def package_check(
         False, "--release",
         help="The gate of a release: every difference is an error, also a difference in content against the "
              "checkout. What the release procedure and the workflow of a tag run."),
+    base: Optional[str] = typer.Option(
+        None, "--base",
+        help="With --release: the commit release.json names has to be in the history of this commit as well - "
+             "the base of a pull request. Its check runs on the merge of the branch, which still holds the "
+             "commits of the branch; the squash merge keeps none of them."),
 ):
     """Check the transfer package against this checkout - the gate a package
     passes before it ships.
@@ -3603,6 +3608,12 @@ def package_check(
     the commit's, fail in both forms. So the folder of a release is deployed
     and exported from a commit that stays in the history of what is tagged.
 
+    A pull request that replaces the package is checked on the merge of its
+    branch, and that merge holds the commits of the branch: a package
+    deployed from one of them passes there and fails on `main`, where the
+    squash merge kept none of them. `--base` names the base of the pull
+    request, and the commit release.json names has to be in its history too.
+
     One line per difference, and exit code 1 when one of them fails. `--fix`
     rewrites the hosts, the states, the option defaults and the user ids
     (`createdBy`, `modifiedBy`, `userName`) in the file; a
@@ -3613,7 +3624,18 @@ def package_check(
     from .core.packages import (NEUTRAL_USER, PLACEHOLDER_HOST, USER_FIELDS_TEXT, named_users, neutralise_users,
                                 package_findings, reset_report_defaults, sanitise_text, strip_report_states)
     ctx = Context()
+    if base is not None and not release:
+        console.print("--base is a check of a release: give it with --release. Nothing was checked.",
+                      style="red", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(2)
     manifest = _content_manifest(ctx)
+    if base is not None:
+        from .core.content import resolve_commit
+        base_commit = resolve_commit(ctx.repo, base)
+        if not base_commit:
+            console.print(f"--base {base}: this clone holds no commit of that name. Nothing was checked.",
+                          style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(2)
     if files:
         targets = [Path(f) for f in files]
     else:
@@ -3671,6 +3693,11 @@ def package_check(
             else:
                 total += 1
                 console.print(f"{path.name}: {difference.text}", markup=False, highlight=False, soft_wrap=True)
+        if base is not None:
+            outside = _outside_base(json.loads(text), manifest, base, base_commit)
+            if outside:
+                total += 1
+                console.print(f"{path.name}: {outside}", markup=False, highlight=False, soft_wrap=True)
     if total:
         console.print(f"[red]{_plain(total)} difference(s) between the package and the checkout.[/red] A host, a "
                       "per-user state, an option default or a user id is rewritten by --fix; anything else is put "
@@ -3685,6 +3712,30 @@ def package_check(
         return
     console.print(f"[green]{len(targets)} package(s): every entry of the manifest is in the package and equals "
                   "the checkout, and nothing else is in it.[/green]")
+
+
+def _outside_base(package: dict, manifest, base: str, base_commit: str) -> str:
+    """The line for a release.json whose commit is in the history of the
+    checkout and not in that of `base_commit` (`mdb package-check --base`),
+    or "". A release.json that is unreadable, names no commit in full or one
+    outside the history of the checkout has its line from the gate already."""
+    from .core import content as _content
+    from .core.packages import PackageSource
+    entry = next((e for e in manifest.entries if e.generated == _content.RELEASE_INFO), None)
+    if entry is None:
+        return ""
+    try:
+        commit = _content.released_commit(PackageSource(package).file_bytes(entry))
+    except ValueError:
+        return ""
+    repo = manifest.repo_root
+    if _content.commit_standing(repo, commit) != _content.ANCESTOR \
+            or _content.commit_standing(repo, commit, within=base_commit) == _content.ANCESTOR:
+        return ""
+    return (f"file '{entry.path}' names the commit {commit[:12]}, which is not in the history of {base} "
+            f"({base_commit[:12]}) - a commit of the branch of this pull request, which the squash merge does not "
+            f"keep, so the package fails once it is merged; deploy and export from a commit that is in the history "
+            f"of {base} already (CONTRIBUTING.md, The Transfer Package and Your Change)")
 
 
 @app.command()

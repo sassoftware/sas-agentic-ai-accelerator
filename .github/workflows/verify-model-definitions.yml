@@ -140,7 +140,10 @@ jobs:
         # A push or pull request that replaces the package file is held to
         # the gate of a release: a difference in content inside it - another
         # program, one more parameter, a host in a form - is drift for the
-        # lenient gate above and would pass until the tag.
+        # lenient gate above and would pass until the tag. A pull request is
+        # checked on the merge of its branch, which holds the commits of the
+        # branch; the squash merge keeps none of them, so there the commit
+        # release.json names has to be in the history of the base already.
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -149,6 +152,8 @@ jobs:
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE=HEAD~1; fi
           if git diff --quiet "$BASE" HEAD -- "$package"; then
             echo "$package did not change: the lenient gate above is the check."
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            mdb package-check --release --base "$BASE"
           else
             mdb package-check --release
           fi

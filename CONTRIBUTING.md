@@ -31,6 +31,7 @@ That means a change to one of those files makes the package differ from your che
 - If your change **adds, moves or removes an object of the content folder**, list it in `package-manifest.yaml`.
   The check then fails with `... is in the manifest but not in the package` until a maintainer has exported the package again; say so in the pull request.
 - If your change **replaces the package file itself**, the workflow runs the strict form below on it: a package is only replaced by an export of the checkout.
+  On the pull request it runs with `--base`, the base of the pull request: the commit `release.json` names has to be on `main` already, since a package deployed from a commit of the branch would pass there and fail once the squash merge has left that commit behind.
 - You can run the check yourself: `pip install -e "./Model-Definition-Builder/cli[dev]"`, then `mdb package-check`.
 
 For a release the gate is strict: a maintainer brings the content folder to the checkout (`mdb content-deploy`), exports it (`mdb package-export`) and runs `mdb package-check --release`, for which every difference is an error.
