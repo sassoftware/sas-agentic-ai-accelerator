@@ -16,7 +16,7 @@ python -m venv .venv
 pip install -e ".[viya]"     # keep the quotes; the [viya] extra adds sasctl for the Viya commands
 ```
 
-Requires Python 3.10 or newer. Without the `[viya]` extra `mdb` still adds, generates, validates and tests definitions; `setup`, `register`, `publish`, `ship`, `load-facts`, `options-*`, `credentials-apply` and `credentials-report` need it; `credentials-init`, `credentials-add` and `credentials-remove` edit a file and need neither the extra nor a sign-in. For air-gapped environments, download the dependency wheels on a connected machine and install with `pip install --no-index --find-links <wheel-dir> sas-mdb`.
+Requires Python 3.11 or newer. Without the `[viya]` extra `mdb` still adds, generates, validates and tests definitions; `setup`, `register`, `publish`, `ship`, `load-facts`, `options-*`, `credentials-apply` and `credentials-report` need it; `credentials-init`, `credentials-add` and `credentials-remove` edit a file and need neither the extra nor a sign-in. For air-gapped environments, download the dependency wheels on a connected machine and install with `pip install --no-index --find-links <wheel-dir> sas-mdb`.
 
 ## Adding a model
 

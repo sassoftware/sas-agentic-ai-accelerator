@@ -107,9 +107,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is what SAS Viya's compute Python ships; 3.12 covers the
-        # setuptools/distutils shim sasctl needs on newer interpreters
-        python-version: ["3.11", "3.12"]
+        # 3.11, the oldest mdb supports, is the Python of SAS Viya's compute
+        # server and of the SCR image the score code runs in; 3.14, the
+        # newest, is what an admin's machine runs mdb with - and it needs the
+        # setuptools/distutils shim sasctl wants from 3.12 on
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -121,7 +123,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install mdb
-        run: pip install -e "./Model-Definition-Builder/cli[dev]"
+        # with the [viya] extra (sasctl): the tests of the commands that sign
+        # in to SAS Viya skip without it - 85 of them did before this
+        run: pip install -e "./Model-Definition-Builder/cli[dev,viya]"
       - name: Drift gate - committed assets match their manifests
         run: mdb generate --all --check
       - name: Validate managed definitions

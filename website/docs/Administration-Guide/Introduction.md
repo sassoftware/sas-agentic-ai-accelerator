@@ -14,7 +14,7 @@ Setting everything up will require you to have the following permissions or some
 
 Please follow these steps, step by step - in order to complete this setup you need both the ability to create a new Repository in the SAS Model Manager (this requires SAS Administrators rights by default), be able to modify the SAS Viya deployment, be able to access a Container Registry and be able to deploy containers in Kubernetes - usually this setup requires both a SAS administrator and a Kubernetes administrator.
 In order to be able to run this you will need access to a machine with the following tools available:
-- Python 3.10 or newer, for the `mdb` command line (the [Model Definition Builder](./Model-Definition-Builder.md)) that registers and publishes the models
+- Python 3.11 or newer, for the `mdb` command line (the [Model Definition Builder](./Model-Definition-Builder.md)) that registers and publishes the models
 - kubectl
 - SAS Viya CLI with the authorization, identities, models and transfer plugins installed
 
