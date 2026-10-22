@@ -473,6 +473,9 @@ def test_the_release_procedure_on_a_main_that_takes_squash_merges_only(tmp_path,
     _git(site.host, "merge", "-q", "--no-ff", "-m", "the merge the workflow checks", "origin/release/package")
     code, text = gate(site.host, "--release")
     assert code == 0, text
+    #    ... with the base of the pull request, as the workflow runs it there
+    code, text = gate(site.host, "--release", "--base", "origin/main")
+    assert code == 0, text
     squashed = _squash_merge(site, "release/package", "The package of the release (#2)")
     #    ... and the workflow of the push to main checks the commit the squash made
     code, text = gate(site.host, "--release")
@@ -511,7 +514,8 @@ def test_a_deploy_from_the_branch_of_a_pull_request_fails_the_tag(tmp_path, gate
     request passes - the commit is in the history of the branch - and the
     tag fails: the squash made another commit, and neither the maintainer's
     `main` nor the clone of the tag has the one release.json names in its
-    history."""
+    history. With `--base`, the base of the pull request, the check of the
+    pull request fails already."""
     site = _site(tmp_path)
     _git(site.owner, "checkout", "-q", "feature/release")
     deployed = _deploy_and_export(site.owner)                    # from the tip of the branch
@@ -520,6 +524,19 @@ def test_a_deploy_from_the_branch_of_a_pull_request_fails_the_tag(tmp_path, gate
     _git(site.owner, "commit", "-q", "-m", "the package of the release")
     assert gate(site.owner, "--release")[0] == 0                 # on the branch, and so in its pull request
     _git(site.owner, "push", "-q", "origin", "feature/release")
+    #    the merge the workflow of the pull request checks holds the commit as well -
+    #    only the base of the pull request tells (PR #51, 2026-10-22)
+    _git(site.host, "fetch", "-q", "origin")
+    _git(site.host, "checkout", "-q", "-B", "pull-request-merge", "origin/main")
+    _git(site.host, "merge", "-q", "--no-ff", "-m", "the merge the workflow checks", "origin/feature/release")
+    assert gate(site.host, "--release")[0] == 0
+    base = _git(site.host, "rev-parse", "origin/main")
+    code, text = gate(site.host, "--release", "--base", base)
+    assert code == 1
+    assert (f"file 'release.json' names the commit {deployed[:12]}, which is not in the history of {base} "
+            f"({base[:12]}) - a commit of the branch of this pull request, which the squash merge does not keep") \
+        in text
+    assert "1 difference(s) between the package and the checkout" in text
     _squash_merge(site, "feature/release", "Release work with the package (#1)")
     _git(site.owner, "fetch", "-q", "--prune", "origin")
     _git(site.owner, "switch", "-q", "--detach", "origin/main")
@@ -532,6 +549,42 @@ def test_a_deploy_from_the_branch_of_a_pull_request_fails_the_tag(tmp_path, gate
     code, text = gate(_tag_clone(site, "2.3.0"), "--release")
     assert code == 1
     assert f"file 'release.json' names the commit {deployed[:12]}, which this clone does not hold" in text
+
+
+@needs_git
+def test_base_is_refused_without_release_and_for_a_name_of_no_commit(tmp_path, gate):
+    """--base is part of the gate of a release, and a base the clone does not
+    hold - a branch that was not fetched, a typo - is no answer either way:
+    each ends with exit code 2 before anything is checked."""
+    site = _site(tmp_path)
+    _git(site.owner, "switch", "-q", "--detach", "origin/main")
+    _deploy_and_export(site.owner)
+    code, text = gate(site.owner, "--base", "origin/main")
+    assert code == 2 and "--base is a check of a release: give it with --release. Nothing was checked." in text
+    for name in ("origin/no-such-branch", "-x"):
+        code, text = gate(site.owner, "--release", "--base", name)
+        assert code == 2 and f"--base {name}: this clone holds no commit of that name. Nothing was checked." in text
+    code, text = gate(site.owner, "--release", "--base", "")
+    assert code == 2 and "--base is empty" in text
+    # the commit that is checked out is in the history of main, and main is the base
+    code, text = gate(site.owner, "--release", "--base", "origin/main")
+    assert code == 0, text
+
+
+def test_the_workflow_gives_the_base_of_a_pull_request_to_the_strict_gate():
+    """PR #51 (2026-10-22): a package deployed from the branch of a pull
+    request passed the strict gate of the pull request and failed on main.
+    For a pull request the step that runs the strict gate hands it the base."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "verify-model-definitions.yml"
+    if not workflow.is_file():
+        pytest.skip(f"{workflow} is not in this checkout")
+    text = workflow.read_text(encoding="utf-8").replace("\r\n", "\n")
+    steps = re.split(r"\n      - (?=name:|uses:)", text.split("    steps:", 1)[1])
+    step = next(step for step in steps if "git diff --quiet" in step)
+    assert re.search(r'elif \[ "\$GITHUB_EVENT_NAME" = pull_request \]; then\n'
+                     r'\s+mdb package-check --release --base "\$BASE"\n\s+else\n', step), step
+    procedure = " ".join((REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8").split())
+    assert "On the pull request it runs with `--base`" in procedure
 
 
 def test_a_change_to_the_procedure_text_starts_the_workflow():

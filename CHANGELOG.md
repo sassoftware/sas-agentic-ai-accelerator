@@ -2,11 +2,23 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.3.1] - 2026-10-22
+
+The LLM Usage Report counts every kind of model call and gains an Overview, a Decision Models and a RAG page. `mdb` needs Python 3.11 or newer.
+
+### Upgrading from 2.3.0
+
+Only the LLM Usage Report and `mdb` change. A site without the logging chain takes the new report with the import of step 2 and is done.
+
+1. Update the checkout to 2.3.1 and reinstall the CLI under Python 3.11 or newer: `pip install -e "Model-Definition-Builder/cli[viya]"`.
+2. `mdb builders-import`, which keeps the options of the Prompt Builder report. It replaces the LLM Usage Report: save a copy first if you changed it on your site.
+3. Load the three tables the report binds now into its CAS library: `DECISION_FACT_SHEET` with `mdb load-facts` or the job `Load-Accelerator-Tables`, `RAG_SETUPS` and `RAG_RUNS` with *LLM - Get All Prompts* or `Get-All-Prompts.sas`. Then open [Start Here](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#start-here) and fix every line that says `missing`.
+4. Only where the logging chain runs as a scheduled job: give it a compute context that runs as the user, such as *SAS Studio compute context* ([Running the Parser](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&-Monitoring#running-the-parser)).
 
 ### Added
 
 - **LLM Usage Report: Overview, Decision Models and RAG pages.** A new first page explains LLMs, decision models and RAG, with calls, cost, failed calls and response time per kind of model. *Decision Models* shows confidence, answers below 0.7, experiment accuracy per template and model, and every decision template with its calls. *RAG* shows grounded calls, embeddings, and per setup an ingestion summary with its calls. Templates and setups that were never called are listed too. All metrics are calculated items of the report.
+- **`mdb package-check --release --base <commit>`.** The commit `release.json` names has to be in the history of the base as well. The workflow gives it the base of a pull request that replaces the package, so a package deployed from a commit of the branch fails there, not on `main` after the squash merge.
 
 ### Changed
 
