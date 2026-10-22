@@ -641,8 +641,8 @@ def test_a_project_without_a_model_is_missing_and_says_how_models_get_into_it(mo
 
 @pytest.mark.parametrize("table", harness.CHAIN_TABLES)
 def test_a_table_of_the_logging_chain_that_is_not_there_is_missing(monkeypatch, tmp_path, table):
-    """Open item 18 of integrate-18: DECISION_FACT_SHEET and the four tables Get-All-Prompts.sas writes beside
-    PROMPT_EXPERIMENTS were not looked at. They stand in a section of their own, behind the tables of the reports."""
+    """Open item 18 of integrate-18: the tables Get-All-Prompts.sas writes beside PROMPT_EXPERIMENTS were not looked
+    at. Those no report binds stand in a section of their own, behind the tables of the reports."""
     site = Site()
     del site.tables[table]
     lines, _ = lines_of(monkeypatch, tmp_path, site)
@@ -662,7 +662,7 @@ def test_a_cas_server_of_another_name_is_one_line_and_its_tables_are_not_checked
 
     server = one(lines, "CAS server cas-of-the-site")
     assert (server["state"], server["found"]) == (MISSING, "not among the CAS servers: cas-shared-default")
-    assert {state for what, state in tables.items() if what != "CAS server cas-of-the-site"} == {NOT_CHECKED} and len(tables) == 6
+    assert {state for what, state in tables.items() if what != "CAS server cas-of-the-site"} == {NOT_CHECKED} and len(tables) == 9
 
 
 def test_the_credential_domain_is_the_one_the_builder_option_names(monkeypatch, tmp_path):
@@ -812,9 +812,10 @@ def test_a_session_of_another_user_that_is_refused_everything_gets_one_line(monk
     site = Site()
     site.refuse("/", 401)
     lines, _ = lines_of(monkeypatch, tmp_path, site)
-    # fifteen as on the page that was measured, and the five tables of the logging chain this round added
+    # fifteen as on the page that was measured, and the five tables of Get-All-Prompts.sas and the decision fact sheet
+    # that round 19 added (three of them are tables of the LLM Usage Report now)
     assert [entry["state"] for entry in lines].count(NOT_CHECKED) == 20 and [entry["state"] for entry in lines].count(OK) == 13
-    assert [entry["todo"] for entry in lines].count(ASK) == 17        # the page of before: 12, and the five tables of the logging chain
+    assert [entry["todo"] for entry in lines].count(ASK) == 17        # the page of before: 12, and those five tables
 
     done = run(monkeypatch, tmp_path, refusing("/", 401), harness.SERVICE_ACCOUNT_SESSION)
     said = ("SAS Viya refused every request of this page (HTTP 401): its SAS session runs as another user than you, in the compute "

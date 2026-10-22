@@ -4,9 +4,19 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
+### Added
+
+- **LLM Usage Report: Overview, Decision Models and RAG pages.** A new first page explains LLMs, decision models and RAG, with calls, cost, failed calls and response time per kind of model. *Decision Models* shows confidence, answers below 0.7, experiment accuracy per template and model, and every decision template with its calls. *RAG* shows grounded calls, embeddings, and per setup an ingestion summary with its calls. Templates and setups that were never called are listed too. All metrics are calculated items of the report.
+
 ### Changed
 
 - **`mdb` needs Python 3.11 or newer** (was 3.10). CI tests 3.11 and 3.14, with `sasctl` installed.
+- **The LLM Usage Report counts every kind of call.** `LLM_LOGS` is left-joined to the three fact sheets; the inner join with `LLM_FACT_SHEET` dropped decision and embedding calls. The LLM pages count LLM calls only.
+- **The report binds `DECISION_FACT_SHEET`, `RAG_SETUPS` and `RAG_RUNS` as well.** *Start Here* checks them as tables of the report, and `--report-caslib` points them at the CAS library like the other four.
+
+### Fixed
+
+- **The LLM Usage Report no longer hides newer calls.** Two filters fixed to the data the report was built on (input tokens 1 to 8,946 in the detail table, total tokens 22 to 273 in the prompt treemap) are removed.
 
 ## [2.3.0] - 2026-10-21
 
