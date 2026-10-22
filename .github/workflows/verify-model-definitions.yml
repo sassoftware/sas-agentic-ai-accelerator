@@ -107,9 +107,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is what SAS Viya's compute Python ships; 3.12 covers the
-        # setuptools/distutils shim sasctl needs on newer interpreters
-        python-version: ["3.11", "3.12"]
+        # 3.11, the oldest mdb supports, is the Python of SAS Viya's compute
+        # server and of the SCR image the score code runs in; 3.14, the
+        # newest, is what an admin's machine runs mdb with - and it needs the
+        # setuptools/distutils shim sasctl wants from 3.12 on
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v7
         with:
