@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from mdb import cli
+from mdb.core.drift import LOCK_FILENAME, _unstamped
 from mdb.core.facts import COLUMNS_BY_KIND, empty_sheet
 from mdb.core.generator import (
     GenerationError, drop_family_value_maps, effective_score_file, render_assets,
@@ -48,6 +49,16 @@ NEW_LLMS = {"gpt_6_luna": ("openai", "gpt-6-luna"), "gpt_61_sol": ("openai", "gp
 
 def _lf(path: Path) -> bytes:
     return path.read_bytes().replace(b"\r\n", b"\n")
+
+
+def _comparable(name: str, content: bytes):
+    """A generated file as mdb compares it (2.3.2): a score file without the version of mdb in its first line, a
+    lock file without the mdb that wrote it - a new release of mdb rewrites neither."""
+    if name == LOCK_FILENAME:
+        lock = json.loads(content)
+        lock.pop("generator", None)
+        return lock
+    return _unstamped(content)
 
 
 def _printed(monkeypatch) -> io.StringIO:
@@ -351,8 +362,8 @@ def test_mdb_add_offline_writes_the_committed_definition(tmp_path, monkeypatch, 
     result = CliRunner().invoke(cli.app, ["add", *args])
     assert result.exit_code == 0, out.getvalue()
     written = tmp_path / "defs" / committed.parent.name / model_id
-    files = {p.name: _lf(p) for p in written.iterdir() if p.is_file()}
-    assert files == {p.name: _lf(p) for p in committed.iterdir() if p.is_file()}
+    files = {p.name: _comparable(p.name, _lf(p)) for p in written.iterdir() if p.is_file()}
+    assert files == {p.name: _comparable(p.name, _lf(p)) for p in committed.iterdir() if p.is_file()}
 
 
 # -- every committed definition regenerates byte for byte ----------------------
@@ -371,7 +382,7 @@ def test_every_committed_definition_regenerates_byte_for_byte(core, repo_root):
             if name in manifest.generation.overrides:
                 continue
             # LF as the drift gate compares: a Windows checkout (core.autocrlf) holds CRLF
-            assert _lf(folder / name) == content, f"{folder.name}/{name} differs from a fresh render"
+            assert _unstamped(_lf(folder / name)) == _unstamped(content), f"{folder.name}/{name} differs from a fresh render"
 
 
 def test_only_the_gpt6_definitions_carry_a_value_map(repo_root):
