@@ -651,7 +651,8 @@ def test_a_table_of_the_logging_chain_that_is_not_there_is_missing(monkeypatch, 
     assert [entry["what"].split(" ")[0] for entry in chain] == ["Public." + name for name in harness.CHAIN_TABLES]
     entry = next(entry for entry in chain if entry["what"].startswith(f"Public.{table} "))
     assert (entry["state"], entry["found"]) == (MISSING, "not in the CAS library")
-    assert entry["todo"] == ("Run the job Load-Accelerator-Tables of the folder Data in this content root, or mdb load-facts."
+    assert entry["todo"] == ("Run mdb load-facts, or the job Load-Accelerator-Tables of the folder Data in this content root, which "
+                             "loads the fact sheets of the release, not those of definitions of your own."
                              if table == "DECISION_FACT_SHEET" else "Run Get-All-Prompts.sas or the step LLM - Get All Prompts.")
     assert all(other["state"] == OK for other in chain if other is not entry)
 

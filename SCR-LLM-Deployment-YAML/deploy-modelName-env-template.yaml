@@ -133,6 +133,10 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # a model that reasons may answer after minutes (runtime.timeout_s 300 in
+    # its definition.yaml); the nginx default of 60 s would end the request first
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:
   ingressClassName: nginx
   tls:

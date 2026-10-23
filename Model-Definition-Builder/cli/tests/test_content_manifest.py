@@ -726,7 +726,7 @@ def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sit
         "_contextName", "contentRoot", "caslib", "casServer", "credentialDomain", "repositoryName", "llmProject",
         "embeddingProject", "decisionProject", "computeContexts")
     assert content.site_settings(shipped.find("Data/Load-Accelerator-Tables", "jobDefinition")) == (
-        "_contextName", "contentRoot", "caslib", "releaseTable")
+        "_contextName", "contentRoot", "caslib", "releaseTable", "factSheets")
     release_owned = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
                      if not p["siteSetting"]}
     assert release_owned == {"_action", "_output_type", "guideUrl"}

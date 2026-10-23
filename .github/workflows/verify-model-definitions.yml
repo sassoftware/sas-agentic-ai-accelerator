@@ -176,7 +176,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: mdb package-check --release
       - name: mdb test suite
-        run: python -m pytest Model-Definition-Builder/cli/tests -q
+        # -n auto (pytest-xdist, of the [dev] extra) runs the tests of every
+        # suite on all cores of the runner; no test depends on another
+        run: python -m pytest Model-Definition-Builder/cli/tests -q -n auto
       - name: RAG runtime test suite
         # rag_core is pure Python plus pandas; the store adapters skip their
         # tests when the database drivers are absent. pypdfium2 is installed
@@ -185,20 +187,20 @@ jobs:
         # want of an extractor give the registry what they need themselves.
         run: |
           pip install pandas requests pypdfium2 pytest
-          python -m pytest SAS-Viya-Integrations/RAG/tests -q
+          python -m pytest SAS-Viya-Integrations/RAG/tests -q -n auto
       - name: Log parser test suite
         # The parser's Python runs outside of SAS on made-up logs (pandas is
         # installed by the step above); the same suite fails when the code file
         # and the custom step no longer hold the same program.
-        run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q
+        run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q -n auto
       - name: Setup programs test suite
         # Start-Here.sas and Load-Accelerator-Tables.sas: the Python of the
         # page runs against a SAS Viya system that is made up, and the columns
         # of the release table are held against the ones mdb writes - hence
         # the mdb installed above.
-        run: python -m pytest SAS-Viya-Integrations/Setup/tests -q
+        run: python -m pytest SAS-Viya-Integrations/Setup/tests -q -n auto
       - name: Prompt optimization job test suite
         # The Python program of Optimize-Prompt-DSPy.sas runs against stand-ins
         # for SAS, SAS Viya and dspy: what it checks before its first model
         # call, and how it writes an HTTP error.
-        run: python -m pytest SAS-Viya-Integrations/Prompt-Optimization/tests -q
+        run: python -m pytest SAS-Viya-Integrations/Prompt-Optimization/tests -q -n auto

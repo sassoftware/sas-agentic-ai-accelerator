@@ -335,7 +335,7 @@ def test_the_include_stands_in_open_code():
     assert text.count("%include") == 1
 
     find = macro("_lat_find_fact_sheets")
-    in_order(find, "%if &_lat_ready. EQ 1 %then %do;", "%if %sysfunc(fexist(_latlfs)) EQ 1 %then %let _lat_found = 1;",
+    in_order(find, "%if &_lat_ready. EQ 1 and &factSheets. EQ 1 %then %do;", "%if %sysfunc(fexist(_latlfs)) EQ 1 %then %let _lat_found = 1;",
              "%if &_lat_found. NE 1 %then %do;", "filename _latlfs temp;", "file _latlfs;")
     stub = re.search(r"put '(.*)';", find).group(1)
     assert stub.startswith("* ") and stub.endswith(";") and not set(stub[:-1]) & set("%&'\";")
@@ -350,7 +350,8 @@ def test_the_parameters_of_the_job_and_what_the_program_takes_without_them():
     text = code()
     defaults = dict(re.findall(r"^%_lat_default\((\w+), (.*)\);$", text, flags=re.MULTILINE))
 
-    assert defaults == {"contentRoot": "/SAS Agentic AI Accelerator", "caslib": "Public", "releaseTable": "ACCELERATOR_RELEASES"}
+    assert defaults == {"contentRoot": "/SAS Agentic AI Accelerator", "caslib": "Public", "releaseTable": "ACCELERATOR_RELEASES",
+                        "factSheets": "1"}
     assert ("%macro _lat_default(name, value);\n    %if not %symexist(&name.) %then %do;\n        %global &name.;\n"
             "        %let &name. = &value.;\n    %end;\n%mend _lat_default;") in text
     header = program().split("*/")[0]
@@ -379,11 +380,11 @@ def test_a_session_that_does_not_run_as_the_user_who_started_the_job_is_one_note
     assert not re.search(r"&sysuserid|&SYS_COMPUTE_SESSION_OWNER", text, flags=re.IGNORECASE)
     # neither user is written: every line of the log is a text of the program, and one a SAS statement takes
     written = re.findall(r"putLog (.*);", check)
-    assert len(written) == 5 and all(re.fullmatch(r"'[^']*'", line) for line in written)
+    assert len(written) == 6 and all(re.fullmatch(r"'[^']*'", line) for line in written)
     assert all(len(line) < 262 and not set(line[1:-1]) & set("%&;\"") for line in written)
     # it is a NOTE: the job is the job it was, with its state decided by the tables at its end
-    assert [line[1:6] for line in written] == ["ERROR", "ERROR", "ERROR", "NOTE:", "NOTE-"]
-    assert check.count("call symputx('_lat_ready', '0');") == 3 and "_lat_failed" not in check
+    assert [line[1:6] for line in written] == ["ERROR", "ERROR", "ERROR", "ERROR", "NOTE:", "NOTE-"]
+    assert check.count("call symputx('_lat_ready', '0');") == 4 and "_lat_failed" not in check
 
 
 def test_a_parameter_that_would_be_read_as_code_is_refused_before_it_stands_in_a_statement():
@@ -398,8 +399,11 @@ def test_a_parameter_that_would_be_read_as_code_is_refused_before_it_stands_in_a
     assert check.count("""findc(_lat_value, '"''%&;') > 0""") == 2
     assert "nvalid(strip(_lat_value), 'v7') = 0" in check and "lengthn(_lat_value) > 28" in check
     errors = re.findall(r"putLog '(ERROR: [^']*)';", check)
-    assert len(errors) == 3 and all(error.endswith("nothing was read or written.") for error in errors)
-    assert check.count("call symputx('_lat_ready', '0');") == 3
+    assert len(errors) == 4 and all(error.endswith("nothing was read or written.") for error in errors)
+    assert check.count("call symputx('_lat_ready', '0');") == 4
+    # factSheets is 1 or 0 and nothing else; a value with blanks around it is taken without them
+    assert "_lat_value = symget('factSheets');" in check and "if strip(_lat_value) not in ('0', '1') then do;" in check
+    assert "call symputx('factSheets', '1');" in check and "else call symputx('factSheets', strip(_lat_value));" in check
     # every macro of the program leaves at once for a run that was refused
     for name in ("_lat_release_table", "_lat_look"):
         assert macro(name).split("\n")[1 if name == "_lat_look" else 2].strip() == "%if &_lat_ready. NE 1 %then %return;", name

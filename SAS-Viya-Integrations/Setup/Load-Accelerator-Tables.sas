@@ -92,6 +92,13 @@
  *                 a table of that name that lacks a column of one is left as it
  *                 is - the table in memory, or, where none is in memory, the
  *                 file a table of that name was saved to in the CAS library
+ *   factSheets    1 (default) loads the three fact sheets as well; 0 leaves
+ *                 the fact sheet tables as they are. The files of the folder
+ *                 Data are the sheets of the release: a site that keeps
+ *                 definitions of its own loads its sheets with mdb load-facts
+ *                 and runs the job with 0, which would otherwise replace them.
+ *                 With 0 a fact sheet that is not in the CAS library is a
+ *                 WARNING, and only the release table decides the job.
  *
  * lat is short for Load Accelerator Tables
  ******************************************************************************/
@@ -108,6 +115,7 @@
 %_lat_default(contentRoot, /SAS Agentic AI Accelerator);
 %_lat_default(caslib, Public);
 %_lat_default(releaseTable, ACCELERATOR_RELEASES);
+%_lat_default(factSheets, 1);
 %sysmacdelete _lat_default;
 
 /* An error for one table must not leave a batch session checking syntax
@@ -159,6 +167,13 @@ data _null_;
         call symputx('releaseTable', 'ACCELERATOR_RELEASES');
         call symputx('_lat_ready', '0');
     end;
+    _lat_value = symget('factSheets');
+    if strip(_lat_value) not in ('0', '1') then do;
+        putLog 'ERROR: Load-Accelerator-Tables: the parameter factSheets is neither 1 nor 0, nothing was read or written.';
+        call symputx('factSheets', '1');
+        call symputx('_lat_ready', '0');
+    end;
+    else call symputx('factSheets', strip(_lat_value));
     /* Whose session this is. SAS Job Execution names the user a session was
        started for; a session without that name - the program run in SAS
        Studio - is not asked. The two users are compared as the persons they
@@ -577,7 +592,8 @@ filename _latlfs temp;
 %macro _lat_find_fact_sheets;
     %local _lat_found;
     %let _lat_found = 0;
-    %if &_lat_ready. EQ 1 %then %do;
+    %if &_lat_ready. EQ 1 and &factSheets. EQ 0 %then %put NOTE: Load-Accelerator-Tables: factSheets is 0, the three fact sheet tables were left as they are.;
+    %if &_lat_ready. EQ 1 and &factSheets. EQ 1 %then %do;
         /* the fileref is assigned only where the Folders service did not say that the folder is not there */
         %_lat_ask_folder(/Logging and Monitoring);
         %if "&SYS_PROCHTTP_STATUS_CODE." NE "404" %then %do;
@@ -606,9 +622,14 @@ filename _latlfs clear;
 
 /* ---- What is there at the end -------------------------------------------------
    The job is a failed job when one of the four tables is not in the CAS
-   library now - whatever this run loaded, left as it was or could not load. */
+   library now - whatever this run loaded, left as it was or could not load.
+   With factSheets 0 the job loads no fact sheet, so one that is not there is
+   a WARNING and only the release table decides the job. */
 %macro _lat_look;
     %if &_lat_ready. NE 1 %then %return;
+    %local _lat_sheets _lat_rest _lat_i _lat_name;
+    %let _lat_sheets = ;
+    %let _lat_rest = ;
     /* every table, until the step below answered for each: a step that halts sets nothing */
     %let _lat_missing = &releaseTable. LLM_FACT_SHEET EMBEDDING_FACT_SHEET DECISION_FACT_SHEET;
     proc cas;
@@ -620,11 +641,27 @@ filename _latlfs clear;
         end;
         call symputx("_lat_missing", missing);
     quit;
+    %if &factSheets. EQ 0 and %length(&_lat_missing.) GT 0 %then %do;
+        %do _lat_i = 1 %to %sysfunc(countw(&_lat_missing., %str( )));
+            %let _lat_name = %scan(&_lat_missing., &_lat_i., %str( ));
+            %if %upcase(&_lat_name.) NE %upcase(&releaseTable.) %then %do;
+                %let _lat_sheets = &_lat_sheets. &_lat_name.;
+            %end;
+            %else %do;
+                %let _lat_rest = &_lat_rest. &_lat_name.;
+            %end;
+        %end;
+        %let _lat_missing = &_lat_rest.;
+        %if %length(&_lat_sheets.) GT 0 %then %put WARNING: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run, or CAS did not say whether they are: &_lat_sheets.. With factSheets 0 the job loads no fact sheet: mdb load-facts loads them.;
+    %end;
     %if %length(&_lat_missing.) GT 0 %then %do;
         %put ERROR: Load-Accelerator-Tables: not in the CAS library &caslib. at the end of the run, or CAS did not say whether they are: &_lat_missing.. The lines above say why.;
         %let _lat_failed = 1;
     %end;
-    %else %put NOTE: Load-Accelerator-Tables: &releaseTable., LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are in the CAS library &caslib..;
+    %else %do;
+        %if %length(&_lat_sheets.) GT 0 %then %put NOTE: Load-Accelerator-Tables: &releaseTable. is in the CAS library &caslib..;
+        %else %put NOTE: Load-Accelerator-Tables: &releaseTable., LLM_FACT_SHEET, EMBEDDING_FACT_SHEET and DECISION_FACT_SHEET are in the CAS library &caslib..;
+    %end;
 %mend _lat_look;
 %_lat_look;
 %sysmacdelete _lat_look;
@@ -673,7 +710,10 @@ filename _latlfs clear;
             put '<p class="summary">A parameter of the job was refused, so nothing was read or written. The ERROR line of the log names it.</p>';
         end;
         else do;
-            if lengthn(symget('_lat_missing')) = 0 then
+            if lengthn(symget('_lat_missing')) = 0 and symget('factSheets') = '0' then
+                _lat_line = '<p class="summary">The release table is in the CAS library ' || strip(_lat_lib)
+                    || '. The job left the fact sheets as they are (factSheets 0): mdb load-facts loads them.</p>';
+            else if lengthn(symget('_lat_missing')) = 0 then
                 _lat_line = '<p class="summary">The four tables are in the CAS library ' || strip(_lat_lib) || '.</p>';
             else _lat_line = '<p class="summary">The job failed: not in the CAS library ' || strip(_lat_lib)
                 || ' at the end of the run, or CAS did not say whether they are: ' || strip(htmlencode(strip(symget('_lat_missing')))) || '.</p>';

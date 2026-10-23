@@ -292,6 +292,7 @@ entries:
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library, siteSetting: true}
       - {name: releaseTable, type: character, default: ACCELERATOR_RELEASES, label: Release table, siteSetting: true}
+      - {name: factSheets, type: character, default: "1", label: Load the fact sheets (1 or 0), siteSetting: true}
 
   # ---- Decisions: the Call LLM node, under one id on every site ----------------
   # A decision that holds the Call LLM node only. It is not meant to be

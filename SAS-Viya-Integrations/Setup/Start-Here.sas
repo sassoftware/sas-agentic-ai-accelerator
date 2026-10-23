@@ -168,14 +168,18 @@ REPORTS = (('Prompt Builder', 'Prompt Builder/Prompt Builder'),
            ('LLM Usage Report', 'Logging and Monitoring/LLM Usage Report'))
 BUILDER_REPORT = 'Prompt Builder/Prompt Builder'
 LOADER_JOB = 'Run the job Load-Accelerator-Tables of the folder Data in this content root'
+# The fact sheets of the folder Data are the ones of the release: where a site keeps definitions of its own,
+# mdb load-facts loads its sheets, and the job would replace them
+FACTS_TODO = ('Run mdb load-facts, or the job Load-Accelerator-Tables of the folder Data in this content root,'
+              ' which loads the fact sheets of the release, not those of definitions of your own.')
 # The CAS tables the two reports bind, the report that reads each, and what loads it
 REPORT_TABLES = (
     ('ACCELERATOR_RELEASES', 'Prompt Builder', LOADER_JOB + ', or mdb load-releases.'),
     ('LLM_LOGS', 'LLM Usage Report', 'Collect the logs of the containers and run Log-Parser-Code.sas or the step LLM - Log Parser.'),
     ('PROMPT_EXPERIMENTS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
-    ('LLM_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
-    ('EMBEDDING_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
-    ('DECISION_FACT_SHEET', 'LLM Usage Report', LOADER_JOB + ', or mdb load-facts.'),
+    ('LLM_FACT_SHEET', 'LLM Usage Report', FACTS_TODO),
+    ('EMBEDDING_FACT_SHEET', 'LLM Usage Report', FACTS_TODO),
+    ('DECISION_FACT_SHEET', 'LLM Usage Report', FACTS_TODO),
     ('RAG_SETUPS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
     ('RAG_RUNS', 'LLM Usage Report', 'Run Get-All-Prompts.sas or the step LLM - Get All Prompts.'),
 )

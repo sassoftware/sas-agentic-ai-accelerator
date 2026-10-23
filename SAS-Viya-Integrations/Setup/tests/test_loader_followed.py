@@ -52,7 +52,7 @@ def columns():
 
 
 def symbols(**more):
-    found = {"contentRoot": ROOT, "caslib": "Public", "releaseTable": RELEASES, "_lat_ready": "1", "_lat_failed": "0",
+    found = {"contentRoot": ROOT, "caslib": "Public", "releaseTable": RELEASES, "factSheets": "1", "_lat_ready": "1", "_lat_failed": "0",
              "SYS_PROCHTTP_STATUS_CODE": "an answer of an earlier request",
              "_lat_vars": re.search(r"^%let _lat_vars = (.*);$", program(), flags=re.MULTILINE).group(1)}
     found.update(more)

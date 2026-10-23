@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +102,8 @@ class EnsureResult:
     repository_id: Optional[str] = None
     repository_folder_id: Optional[str] = None
     project_id: Optional[str] = None  # the project for the requested kind
+    # what differs on an object that already existed and is left as it is
+    notes: list[str] = field(default_factory=list)
 
 
 def _attr(obj, name):
@@ -153,6 +155,7 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
     from sasctl.services import model_repository as mr
 
     created: list[str] = []
+    notes: list[str] = []
     repo_id = repo_folder = None
     existing_repo = mr.get_repository(REPOSITORY)
     if existing_repo is None:
@@ -203,6 +206,13 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
         project_id = _attr(project, "id")
     else:
         project_id = _attr(existing_project, "id")
+        # A project the scripts before mdb created keeps what they gave it: the
+        # Embedding Model Project of 0.1.34 has the target variable 'response'.
+        # mdb changes no project it did not create, so it says so.
+        target = _attr(existing_project, "targetVariable")
+        if target and target != meta["target_variable"]:
+            notes.append(f"project '{meta['project']}' has the target variable '{target}', the one mdb creates it with "
+                         f"is '{meta['target_variable']}' - left as it is; change it in SAS Model Manager to match.")
         # The responsible party is the project-level owner that actually takes
         # effect; refresh it on an already-existing project too (best-effort).
         if responsible_party:
@@ -211,7 +221,7 @@ def ensure_repository_and_project(session, kind: str, core, responsible_party: s
             except Exception:
                 pass
     return EnsureResult(created=created, repository_id=repo_id,
-                        repository_folder_id=repo_folder, project_id=project_id)
+                        repository_folder_id=repo_folder, project_id=project_id, notes=notes)
 
 
 def authorization_rules_text(repository_id: Optional[str], repository_folder_id: Optional[str]) -> str:

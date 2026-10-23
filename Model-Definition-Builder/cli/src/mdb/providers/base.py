@@ -110,6 +110,18 @@ PROVIDER_EFFORT_LADDER = ("none", "minimal", "low", "medium", "high", "xhigh", "
 #: The max_tokens default of a model that thinks inside its output budget and
 #: takes no sampling option (Claude 5.5).
 ADAPTIVE_MAX_TOKENS = 4000
+#: The provider call timeout (runtime.timeout_s) of a model that reasons
+#: before it answers: a long answer at a high effort takes minutes, and the
+#: 60 seconds of other models cut it off. It stays below the 600 seconds a
+#: manifested prompt waits for the container (LLMCONTAINERTIMEOUT).
+REASONING_TIMEOUT_S = 300
+
+
+def call_timeout(cm: "CatalogModel") -> int:
+    """runtime.timeout_s for a new definition of `cm`."""
+    if cm.kind == "llm" and (cm.reasoning or cm.adaptive_thinking):
+        return REASONING_TIMEOUT_S
+    return RuntimeBlock.model_fields["timeout_s"].default
 
 
 def effort_value_map(accepted: Optional[list[str]]) -> Optional[dict[str, str]]:
@@ -295,7 +307,8 @@ class ProviderAdapter(ABC):
                 else AuthBlock(mode="none"),
             ),
             runtime=RuntimeBlock(template=self.score_template_for(cm),
-                                 requirements_profile=self.requirements_profile),
+                                 requirements_profile=self.requirements_profile,
+                                 timeout_s=call_timeout(cm)),
             options=self.default_options(cm),
             tags=TagsBlock(
                 size_class={"embedding": "Embedding", "decision": "Decision"}.get(cm.kind, "LLM"),

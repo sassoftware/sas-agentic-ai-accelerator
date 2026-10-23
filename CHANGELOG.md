@@ -2,6 +2,36 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+A new `mdb` no longer makes a site's own definitions stale, reasoning models get 300 seconds per call, and Load-Accelerator-Tables can leave a site's fact sheets alone.
+
+### Upgrading from 2.3.1
+
+Steps 1 and 2 are for every site; step 3 only where reasoning models are deployed.
+
+1. Update the checkout and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`. The first `mdb generate` of a definition rewrites its `.mdb-lock.json` once, without the version of `mdb`.
+2. `mdb builders-import`. A site that keeps definitions of its own loads its fact sheets with `mdb load-facts` and runs the job `Load-Accelerator-Tables` with `factSheets=0` from now on.
+3. Only for the reasoning models you deploy (`azure_openai_env`, `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5`, `gpt_5_mini`, `gpt_56_sol`, `gpt_6_luna`, `gpt_61_sol`): `mdb register <id> --update` and `mdb publish <id> --wait`, then `mdb deploy <id>` and apply the YAML, so that the Ingress lets a call take 300 seconds. For a definition of your own, set `runtime.timeout_s` where the model reasons ([How long a call may take](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#call-timeout)).
+
+### Added
+
+- **Load-Accelerator-Tables: `factSheets`.** `1` (default) loads the fact sheets as before; `0` loads the release table only and leaves the fact sheet tables, so the job no longer replaces the rows of a site's own definitions with the sheets of the release.
+- **`mdb setup` names a project whose target variable differs** from the one it creates, such as an Embedding Model Project from before 1.1.0 with `response`, and leaves it as it is.
+
+### Changed
+
+- **Reasoning models wait 300 seconds for the provider** (`runtime.timeout_s`, was 60). `mdb add` gives a model that reasons 300; the eight shipped definitions with a `reasoning_effort` option are regenerated. The NGINX Ingress of the deployment templates allows 300 seconds (was the controller's default of 60).
+- **Start Here** names `mdb load-facts` first for a missing fact sheet, and says that the job loads the sheets of the release.
+- **The tests run on every core.** The `[dev]` extra installs pytest-xdist and the workflow runs each suite with `-n auto`; locally the `mdb` suite takes 3 minutes instead of 12 (CONTRIBUTING.md, *Running the Tests*).
+
+### Fixed
+
+- **A new release of `mdb` no longer makes generated files stale.** The version in the first line of a score file is left out when `mdb validate`, `mdb generate --check` and `mdb ship` compare it, and lock files hash it without that line; a release of `mdb` alone rewrites no lock file.
+- **`mdb import` and `mdb pull --import` keep the timeout of the score code** (they gave 60).
+- **`.env.example` lists `TYPESAFE_API_KEY`.**
+- **Earlier changelog entries name what they left out:** the fact sheets Load-Accelerator-Tables replaces, the overwrite of a node type with the id of *Call LLM*, `deploy-rag-content` creating a folder only with `-c`, the inputs of `Create-LLM-Call.sas` and the placeholder `{{ JOB-NAME }}` (2.3.0); six OpenRouter definitions (2.0.0); `llama_33_70b`, `mistral_small_32` and the license classes of the fact sheets (1.1.0). The Administration Guide states SAS Viya 2026.09 as the release the accelerator needs.
+
 ## [2.3.1] - 2026-10-22
 
 The LLM Usage Report counts every kind of model call and gains an Overview, a Decision Models and a RAG page. `mdb` needs Python 3.11 or newer.
@@ -97,7 +127,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **`mdb builders-import --report-caslib <library>` binds the reports' other tables to that CAS library.** `LLM_LOGS`, the fact sheets and `PROMPT_EXPERIMENTS` follow it; without it they stay bound to `Public`. It replaces the search and replace in the package file that 2.2 needed.
 - **`mdb options-save` and `options-restore` fold the retired RAG Builder report into the Prompt Builder section**, also from a file saved with 2.2.x, and take `--content-root`.
 - **Start Here checks an installation.** A page at the root of the content folder links the reports and guides and marks each part - content, tables, projects, report options, Python packages, publishing destinations, compute contexts - `ok`, `missing` or `not checked`, with what to do. It only reads and shows no token.
-- **Load-Accelerator-Tables loads the report tables without the command line.** The job loads `ACCELERATOR_RELEASES` and the three fact sheets into its `caslib` (default `Public`), promoted and saved, and answers with a page of what it loaded. It replaces no table that is not a release table.
+- **Load-Accelerator-Tables loads the report tables without the command line.** The job loads `ACCELERATOR_RELEASES` and the three fact sheets into its `caslib` (default `Public`), promoted and saved, and answers with a page of what it loaded. The fact sheets it loads are the ones of the release and replace a table that holds rows of a site's own definitions. Where `releaseTable` names a table that is not a release table, it leaves that table as it is.
 - **`LLM_LOGS` holds every kind of call.** It keeps its twelve columns and gains 24: `kind` (`llm`, `embedding`, `decision`), status and error, request ids, `options` with keys redacted, hashes, decision answers and nine link columns.
 - **`Get-All-Prompts.sas` (*LLM - Get All Prompts* 2.7) pulls every kind of experiment.** It writes `PROMPT_EXPERIMENTS` (twelve more columns), `PROMPT_OPTIMIZATIONS`, `RAG_SETUPS`, `RAG_RUNS` and `MODEL_CATALOG`, with the SAS Model Manager ids of model and project.
 - **`Link-Logs-To-Models.sas` links each log row** to the model that answered and to the template, run or setup that sent it.
@@ -109,7 +139,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **Six model definitions: GPT-6 Luna, GPT-6.1 Sol, Claude Haiku 5.5, Claude Sonnet 5.5, Claude Opus 5.5 and Mercury Decide** (`gpt_6_luna`, `gpt_61_sol`, `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5`, and the decision model `mercury_decide` through OpenRouter), with fact-sheet rows and catalog entries.
 - **`reasoning_effort` per model.** A `value_map` translates the five levels into the words a model accepts; Claude gets it as `output_config.effort`, not combinable with `thinking_budget`.
 - **Finalize says when a manifested prompt or decision template would have no input,** which SAS Intelligent Decisioning cannot use.
-- **The content folder brings the *Call LLM* node under one id,** in the decision `Decisions/Call LLM Node`. `mdb builders-import` imports both; where a *Call LLM* node has another id it imports neither and names the migration. `--no-decisions` leaves them out.
+- **The content folder brings the *Call LLM* node under one id,** in the decision `Decisions/Call LLM Node`. `mdb builders-import` imports both; where a *Call LLM* node has another id it imports neither and names the migration. A node type that has the id already is overwritten in place: edits of its code and terms are replaced. `--no-decisions` leaves them out.
 - **`mdb decision-node-migrate` gives a site's *Call LLM* node that id.** It renames the old node, creates `f9efcbb7-f57b-4a62-b56d-1a89595e2039` and moves every decision, locked versions included; `--from-id` moves those of a copy or a node renamed by hand, with a warning where its code differs; `--delete-old` keeps such a node and says to delete it in SAS Intelligent Decisioning once sure. It reads up to 1000 node types and warns when the listing may be incomplete.
 - **Guide: The *Call LLM* node and its id.** Deployment of Decisions says why decisions need one node id, what a new and an existing site do, and why a node a decision uses is never deleted.
 
@@ -121,7 +151,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **`mdb package-check` also compares the package with the checkout.** Beyond hosts it refuses rules, shares and user ids, and reports a content difference as a `drift:` line, an error with `--release`. `--fix` also repairs states, defaults and user ids.
 - **`mdb` keeps the settings a site gave its job definitions**, such as `_contextName` and `contentRoot`, through deploys and imports. `mdb builders-import` gives `ragComputeContext` of the options to a job definition it creates or that has no `_contextName`; `--compute-context` sets it everywhere.
 - **`mdb setup` writes one seed file**, `llm-prompt-builder.json`, now with `embeddingProjectID`.
-- **`deploy-rag-content.ps1` / `.sh` call `mdb content-deploy --only RAG --to <RAG content root>`** and need the Model Definition Builder installed.
+- **`deploy-rag-content.ps1` / `.sh` call `mdb content-deploy --only RAG --to <RAG content root>`** and need the Model Definition Builder installed. They create a missing folder only with `-c` (2.2 created the folder chain).
 - **`mdb` asks a refused password grant again**, up to three times (`MDB_LOGIN_ATTEMPTS`), but never after SAS Logon has rejected the password.
 - **`mdb` checks credential-domain entry names.** `auth.key_name` and the `API_KEY` default in `options.json` may only hold letters, digits, `.`, `_` and `-`, as the SAS code does not find a name like `Azure OpenAI` (step 7 of the upgrade).
 - **The release table files RAG Builder changes and 14 earlier entries under other components.**
@@ -146,7 +176,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
 - **A decision template manifested in the Prompt Builder can be scored.** The score code of 2.2.0 was not valid Python; the designer now also refuses question names the code cannot use (step 10 of the upgrade).
 - **A self-hosted model loads its weights once per worker, not on every call.** The `dec_von`, `hf_transformers`, `emb_sentence_transformers` and `hf_onnx` templates keep the model loaded per worker under a lock. The 14 self-hosted definitions are regenerated: publish them again (step 6 of the upgrade).
 - **A call without the `API_KEY` option fails with a message that names the option**, not a bare traceback marker. The 37 definitions that send a key are regenerated: republish them and restart their Deployment, or scale it to 0 and back to 1 where a node lacks the CPU for a second pod.
-- **`stage-weights-job-template.yaml` names its Job validly**, and the five decision definitions, `von_1_2` among them, name the accelerator as modeler.
+- **`stage-weights-job-template.yaml` names its Job validly** through the new placeholder `{{ JOB-NAME }}` (the model id with `-` for `_`), which a template rendered by hand has to fill. The five decision definitions, `von_1_2` among them, name the accelerator as modeler.
 - **Prompt Builder: an LLM run sends the options as `options.json` says, or the model is not offered.** Refused, also by `mdb`: names with a comma, a colon or an outer blank or quote; texts with a comma or that the score code reads otherwise; numbers sent as 1e-7 or 1e+21. A typed value is marked, not sent.
 - **Prompt Builder: Save Experiments and Load keep the options as the run sent them**; an option named `model` or `options` no longer hits another control.
 - **Prompt Builder: writes to SAS Model Manager are reported as they ended.** A refused or unanswered write is failed or read back, not done. A failed read no longer counts as empty, so stored runs and setups are not overwritten. Trackers are replaced in one upload; listings read every page; writes do not overlap.
@@ -179,7 +209,7 @@ A first install is `mdb setup`, then `mdb builders-import`, then *Start Here*. T
   - No traceback shows the values of a credential.
   - Ids and domains hold printable ASCII only, and values YAML reads otherwise (`id: 0123`) are refused.
   - The guide and `credentials.example.yaml` equip `LLMConsumers`.
-- **SAS code that calls an LLM reads the provider key and no longer leaves it in a file.** Code from *LLM - Create LLM Call* 1.7, *LLM - Get Options* 1.6 and `Create-LLM-Call.sas` logs no key and deletes the request file after each call (step 8 of the upgrade). Code you keep needs `filename llmIn clear;` after PROC HTTP.
+- **SAS code that calls an LLM reads the provider key and no longer leaves it in a file.** Code from *LLM - Create LLM Call* 1.7, *LLM - Get Options* 1.6 and `Create-LLM-Call.sas` logs no key and deletes the request file after each call (step 8 of the upgrade). Code you keep needs `filename llmIn clear;` after PROC HTTP. `Create-LLM-Call.sas` needs both `_slo_LLM_name` and `_slo_optionsFileURI` and leaves no WORK table behind.
 - **The generated SAS call code always reads the credential domain `agentic-ai-keys`,** whatever the Prompt Builder's *Credential domain* option says. A site with another domain edits the line `%let API_KEY_DOMAIN=agentic-ai-keys;` of the generated code. The option's help in the Options pane says so.
 - **MM steps read a model with the properties it has:** *MM - Get Model Information* 1.2; *LLM - List Available LLMs* and the other *MM* steps are 1.1.
 - **The Prompt Builder build takes source-map-js 1.2.2 and drops vite-plugin-singlefile**; `npm audit` reports 0 vulnerabilities.
@@ -337,6 +367,7 @@ The `create-api-key-table.sas` helper and the VA data-role assignment are gone; 
 
 ### Added
 
+- **Six OpenRouter definitions:** `free_models_router`, `google_gemma_4_31b_free`, `ling_3_0_flash_free`, `moonshotai_kimi_k3`, `nvidia_nemotron_3_ultra_free` and `poolside_laguna_s_2_1_free`.
 - **The RAG Builder stops asking for what it can resolve.** Where a vector store lives (`<BACKEND>_HOST`/`_PORT`/`_DB`/`_SSLMODE`, with the unprefixed `RAGSTORE_*` names as the shared fallback) now travels in the same credential domain that already holds the store's user and password, carried there by the `create-credential-domain` scripts. The Builder resolves and displays the connection instead of asking a person building a corpus to retype a hostname per setup; an explicitly passed value still wins, so the custom steps are unaffected
 - **Embedding models are listed, not typed.** A new *Embedding model project ID* option points the Builder at the SAS Model Manager project holding the registered embedding models, and the embedding dimension follows the chosen model's fact sheet. A typed model name has nothing behind it until a container is published — the failure surfaces as an HTTP 404 at the first embed call, after the crawl and the chunking have already run — and a vector column is created at the model's width and cannot be widened afterwards
 - **Save documentation** in the RAG Builder, as in the Prompt Builder: the model-card fields save on their own, without needing the setup to be complete enough to validate. Requiring someone to finish choosing a vector database before they could record a purpose is how governance fields end up empty. The save merges into the stored `rag-setup.json` rather than writing only the attributes — writing attributes alone would make the edit reappear as lost the next time the setup was opened — and, for a setup that has never been fully saved, the fields are read back from the model's attributes
@@ -731,6 +762,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 - Environment-neutral definitions: Azure resources and AWS Bedrock regions resolve at scoring time via per-call options or the `AZURE_OPENAI_RESOURCE` / `AWS_BEDROCK_REGION` container environment variables, so one published image serves multiple subscriptions/projects/regions
 - Typed scoring options: the option vocabulary covers `reasoning_effort`, `thinking_budget`, `max_completion_tokens`, `seed`, penalties, and the embedding options `input_type`, `dimensions` and `normalize`; `options.json` carries additive `type`/`values` fields for non-numeric options so UIs can render proper controls (numeric options keep the established shape)
 - Generated definitions as working examples: `claude_sonnet_4_5`, `gpt_41_mini`, `gpt_5_mini` (reasoning model, live-verified), `claude_haiku_4_5_bedrock` and `titan_embed_text_v2`
+- Definitions `llama_33_70b` (OpenRouter) and `mistral_small_32` (Mistral)
 - Documentation: Administration Guide page "Model Definition Builder" and a README in `Model-Definition-Builder/`
 - CI safeguard `verify-model-definitions.yml`: re-renders every managed definition on pull requests and fails when committed assets drift from their manifest
 - The Prompt Builder now renders a control for **every** option of an LLM instead of a fixed set: typed options from the Model Definition Builder appear as segmented selectors (`enum` with up to five values, e.g. the normalized Reasoning Effort scale), checkboxes (`bool`) or text inputs (`string`), unknown numeric options as number inputs — previously options like `reasoning_effort` or an Azure resource override were silently ignored and the score-code defaults applied
@@ -748,6 +780,7 @@ The new **Model Definition Builder** (`Model-Definition-Builder/`) takes the cho
 
 - **The entire definition fleet (42 legacy folders) is migrated onto `definition.yaml` manifests.** Every folder regenerates deterministically; after the curation below, the CI drift gate covers all 37 migrated definitions (39 in total, including the two new Granite embedding models above). The migration applies these normalizations uniformly: the canonical options parser (fixing the `isinstance(options, str)` bug that silently ignored user options in several scorers), provider usage-based token counting where the API reports it (Anthropic, OpenAI, Gemini), the embedding return-arity and full-vector fixes, the `requirements.json` standardization from PR #6 (pip upgrade step first, `huggingface-hub>=0.18.0`), `toolVersion: "3.11"` (fixes the publish 400 on current SAS Viya releases), and the central `inputVar.json` typo fix. Legacy score filenames are preserved (`generation.score_code_file`) so registered models keep their scoreCodeFile. Six definitions with hand-written runtimes (`llama_31_405b`, `llama_32_1b/3b`, `mistral_nemo`, `phi_3_mini_4k`, `phi_35_mini` — onnxruntime-genai, mistral-inference, pipeline and hosted-endpoint scorers) keep their scorers hand-maintained via `generation.overrides` while gaining managed metadata and the publish fix
 - **Re-publish guidance:** deployed SCR containers of migrated models still run the old score code until re-published — republish with `mdb publish <id>` (or the classic scripts) when you want the fixes in production; `mdb register --update` refreshes registered model contents first
+- The `license` column of the fact sheets holds `Proprietary` or `Open-Source`, the license class of the definition, instead of the license name (`Apache 2.0`, `MIT`, `Llama 3.1`, ...)
 - The Azure OpenAI definition's `API_KEY` default is normalized from the `ProviderName` placeholder to `AzureOpenAI`, and the Voyage adapter uses the fleet's established `VoyageAI` KeyName
 - The generator emits `toolVersion: "3.11"` — newer SAS Viya releases reject the legacy `3.11-5` format when publishing; the `_Base_Definition` templates are updated as well
 - Self-hosted Hugging Face requirements are much leaner so the SCR image builds stay under the publish timeout: PyTorch installs from the CPU-only index (`--extra-index-url https://download.pytorch.org/whl/cpu`, so PyPI still resolves torch's transitive dependencies) instead of the default wheel that bundles ~2 GB of unused CUDA libraries, and the vestigial `git-lfs` install steps are removed because `hf download` uses the huggingface-hub HTTP API rather than git. Applies to the `transformers`, `sentence-transformers` and `onnx` requirements profiles (the `onnx` profile already used no torch); the six hand-maintained runtime folders keep their own requirements. Re-register (`mdb register --update`) and re-publish affected self-hosted models to pick this up

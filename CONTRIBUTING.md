@@ -17,6 +17,15 @@ All submissions, including submissions by project members, require review.
 GitHub pull requests are used for this purpose.
 Consult [GitHub Help](https://help.github.com/articles/about-pull-requests/) for more information about using pull requests.
 
+## Running the Tests
+`pip install -e "./Model-Definition-Builder/cli[dev,viya]"` installs `mdb`, pytest and pytest-xdist. Run a suite on every core with `-n auto`, as the workflow does:
+
+```bash
+python -m pytest Model-Definition-Builder/cli/tests -n auto
+```
+
+The other suites are `SAS-Viya-Integrations/RAG/tests`, `Logging-Monitoring/tests`, `Setup/tests` and `Prompt-Optimization/tests` (those need `pandas`, `requests` and `pypdfium2` as well). Without `-n auto` the same tests run one after another.
+
 ## The Transfer Package and Your Change
 `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json` is the content folder of the accelerator as one SAS Viya transfer package.
 Almost all of it is a second copy of files of this repository: the custom steps, the programs, `rag_core`, the built Prompt Builder page, the fact sheets, and the release table that is made from `CHANGELOG.md`.
