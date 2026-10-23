@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.3.2] - 2026-10-23
 
 A new `mdb` no longer makes a site's own definitions stale, reasoning models get 300 seconds per call, and Load-Accelerator-Tables can leave a site's fact sheets alone.
 
@@ -10,7 +10,7 @@ A new `mdb` no longer makes a site's own definitions stale, reasoning models get
 
 Steps 1 and 2 are for every site; step 3 only where reasoning models are deployed.
 
-1. Update the checkout and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`. The first `mdb generate` of a definition rewrites its `.mdb-lock.json` once, without the version of `mdb`.
+1. Update the checkout to 2.3.2 and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`. The first `mdb generate` of a definition rewrites its `.mdb-lock.json` once, without the version of `mdb`.
 2. `mdb builders-import`. A site that keeps definitions of its own loads its fact sheets with `mdb load-facts` and runs the job `Load-Accelerator-Tables` with `factSheets=0` from now on.
 3. Only for the reasoning models you deploy (`azure_openai_env`, `claude_haiku_5_5`, `claude_sonnet_5_5`, `claude_opus_5_5`, `gpt_5_mini`, `gpt_56_sol`, `gpt_6_luna`, `gpt_61_sol`): `mdb register <id> --update` and `mdb publish <id> --wait`, then `mdb deploy <id>` and apply the YAML, so that the Ingress lets a call take 300 seconds. For a definition of your own, set `runtime.timeout_s` where the model reasons ([How long a call may take](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Model-Definition-Builder#call-timeout)).
 
