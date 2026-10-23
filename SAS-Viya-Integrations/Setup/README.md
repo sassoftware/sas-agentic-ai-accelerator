@@ -92,8 +92,9 @@ https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerat
 | `contentRoot` | `/SAS Agentic AI Accelerator` | The content folder whose `Data` folder holds the four files |
 | `caslib` | `Public` | The CAS library of the four tables |
 | `releaseTable` | `ACCELERATOR_RELEASES` | The name of the release table: a SAS name of 28 characters at most. A table of that name that exists and lacks one of the ten columns every release table has - a fact sheet, the log table - is left as it is, with an ERROR line; the release table of 2.2.0, without `builder_part`, is replaced. Where no table of that name is in memory, the job looks for the file one was saved to (`<name>.sashdat`, which a restart of the CAS server leaves of a saved table), loads it as a table of its session to read its columns, and drops it again: a file that lacks those columns or can not be loaded is left as it is the same way |
+| `factSheets` | `1` | `1` loads the three fact sheets as well, `0` leaves the fact sheet tables as they are: the sheets in `Data` are the ones of the release and replace the rows of a site's own definitions. With `0` a fact sheet that is not in the CAS library is a WARNING, and only the release table decides whether the job fails |
 
-`mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation.
+`mdb load-releases` and `mdb load-facts` load the same tables from a checkout and stay the way to load them from a workstation. The files in `Data` are the fact sheets of the release, so a table that holds rows of a site's own definitions is replaced by the sheets of the release. A site that keeps definitions of its own loads its sheets with `mdb load-facts` and runs the job with `factSheets=0`.
 
 ## Tests
 

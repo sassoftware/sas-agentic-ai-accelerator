@@ -1,10 +1,10 @@
 {
     "generator": "mdb 2.3.1",
-    "manifest_sha256": "356b1f718a223719990b5f3f9ddb0d9815ef9e11525a302e8fd4612bc975806a",
+    "manifest_sha256": "7a9f53dec9611be7b6231f0d68da1d99398410c80a31aa6296f436812675f24b",
     "files": {
         "Model-Card.md": "de0c76184661e48e5003a7b8e91526ddbf2008de8be182eb8934a0f053d793d7",
         "README.md": "17675daf55a5f3836b6d79ff15a19796c7b3fcb95639e02c4ee6aedcb0166f6a",
-        "claudeOpus55Score.py": "597d202964a826f837b87d3feda3b695178a5a7e5716ff7d504784246ef9a9d1",
+        "claudeOpus55Score.py": "d9500de4142022913be6a9131130a619f80f766e608194a2dfcd1bb2e3c21462",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "5a42faf9226b861f832e81effb9c3572c9322d004536be29d7688d58e24d9efc",
         "options.json": "83497f6709e6251a1f55166f66d7ea2a4e1ed7867f4ad8061c3fccd4546c2a7c",

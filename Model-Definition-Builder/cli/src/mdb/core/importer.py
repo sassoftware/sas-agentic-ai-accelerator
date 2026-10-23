@@ -291,6 +291,14 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             "\"<entry>\"} to options.json, <entry> the name of the entry of the credential domain that holds the key "
             "(such as OpenAI).")
 
+    # The provider call timeout the score code was rendered with (timeout={{
+    # timeout_s }} in every hosted template): without it a definition with a
+    # longer one - a model that reasons, 300 s - came back with 60.
+    runtime = RuntimeBlock(template=template, requirements_profile=requirements_profile)
+    timeouts = set(re.findall(r"\btimeout=(\d+)\b", score_text))
+    if len(timeouts) == 1:
+        runtime.timeout_s = int(timeouts.pop())
+
     tags = _parse_tags(list(config.get("tags", [])), notes)
     manifest = ModelManifest(
         kind=kind,
@@ -303,7 +311,7 @@ def import_folder(folder: Path, fact_sheet: Path) -> ImportResult:
             params=params,
             auth=auth,
         ),
-        runtime=RuntimeBlock(template=template, requirements_profile=requirements_profile),
+        runtime=runtime,
         options=option_specs,
         tags=tags,
         metadata=MetadataBlock(

@@ -188,7 +188,7 @@ def scoreModel(userPrompt, systemPrompt, options):
             "api-key": apiKey,
         },
         json=payload,
-        timeout=60,
+        timeout=300,
     )
     try:
         responseJson = responseObject.json()

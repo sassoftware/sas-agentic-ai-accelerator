@@ -4,7 +4,7 @@
     "files": {
         "Model-Card.md": "7d3298787d5d0c0cf0ace2958d3cbf84c5f481d2d44fe558d2b70a7ef9768812",
         "README.md": "1fbbeb49e732076713c56e1def05f44345371d140771a5a888414f3dd9350bd9",
-        "graniteEmbeddingR2Score.py": "dcda3f77ad96fb4617a67d4769650a97278d071dfc7f4198917456f4cf5a644a",
+        "graniteEmbeddingR2Score.py": "c18e421dd0e5800dccf5add33c4c14b903f398362d8897bc9f44ce6f4a8dbda8",
         "inputVar.json": "82e63e7108e6dae23feda5fb3e4bcb2242eeec59182a36b6c787339725e0095b",
         "modelConfiguration.json": "f82b9d15ac0b8df820f9e5d4ed87308a9eff5c5bbb85e58e54842786d9b75909",
         "options.json": "dfddf02040f225c97e88e5ae66b0fe3c2d0a2c1e8d9492be621036565ebffd95",

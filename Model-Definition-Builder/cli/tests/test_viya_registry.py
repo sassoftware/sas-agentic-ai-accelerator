@@ -202,6 +202,20 @@ def test_ensure_is_noop_when_everything_exists(core, monkeypatch):
     assert created_projects == []
 
 
+def test_ensure_names_a_target_variable_it_would_not_create_and_leaves_it(core, monkeypatch):
+    """The setup script of 0.1.34 created the Embedding Model Project with the target variable 'response'; mdb
+    creates it with 'embedding' and changes no project it did not create. mdb setup says so (upgrade review of
+    2026-10-21) - and nothing for a project that matches."""
+    created_projects = []
+    _patch_mr(monkeypatch, repo=object(), project={"id": "p", "targetVariable": "response"}, sink=created_projects)
+    result = ensure_repository_and_project(_FakeSession(), "embedding", core, "")
+    assert result.created == [] and created_projects == []
+    assert result.notes == ["project 'Embedding Model Project' has the target variable 'response', the one mdb creates it "
+                            "with is 'embedding' - left as it is; change it in SAS Model Manager to match."]
+    _patch_mr(monkeypatch, repo=object(), project={"id": "p", "targetVariable": "embedding"}, sink=created_projects)
+    assert ensure_repository_and_project(_FakeSession(), "embedding", core, "").notes == []
+
+
 def test_ensure_repository_create_race_is_not_a_rights_error(core, monkeypatch):
     # The create POST fails (lost the race), but a re-fetch shows the repo now
     # exists - so it must NOT raise the 'administrator rights' error.

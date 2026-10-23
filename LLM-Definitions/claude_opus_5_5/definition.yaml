@@ -14,7 +14,7 @@ provider:
 runtime:
   template: anthropic_messages
   requirements_profile: api-wrapper
-  timeout_s: 60
+  timeout_s: 300
   weights_source: baked
 options:
   reasoning_effort:

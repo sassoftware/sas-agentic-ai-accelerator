@@ -118,7 +118,7 @@ def scoreModel(userPrompt, systemPrompt, options):
             "Authorization": f"Bearer {options['API_KEY']}",
         },
         json=payload,
-        timeout=60,
+        timeout=300,
     )
     try:
         responseJson = responseObject.json()

@@ -19,7 +19,7 @@ from ..core.manifest import (
     PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
 )
 from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, http_smoke_failure
+from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, call_timeout, http_smoke_failure
 
 
 class OpenAICompatAdapter(ProviderAdapter):
@@ -221,7 +221,8 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
                 params=params,
                 auth=AuthBlock(mode="none"),
             ),
-            runtime=RuntimeBlock(template=template, requirements_profile="api-wrapper"),
+            runtime=RuntimeBlock(template=template, requirements_profile="api-wrapper",
+                                 timeout_s=call_timeout(cm)),
             options=options,
             tags=TagsBlock(
                 size_class=size_class,

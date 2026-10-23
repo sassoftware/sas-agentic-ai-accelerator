@@ -120,7 +120,7 @@ def scoreModel(userPrompt, systemPrompt, options):
             "anthropic-version": "2023-06-01",
         },
         json=payload,
-        timeout=60,
+        timeout=300,
     )
     try:
         responseJson = responseObject.json()

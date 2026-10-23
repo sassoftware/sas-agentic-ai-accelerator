@@ -9,6 +9,7 @@ Setting everything up will require you to have the following permissions or some
 - Your user must be part of the SAS Administrators group.
 - You have to have the right to do changes to the kubernetes cluster.
 - You need the ability to setup a Docker compliant container registry.
+- SAS Viya 2026.09 or later. The reports of the transfer package are saved by SAS Visual Analytics of that release (report format BIRD 4.68), which an earlier release may not open, and every measurement in this guide was taken on it.
 
 ## Setup
 

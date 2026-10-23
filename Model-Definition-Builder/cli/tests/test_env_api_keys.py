@@ -143,7 +143,10 @@ def test_the_defaults_are_the_variables_the_adapters_read():
 def test_the_defaults_are_named_in_env_example(repo_root):
     names = {line.split("=", 1)[0] for line in (repo_root / ".env.example").read_text(encoding="utf-8").splitlines()
              if "=" in line and not line.startswith("#")}
-    missing = {value for key, value in DEFAULT_KEY_ENV.items() if key != "typesafe"} - names
+    # every key an adapter reads and every key the credential commands copy into the domain - TYPESAFE_API_KEY
+    # was missing until an upgrade review of 2026-10-21 found it
+    from mdb.viya.credentials import PROVIDER_ENTRIES
+    missing = (set(DEFAULT_KEY_ENV.values()) | set(PROVIDER_ENTRIES)) - names
     assert not missing
 
 

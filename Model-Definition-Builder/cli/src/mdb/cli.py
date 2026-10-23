@@ -1445,6 +1445,8 @@ def setup(
             for created in ensured.created:
                 console.print(f"[green]created {_plain(created)}.[/green]")
                 created_any = True
+            for note in ensured.notes:
+                _line(note, "yellow")
             repo_id = repo_id or ensured.repository_id
             repo_folder = repo_folder or ensured.repository_folder_id
             project_ids[kind] = ensured.project_id

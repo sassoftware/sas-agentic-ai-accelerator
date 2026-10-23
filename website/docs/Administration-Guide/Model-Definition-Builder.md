@@ -656,3 +656,16 @@ The keys must be exactly the five levels and the values the words the provider a
 ### Claude 5.5: effort instead of sampling {#claude-5-5}
 
 Claude 5.5 (Haiku, Sonnet, Opus) refuses `temperature` other than 1, `top_p` and `top_k` at any value (even `top_p` 1), and a thinking budget (`thinking {type: enabled}`); it thinks adaptively and is steered by `output_config.effort`. `mdb add` therefore gives these models `reasoning_effort` (default `medium`) and `max_tokens` (default 4000), and no sampling option; a `temperature` a caller passes anyway is not sent. The thinking counts against `max_tokens`: a smaller default can end a call before its answer is written, and the Prompt Builder asks a judge for at least 4000 tokens for the same reason. `reasoning_effort` and `thinking_budget` exclude each other - keep `thinking_budget` for older Claude models. The default `medium` is the API's own for Haiku 5.5 and Opus 5.5; Sonnet 5.5 defaults to `high` at the API, so set `default: high` in its `definition.yaml` where you want that.
+
+### How long a call may take {#call-timeout}
+
+A hosted-API scorer waits `runtime.timeout_s` seconds for the provider (default 60), then the call fails in the container. A model that reasons before it answers can take minutes at a high effort, so `mdb add` gives a reasoning model 300, and so do the shipped definitions with a `reasoning_effort` option. Change the value in `definition.yaml`, then `mdb generate`, `mdb register --update` and `mdb publish`:
+
+```yaml
+runtime:
+  template: openai_chat
+  requirements_profile: api-wrapper
+  timeout_s: 300
+```
+
+Keep it below the time the caller waits: a manifested prompt waits `LLMCONTAINERTIMEOUT` seconds (600 by default), and the Ingress of the rendered YAML lets a request take 300 seconds (`nginx.ingress.kubernetes.io/proxy-read-timeout`, and the router of [`--ingress contour`](#ingress-contour) the same). A self-hosted scorer has no such timeout.

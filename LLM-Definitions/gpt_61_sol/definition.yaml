@@ -13,7 +13,7 @@ provider:
 runtime:
   template: openai_chat
   requirements_profile: api-wrapper
-  timeout_s: 60
+  timeout_s: 300
   weights_source: baked
 options:
   reasoning_effort:

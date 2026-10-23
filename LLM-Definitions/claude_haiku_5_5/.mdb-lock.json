@@ -1,10 +1,10 @@
 {
     "generator": "mdb 2.3.1",
-    "manifest_sha256": "088cbc9ace3b2967c0ebf55fead270adccbb3521d385c8b3923b6fa7b84d2c8e",
+    "manifest_sha256": "98f282f6a359b0f8525aa882ee122907145a81f07e57fa73976549165e06336a",
     "files": {
         "Model-Card.md": "ec7d0a6912d4c50a47ebf75bf691ea133709211386352693f2006cfd42bb6b59",
         "README.md": "91b377f3897f59e2351c8772bdeed048710403caead046d41b7c3a8d72d05a81",
-        "claudeHaiku55Score.py": "3e0ce96c0029ef25ba959c1f14398c800ee42eb36a1ff6fc696783ba901ec244",
+        "claudeHaiku55Score.py": "0b9b58fefef66e71003f5ea3f8308a2bb2bc12b89e7e31bb9b13d9a5047778d1",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "7aef003fa818cd24627f4fd1b460d51db77e8a11dd89471e0cc46b13b52c5c74",
         "options.json": "83497f6709e6251a1f55166f66d7ea2a4e1ed7867f4ad8061c3fccd4546c2a7c",
