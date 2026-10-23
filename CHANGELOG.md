@@ -23,6 +23,7 @@ Steps 1 and 2 are for every site; step 3 only where reasoning models are deploye
 
 - **Reasoning models wait 300 seconds for the provider** (`runtime.timeout_s`, was 60). `mdb add` gives a model that reasons 300; the eight shipped definitions with a `reasoning_effort` option are regenerated. The NGINX Ingress of the deployment templates allows 300 seconds (was the controller's default of 60).
 - **Start Here** names `mdb load-facts` first for a missing fact sheet, and says that the job loads the sheets of the release.
+- **The tests run on every core.** The `[dev]` extra installs pytest-xdist and the workflow runs each suite with `-n auto`; locally the `mdb` suite takes 3 minutes instead of 12 (CONTRIBUTING.md, *Running the Tests*).
 
 ### Fixed
 
