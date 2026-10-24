@@ -142,6 +142,7 @@ MERGED_REPORT_LABELS = (
     "enableDecision",
     "enableOptimization", "computeContext", "optimizeJobProgram", "minOptimizeSamples",
     RAG_SWITCH, "embeddingProjectID", "contentRoot", "casServer", "ragComputeContext",
+    "ragServerFolder", "ragServerBrowseAbove", "ragContentFolder", "ragContentBrowseAbove",
     "storeSslmode", "deletedPolicy", "retainDays", "recordHistory", "embedReplicas",
     "persistElements", "persistChunks", "enable_pgvector", "enable_singlestore",
 )

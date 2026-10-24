@@ -88,7 +88,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, dialogShown } = require('./page-waits.cjs');
+const { trackPagesOf, dialogShown, chooseFolder } = require('./page-waits.cjs');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -1432,7 +1432,7 @@ function sendersCensus() {
   // Every field the form holds, changed; an enrichment of two prompts.
   const TYPED = {
     modelPurpose: 'Answers "quoted" {braces} and [object Object] as text\nover two lines - ü ß',
-    path: '/mnt/data/round trip',
+    path: '/Public/Policies/round trip',
     tokenLimit: '384',
     overlap: '0',
     collection: 'round_trip_v2',
@@ -1448,7 +1448,7 @@ function sendersCensus() {
     await page.fill(rgb('setup-doc-modelPurpose'), TYPED.modelPurpose);
     await goStep(page, 'RGB', 'documents');
     await page.selectOption(rgb('source-kind'), 'sascontent');
-    await page.fill(rgb('source-path'), TYPED.path);
+    await chooseFolder(page, TYPED.path);
     await page.setChecked(rgb('include-code'), true);
     const extractors = await page.$$eval(`${rgb('extractor')} option`, (options) => options.map((option) => option.value));
     await page.selectOption(rgb('extractor'), extractors[extractors.length - 1]);

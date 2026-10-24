@@ -54,7 +54,9 @@ import { resolveDomainSecrets } from '../api/credentials-api';
 import { RAG_BACKENDS, backendEnabled, type RagBackend } from './rag-backends';
 import { optionFlag } from './rag-options';
 import { embeddingDimensions, embeddingTokenLimit } from './embedding-models';
-import { ensureFolderPath, getFolderByPath, getFolderMembers } from '../api/folders-api';
+import { ensureFolderPath, getFolderByPath, getFolderMembers, listContentFolders } from '../api/folders-api';
+import { FolderSessionError, listServerFolders } from '../api/compute-files-api';
+import { isWithin, normalFolder, showFolderPicker } from '../ui/folder-picker';
 import {
   createJobDefinition,
   createTransientJobDefinition,
@@ -943,15 +945,110 @@ export async function buildRagBuilder(
   });
   labeled(documentsRow, idOf('source-kind'), str('ragBuilderSourceKindLabel', 'Document location:'), sourceKindField, 'col-md-5',
     str('ragBuilderSourceKindInfo', 'Where the corpus lives. The compute server file system is a path on the SAS Compute server (not your workstation) and suits large corpora already staged on disk. SAS Content is the governed folder tree you see in SAS Drive, read over the Files API - convenient, permission-aware, and slower per document.'), true);
-  const sourcePathField = textInput('', '/data/documents');
-  labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-7',
-    str('ragBuilderSourcePathInfo', 'The folder to crawl, walked recursively, with every readable file treated as a candidate document. A path the ingestion cannot see yields a run that finds nothing rather than one that fails loudly, so check it against the location type on the left.'), true);
-  const sourcePlaceholder = (): void => {
-    sourcePathField.placeholder =
-      sourceKindField.value === 'sascontent' ? '/Public/Policies' : '/data/documents';
+  // The folder is chosen in a dialog that walks the folders the user may
+  // read, never typed: a typed path the ingestion cannot see yields a run that
+  // finds nothing. The field shows the choice and is what a setup saves.
+  const sourcePathField = textInput('', '');
+  sourcePathField.readOnly = true;
+  const sourcePathColumn = labeled(documentsRow, idOf('source-path'), str('ragBuilderSourcePathLabel', 'Document folder:'), sourcePathField, 'col-md-7',
+    str('ragBuilderSourcePathInfo', 'The folder to crawl, walked recursively, with every readable file treated as a candidate document. Choose it with Browse: the compute server lists its folders in a session of the ingestion compute context, as you, so you see the folders the ingestion can read. The first list can take about half a minute while that session starts.'), true);
+  const sourceBrowseButton = document.createElement('button');
+  sourceBrowseButton.type = 'button';
+  sourceBrowseButton.id = idOf('source-browse');
+  sourceBrowseButton.className = 'btn btn-outline-primary';
+  sourceBrowseButton.textContent = str('ragBuilderSourceBrowse', 'Browse…');
+  const sourcePathGroup = document.createElement('div');
+  sourcePathGroup.className = 'input-group';
+  sourcePathColumn.insertBefore(sourcePathGroup, sourcePathField);
+  sourcePathGroup.append(sourcePathField, sourceBrowseButton);
+  const sourcePathNote = document.createElement('div');
+  sourcePathNote.id = idOf('source-path-note');
+  sourcePathNote.className = 'form-text text-warning';
+  sourcePathColumn.appendChild(sourcePathNote);
+  /**
+   * Where the folder picker of the chosen location starts and what it may
+   * not go above, from the four options of the Options pane: a start folder
+   * (blank: none) and whether the picker may go above it.
+   */
+  const sourceFolderRules = (): { server: boolean; start: string; floor: string | null } => {
+    const server = sourceKindField.value !== 'sascontent';
+    const start = String((server ? config.serverFolder : config.contentFolder) ?? '').trim();
+    const above = optionFlag(server ? config.serverBrowseAbove : config.contentBrowseAbove, false);
+    return { server, start: start ? normalFolder(start) : '', floor: start && !above ? normalFolder(start) : null };
   };
-  sourceKindField.addEventListener('change', sourcePlaceholder);
+  /** Whether the folder in the field may be saved: below the start folder, where the picker is kept below it. */
+  const sourcePathAllowed = (): boolean => {
+    const { floor } = sourceFolderRules();
+    const path = sourcePathField.value.trim();
+    return !path || floor === null || isWithin(path, floor);
+  };
+  // the location the folder in the field belongs to, as last drawn
+  let sourceKindShown = sourceKindField.value;
+  const sourcePlaceholder = (): void => {
+    sourceKindShown = sourceKindField.value;
+    sourcePathField.placeholder = str('ragBuilderSourcePathNone', 'No folder chosen - use Browse');
+    const { floor } = sourceFolderRules();
+    sourcePathNote.textContent = sourcePathAllowed()
+      ? ''
+      : str(
+          'ragBuilderSourcePathOutside',
+          'This folder is not below {folder}, the start folder this page keeps setups to. Choose a folder below it before you save.'
+        ).replace('{folder}', floor ?? '/');
+  };
+  // A folder of the other location means nothing there. A change event that
+  // names the location the field already had (a script can send one) keeps it.
+  sourceKindField.addEventListener('change', () => {
+    if (sourceKindField.value !== sourceKindShown) sourcePathField.value = '';
+    sourcePlaceholder();
+  });
   sourcePlaceholder();
+  sourceBrowseButton.addEventListener('click', async () => {
+    const rules = sourceFolderRules();
+    const current = sourcePathField.value.trim();
+    const contextName = String(config.computeContext ?? '').trim();
+    const chosen = await showFolderPicker({
+      idPrefix: idOf('source'),
+      start: current && (rules.floor === null || isWithin(current, rules.floor)) ? current : rules.start || '/',
+      floor: rules.floor,
+      list: rules.server
+        ? async (path) => {
+            try {
+              return await listServerFolders(contextName, path);
+            } catch (error) {
+              if (error instanceof FolderSessionError && error.reason === 'unavailable') return null;
+              if (error instanceof FolderSessionError && error.reason === 'noContext')
+                throw new Error(str('ragBuilderFolderNoContext', 'The option RAG: ingestion compute context of this object is blank, and the folders of the compute server are listed in a session of that context.'));
+              if (error instanceof FolderSessionError && error.reason === 'unknownContext')
+                throw new Error(str('ragBuilderFolderUnknownContext', 'There is no compute context named {context} - check the option RAG: ingestion compute context of this object.').replace('{context}', contextName));
+              if (error instanceof FolderSessionError)
+                throw new Error(str('ragBuilderFolderNoSession', 'The compute server could not start a session in {context} ({detail}).').replace('{context}', contextName).replace('{detail}', error.message));
+              throw error;
+            }
+          }
+        : (path) => listContentFolders(path),
+      text: {
+        title: rules.server
+          ? str('ragBuilderFolderTitleServer', 'Choose a folder of the compute server')
+          : str('ragBuilderFolderTitleContent', 'Choose a folder of SAS Content'),
+        top: rules.server ? '/' : str('ragBuilderFolderTopContent', 'SAS Content'),
+        up: str('ragBuilderFolderUp', 'Up'),
+        choose: str('ragBuilderFolderChoose', 'Choose this folder'),
+        cancel: str('ragBuilderFolderCancel', 'Cancel'),
+        loading: rules.server
+          ? str('ragBuilderFolderLoadingServer', 'Connecting to the compute server - the first list can take about half a minute…')
+          : str('ragBuilderFolderLoadingContent', 'Loading the folders…'),
+        empty: str('ragBuilderFolderEmpty', 'No folders here.'),
+        unavailable: str('ragBuilderFolderUnavailable', 'The folder {path} is not there, or you may not read it.'),
+        failed: str('ragBuilderFolderFailed', 'The folders could not be listed: {error}'),
+        current: str('ragBuilderFolderCurrent', 'Choose this folder takes {path}.'),
+        topNotChosen: str('ragBuilderFolderTopNotChosen', 'Open a folder first: the top cannot be crawled as a whole.'),
+      },
+    });
+    if (chosen === null) return;
+    sourcePathField.value = chosen;
+    sourcePlaceholder();
+    sourcePathField.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   const extractorField = selectInput(EXTRACTORS, '', { '': str('ragBuilderExtractorAuto', 'Automatic (by file format)') });
   labeled(documentsRow, idOf('extractor'), str('ragBuilderExtractorLabel', 'Extractor:'), extractorField, 'col-md-5',
     str('ragBuilderExtractorInfo', 'How text is pulled out of each file. Automatic picks per file format and is almost always right; forcing one applies it to EVERY file, so a PDF read as plain text yields nonsense rather than an error. Some formats need optional Python packages — see the administration guide.'));
@@ -2586,7 +2683,14 @@ export async function buildRagBuilder(
   const validateSetup = (setup: RagSetup): string[] => {
     const errors: string[] = [];
     if (!sourcePathField.value.trim())
-      errors.push(str('ragBuilderValidateSource', 'The document folder path is required.'));
+      errors.push(str('ragBuilderValidateSource', 'Choose the document folder with Browse.'));
+    else if (!sourcePathAllowed())
+      errors.push(
+        str(
+          'ragBuilderValidateSourceOutside',
+          'The document folder is not below {folder}, the start folder this page keeps setups to. Choose a folder below it with Browse.'
+        ).replace('{folder}', sourceFolderRules().floor ?? '/')
+      );
     if (!setup.embedding.model)
       errors.push(
         str(

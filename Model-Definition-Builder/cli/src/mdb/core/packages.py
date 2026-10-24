@@ -428,6 +428,12 @@ NEUTRAL_DEFAULTS = {
     "sslVerify": "true",
     "contentRoot": "/SAS Agentic AI Accelerator/RAG",
     "casServer": "cas-shared-default",
+    # where the folder picker of a RAG setup starts: a folder of the exporting
+    # site, which every other site would have to change - a site decides
+    "ragServerFolder": "",
+    "ragServerBrowseAbove": "false",
+    "ragContentFolder": "",
+    "ragContentBrowseAbove": "false",
 }
 
 
@@ -1462,8 +1468,13 @@ def _report_differences(item: Located, entry, in_package: set, package_name: str
             options = read_options(copy)
             lacking = [label for label in MERGED_REPORT_LABELS if label not in options]
             if lacking:
-                problems.append(f"{where}: {_copy_name(index)} lacks {len(lacking)} option label(s): "
-                                + ", ".join(lacking))
+                # An option the code of the page posts that the packaged
+                # report does not hold yet: the report gains a label when it
+                # is saved in Visual Analytics with the newer page, which the
+                # export of a release does. Until then the package is behind
+                # the checkout - drift, which a release does not ship.
+                problems.append(Difference(f"{where}: {_copy_name(index)} lacks {len(lacking)} option label(s): "
+                                           + ", ".join(lacking), drift=True))
             for label, wanted in NEUTRAL_DEFAULTS.items():
                 if label in options and options[label] != wanted:
                     problems.append(f"{where}: {_copy_name(index)}: {label} is '{options[label]}', "
@@ -1483,7 +1494,8 @@ class Difference:
     """One sentence of the content gate.
 
     `drift` is True for a difference in CONTENT against the checkout - a
-    file, a custom step, a job definition, one of the two generated files:
+    file, a custom step, a job definition, one of the two generated files, an
+    option label the page posts that the packaged report does not hold yet:
     the package is the content of an earlier commit. Everything else is the
     package being something it must never be, whatever the checkout holds."""
 
@@ -1876,7 +1888,7 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
             continue
         if entry.kind == "report":
             children = [child for child in items if child.owner == item.path]
-            problems.extend(Difference(text) for text in
+            problems.extend(text if isinstance(text, Difference) else Difference(text) for text in
                             _report_differences(item, entry, in_package, package_name)
                             + _report_file_differences(item, entry, children))
             continue

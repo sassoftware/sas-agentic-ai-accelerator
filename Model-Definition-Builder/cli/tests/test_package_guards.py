@@ -145,7 +145,10 @@ def test_neutral_defaults_pass():
         "deploymentType": "k8s", "credentialDomain": "agentic-ai-keys",
         "contentRoot": "/SAS Agentic AI Accelerator/RAG", "casServer": "cas-shared-default",
         # TLS verification in manifested models: on, whatever the exporting site chose
-        "sslVerify": "true"}
+        "sslVerify": "true",
+        # where the folder picker of a RAG setup starts: no folder of the exporting site
+        "ragServerFolder": "", "ragServerBrowseAbove": "false",
+        "ragContentFolder": "", "ragContentBrowseAbove": "false"}
     assert set(NEUTRAL_DEFAULTS) <= set(MERGED_REPORT_LABELS)
 
 
@@ -1047,8 +1050,16 @@ def _shipped_report(shipped: dict) -> dict:
     return shipped
 
 
-def test_shipped_prompt_builder_report_holds_every_option(shipped):
-    assert missing_option_labels(_shipped_report(shipped), MERGED_REPORT_LABELS) == []
+def test_shipped_prompt_builder_report_holds_every_option_or_is_behind(shipped, shipped_manifest):
+    """The shipped report holds every option the page posts - or, for an option added since the package was
+    exported, the content gate calls the report behind the checkout: drift, which a pull request may carry and
+    the gate of a release (`--release`) does not. The report gains the label when it is saved in Visual
+    Analytics with the newer page, before the export of the release (which refuses a report without it)."""
+    lacking = missing_option_labels(_shipped_report(shipped), MERGED_REPORT_LABELS)
+    if not lacking:
+        return
+    lines = [d for d in package_findings(shipped, shipped_manifest) if "option label(s)" in d.text]
+    assert lines and all(d.drift for d in lines), [d.text for d in lines]
 
 
 def test_shipped_prompt_builder_report_has_neutral_defaults(shipped):
@@ -1403,8 +1414,8 @@ def test_an_export_of_a_report_that_was_not_saved_with_the_current_ui_is_not_wri
     built.report(REPORT, unsaved)
     result, text, target, _ = exporting(built)
     assert result.exit_code == 1 and not target.exists()
-    assert f"  report '{REPORT}': the report lacks 4 option label(s): enableRag, ragComputeContext, enable_pgvector, " \
-           "enable_singlestore\n" in text
+    assert f"  report '{REPORT}': the report lacks 8 option label(s): enableRag, ragComputeContext, ragServerFolder, " \
+           "ragServerBrowseAbove, ragContentFolder, ragContentBrowseAbove, enable_pgvector, enable_singlestore\n" in text
     assert "is '" not in text                           # the defaults it holds were reset, and are no finding
     assert "Nothing was written: there is no SAS-Agentic-AI-Accelerator.json." in text
 
@@ -1823,3 +1834,16 @@ def test_a_change_that_replaces_the_package_file_meets_the_strict_gate_on_a_bran
     assert "github.event.pull_request.base.sha || github.event.before" in step
     # the package file the step names is the manifest's
     assert load_manifest(REPO_ROOT, check_sources=False).package == "SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json"
+
+
+def test_an_option_label_the_shipped_report_lacks_is_drift(manifest):
+    """An option added to the page since the package was exported - the start folders of the folder picker of
+    2.3.3 - is a label the shipped report does not hold yet. The report gains it when it is saved in Visual
+    Analytics with the newer page, before the export of a release; until then the package is behind the checkout,
+    which the gate of a pull request reports and does not fail for, and the gate of a release does."""
+    newer = ("ragServerFolder", "ragServerBrowseAbove", "ragContentFolder", "ragContentBrowseAbove")
+    built = package_of(manifest, change={REPORT: None})
+    built.report(REPORT, {label: value for label, value in ALL_NEUTRAL.items() if label not in newer})
+    found = [d for d in package_findings(built.build(), manifest) if "option label(s)" in d.text]
+    assert [(d.text, d.drift) for d in found] == [
+        (f"report '{REPORT}': the report lacks 4 option label(s): " + ", ".join(newer), True)]

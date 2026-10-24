@@ -136,6 +136,8 @@ const API_REQUESTS = {
   'api/scr-api.ts scoreSCR': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
   'api/scr-api.ts callSCRDecision': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
   'api/scr-api.ts callSCRLLM': 'a call of a model container: it stores nothing, and a call without an answer is a call that failed',
+  'api/compute-files-api.ts startSession': 'creates the compute session of the folder picker: it stores nothing, a session whose creation got no answer is no session the page uses, and one that was created all the same ends by itself after five idle minutes (sessionInactiveTimeout)',
+  'api/compute-files-api.ts deleteSession': 'deletes the compute session of the folder picker, also at pagehide: a delete that got no answer leaves a session that ends by itself after five idle minutes',
 };
 const READ_BACK = 'read back (see writeOrReadBack)';
 const WRITES = {
@@ -219,6 +221,7 @@ const TIMERS = {
   'objects/prompt-builder.ts startOptimizeJobMonitor () => { void pollOptimizeJobOnce(); }': POLL,
   'objects/rag-builder.ts startRunClock paintClock': 'paints the run time of the ingestion; it sends no request',
   'objects/rag-builder.ts followIngestion () => void pollOnce()': POLL,
+  'api/compute-files-api.ts openFolderSession () => void ping()': 'tells SAS Viya once a minute that the compute session of the folder picker is still wanted (GET of its state); a ping through oneAtATime',
 };
 
 // Every click listener of the page, before any script of it runs: each one
