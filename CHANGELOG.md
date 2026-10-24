@@ -2,6 +2,23 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+Claude on AWS Bedrock gets one sampling option per request, and the RAG runtime stores no host name in the text of a failure.
+
+### Upgrading from 2.3.2
+
+Only where it applies to your site; nothing else changes.
+
+1. Where `claude_haiku_4_5_bedrock` is deployed: `mdb register claude_haiku_4_5_bedrock --update` and `mdb publish claude_haiku_4_5_bedrock --wait`, then restart its Deployment.
+2. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core` and ingestion job. Rows written before keep their text.
+
+### Fixed
+
+- **Bedrock no longer sends `temperature` and `topP` together.** Claude refuses a request with both, as on Anthropic's own API (fixed there in 1.1.0). Both Bedrock templates send the one the caller set, `temperature` where the caller set both or neither; `claude_haiku_4_5_bedrock` is regenerated.
+- **The RAG runtime keeps host names out of the text of a failure.** A database or HTTP error names the server it failed at - SingleStore the internal host and port of a node. `error_text` of the ledger and the step tables, `rag_runs`, `rag_doc_events` and the message of the ingestion job now hold `<host>` in its place; file names in the text stay.
+- **The Logging README says what the collection-script tests need** (bash and GNU sed) and that they are skipped without them.
+
 ## [2.3.2] - 2026-10-23
 
 A new `mdb` no longer makes a site's own definitions stale, reasoning models get 300 seconds per call, and Load-Accelerator-Tables can leave a site's fact sheets alone.

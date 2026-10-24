@@ -35,11 +35,13 @@
                 },
                 "bedrock_converse": {
                     "body_key": "temperature",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "bedrock_converse_sigv4": {
                     "body_key": "temperature",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "gemini_generate": {
                     "body_key": "temperature",
@@ -85,11 +87,13 @@
                 },
                 "bedrock_converse": {
                     "body_key": "topP",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "bedrock_converse_sigv4": {
                     "body_key": "topP",
-                    "cast": "float"
+                    "cast": "float",
+                    "exclusive_group": "sampling"
                 },
                 "gemini_generate": {
                     "body_key": "topP",

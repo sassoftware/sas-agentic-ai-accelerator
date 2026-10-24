@@ -33,15 +33,17 @@ def scoreModel(userPrompt, systemPrompt, options):
 {{ options_defaults_block }}
         "aws_bedrock_region": os.environ.get("AWS_BEDROCK_REGION", "{{ region }}"),
     }
-    options = {**optionsDefaults, **_parse_options(options)}
-    client = boto3.client("bedrock-runtime", region_name=options["aws_bedrock_region"])
+    requested = _parse_options(options)
+    options = {**optionsDefaults, **requested}
+    inferenceConfig = {
+{{ body_options_block }}
+    }
+{{ exclusive_options_block }}    client = boto3.client("bedrock-runtime", region_name=options["aws_bedrock_region"])
     responseJson = client.converse(
         modelId=modelId,
         system=[{"text": systemPrompt}],
         messages=[{"role": "user", "content": [{"text": userPrompt}]}],
-        inferenceConfig={
-{{ body_options_block_nested }}
-        },
+        inferenceConfig=inferenceConfig,
     )
     response = "".join(
         block["text"] for block in responseJson["output"]["message"]["content"] if "text" in block

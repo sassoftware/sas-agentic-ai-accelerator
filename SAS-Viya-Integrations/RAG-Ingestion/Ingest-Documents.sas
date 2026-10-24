@@ -954,7 +954,10 @@ def main():
         SAS.symput("_rag_summary", sas_safe(summary)[:400])
         SAS.symput("_rag_rc", "0")
     except Exception as error:
-        error_text = f"{type(error).__name__}: {error}"
+        # the job's message is read in the job's output and by the flow that ran it:
+        # no address of a server in it (without_hosts of rag_core/history.py)
+        from rag_core.history import without_hosts
+        error_text = without_hosts(f"{type(error).__name__}: {error}")
         M("Ingestion failed: " + sas_safe(error_text))
         print(traceback.format_exc())
         SAS.symput("_rag_error", sas_safe(error_text)[:500])
