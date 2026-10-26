@@ -30,6 +30,10 @@ SCORE_TEMPLATE_SUFFIX = ".py.j2"
 AZURE_TEMPLATES = ("azure_openai_v1", "azure_openai_env", "emb_azure_openai_v1")
 AZURE_ENV_TEMPLATE = "azure_openai_env"
 AZURE_EMBEDDING_TEMPLATE = "emb_azure_openai_v1"
+# Score templates that call a self-hosted OpenAI-compatible server (Ollama,
+# vLLM). The server's base URL and its optional token are properties of the
+# deployment, read from the container's environment - never scoring options.
+SELFHOSTED_TEMPLATES = ("openai_compat_selfhosted", "emb_openai_compat_selfhosted")
 # Score templates that send the provider key a call carries in the API_KEY
 # option - the ones `auth.mode: env` can feed from the container's environment
 # instead (partials/_env_api_key.py.j2). In the other modes they read the option
@@ -443,7 +447,7 @@ def _render_score(manifest: ModelManifest, core: CoreAssets) -> str:
         # commit_resource - the API style belongs to the definition, while the
         # AZURE_OPENAI_API_VERSION container env var can still override it.
         context["azure_api_version"] = params.get("api_version", "") or ""
-    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
+    if manifest.runtime.template in SELFHOSTED_TEMPLATES:
         # Self-hosted OpenAI-compatible servers (Ollama, vLLM). The base URL
         # resolves at runtime from an env var so one image serves any server;
         # the localhost default is a non-secret convenience, always baked in.
@@ -512,24 +516,11 @@ def _render_options_json(manifest: ModelManifest, core: CoreAssets) -> str:
         if resolved.get("label"):
             entry["label"] = resolved["label"]
         entries[name] = entry
-    # Azure connection config (resource, API version, endpoint) is deliberately
-    # NOT an option: where a container sends its requests is a property of the
-    # deployment, read from its environment (partials/_azure_endpoint.py.j2),
-    # not something a caller should be able to redirect per call.
-    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
-        params = manifest.provider.params
-        env_var = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
-        entries["base_url"] = {
-            "default": params.get("base_url", ""),
-            "range": "http://host:port/v1",
-            "description": (
-                "Base URL of the self-hosted OpenAI-compatible server (Ollama, vLLM, ...). "
-                f"Resolution order: this option > the {env_var} environment variable of the "
-                "container > this default - set the environment variable per deployment to point "
-                "at a different inference server from the same image."
-            ),
-            "type": "string",
-        }
+    # Connection config - the Azure resource, API version and endpoint, the base
+    # URL of a self-hosted server - is deliberately NOT an option: where a
+    # container sends its requests is a property of the deployment, read from
+    # its environment, not something a caller should be able to redirect per
+    # call (or a UI show every user as a field).
     if manifest.provider.auth.mode == "api_key":
         entries["API_KEY"] = {
             "default": manifest.provider.auth.key_name,
@@ -923,13 +914,15 @@ def deployment_notes(manifest: ModelManifest) -> str:
             lines.append(f"- {from_env}.")
         else:
             lines.append("- The key arrives per call in the `API_KEY` option.")
-    elif template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted"):
+    elif template in SELFHOSTED_TEMPLATES:
         base_env = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
         token_env = params.get("token_env", "OPENAI_COMPAT_API_KEY")
         default = params.get("base_url", "")
-        lines.append(f"- `{base_env}` is the server's base URL (default `{default}`); an `endpoint_url` option "
-                     "overrides it per call. The weights stay on that server - this image ships only the API wrapper.")
-        lines.append(f"- `{token_env}` is an optional bearer token; leave it unset for an open server.")
+        lines.append(f"- `{base_env}` is the server's base URL (default `{default}`); `mdb deploy` writes it into "
+                     "the Deployment, so a changed value re-points the container without a rebuild. No caller can "
+                     "redirect it. The weights stay on that server - this image ships only the API wrapper.")
+        lines.append(f"- `{token_env}` is an optional bearer token, read from a Kubernetes Secret (`mdb deploy` "
+                     "renders an optional reference); leave it out for an open server.")
     elif template == "bedrock_converse_sigv4":
         lines.append("- Credentials come from the standard AWS chain on the container (environment variables, IRSA, "
                      "an instance profile) - no key travels through the options string. `boto3` is in the image.")
