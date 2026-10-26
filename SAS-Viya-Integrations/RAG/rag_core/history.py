@@ -31,6 +31,52 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
+
+
+# ---------------------------------------------------------------------------
+# Host names out of the text of an error before it is stored
+# ---------------------------------------------------------------------------
+# The text of a failure is kept where everyone who reads a RAG setup sees it:
+# `error_text` of the ledger and of the step tables, and `rag_runs` /
+# `rag_doc_events` in the vector store. A database driver writes the address it
+# failed at into its message - SingleStore names the internal host and port of
+# the node that failed (`Leaf Error (node-1.svc-singlestore.svc.cluster.local:3306)`),
+# psycopg the server it could not reach - and a provider's HTTP error its URL.
+# `without_hosts` puts `<host>` in their place and leaves the rest of the text.
+#
+# It masks what such messages hold, not every word with a dot: a name followed
+# by a port, the host of a URL, an IPv4 address, a name of a cluster's own
+# domain (`.local`, `.internal`, `.svc`), and a quoted name after "host name",
+# "server at" or "host". A file name (`report.v2.pdf`) or a Python module path
+# (`singlestoredb.exceptions`) in the text stays as it is.
+HOST = "<host>"
+
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_NAME = rf"{_LABEL}(?:\.{_LABEL})+"
+
+_PATTERNS = (
+    # the host of a URL: scheme://[user@]host[:port]
+    re.compile(rf"(?<=://)(?:[^/\s@]+@)?({_NAME}|\[[0-9A-Fa-f:.]+\])"),
+    # a name or an address followed by a port
+    re.compile(rf"(?<![\w.-])({_NAME})(?=:\d{{2,5}}\b)"),
+    # an IPv4 address
+    re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?![\w.])"),
+    # a name of a cluster's own domain
+    re.compile(rf"(?<![\w.-])({_LABEL}(?:\.{_LABEL})*\.(?:local|internal|svc))(?![\w-])", re.IGNORECASE),
+    # psycopg: could not translate host name "x" / connection to server at "x" / host "x";
+    # urllib3 and requests: HTTPSConnectionPool(host='x', port=443)
+    re.compile(rf'(?:host name|server at|host)(?:\s+|=)["\']({_LABEL}(?:\.{_LABEL})*)["\']', re.IGNORECASE),
+)
+
+
+def without_hosts(text) -> str:
+    """`text` with every host name and address it names replaced by <host>."""
+    text = "" if text is None else str(text)
+    for pattern in _PATTERNS:
+        text = pattern.sub(lambda m: m.group(0).replace(m.group(1), HOST), text)
+    return text
+
 
 RUN_COLUMNS = [
     "run_id", "rag_project", "collection", "backend", "started_at",
@@ -341,6 +387,8 @@ class History:
         for name in _STATUS_COUNTS:
             values["docs_" + name] = int((counts or {}).get(name, 0))
         values.update({k: v for k, v in fields.items() if k in RUN_COLUMNS})
+        if values.get("error_text"):
+            values["error_text"] = without_hosts(values["error_text"])
         self._upsert("rag_runs", "run_id", values)
 
     def _upsert(self, table: str, key: str, values: dict) -> None:
@@ -499,7 +547,7 @@ def events_from_inventory(inventory: list, previous: dict = None) -> list:
             "new_content_hash": row.get("content_hash", ""),
             "chunk_count_before": int(was.get("chunk_count") or 0),
             "chunk_count_after": int(row.get("chunk_count") or 0),
-            "error_text": (row.get("error_text") or "")[:500],
+            "error_text": without_hosts(row.get("error_text"))[:500],
         })
     return events
 

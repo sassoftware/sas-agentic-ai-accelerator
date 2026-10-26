@@ -255,6 +255,8 @@ def drop_family_value_maps(manifest: ModelManifest, core: "CoreAssets") -> list[
 CAST_FN = {"float": "float", "int": "int", "str": "str", "bool": "bool"}
 # Python coercion for custom pass-through options, keyed by option type
 TYPE_CAST = {"number": "float", "int": "int", "bool": "bool", "enum": "str", "string": "str"}
+# The dict the picker of mutually exclusive options writes into, where it is not the request body
+EXCLUSIVE_TARGET = {"bedrock_converse": "inferenceConfig", "bedrock_converse_sigv4": "inferenceConfig"}
 
 
 def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
@@ -265,6 +267,10 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
     # Options the provider refuses to accept together, keyed by group name. The
     # first member declared in the manifest wins when the caller sets neither.
     exclusive: dict[str, list[tuple[str, str, str]]] = {}
+    # The dict of the score code the picker writes them into: the request body,
+    # or for Bedrock its inferenceConfig (Claude on Bedrock refuses temperature
+    # and topP together, as Claude does on Anthropic's own API)
+    exclusive_target = EXCLUSIVE_TARGET.get(family, "payload")
     # Fields of nested request objects, keyed by the object: {outer: [(field, expression)]}
     nested: dict[str, list[tuple[str, str]]] = {}
     thinking_block = ""
@@ -370,12 +376,12 @@ def _score_blocks(manifest: ModelManifest, core: CoreAssets) -> dict[str, str]:
         "body_options_block": "\n".join(body_lines),
         "body_options_block_nested": "\n".join("    " + line for line in body_lines),
         "generate_options_block": ",\n".join(generate_lines),
-        "exclusive_options_block": _exclusive_block(exclusive),
+        "exclusive_options_block": _exclusive_block(exclusive, exclusive_target),
         "thinking_block": thinking_block,
     }
 
 
-def _exclusive_block(exclusive: dict[str, list[tuple[str, str, str]]]) -> str:
+def _exclusive_block(exclusive: dict[str, list[tuple[str, str, str]]], target: str = "payload") -> str:
     """Render the runtime picker for mutually exclusive options.
 
     Anthropic rejects `temperature` and `top_p` in the same request ("please use
@@ -388,7 +394,7 @@ def _exclusive_block(exclusive: dict[str, list[tuple[str, str, str]]]) -> str:
             continue
         preferred, preferred_key, preferred_cast = members[0]
         if len(members) == 1:
-            lines.append(f'    payload["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
+            lines.append(f'    {target}["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
             continue
         lines.append(
             f"    # The provider accepts only one of {group}: "
@@ -397,10 +403,10 @@ def _exclusive_block(exclusive: dict[str, list[tuple[str, str, str]]]) -> str:
         keyword = "if"
         for name, body_key, cast in members[1:]:
             lines.append(f'    {keyword} "{name}" in requested and "{preferred}" not in requested:')
-            lines.append(f'        payload["{body_key}"] = {cast}(options["{name}"])')
+            lines.append(f'        {target}["{body_key}"] = {cast}(options["{name}"])')
             keyword = "elif"
         lines.append("    else:")
-        lines.append(f'        payload["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
+        lines.append(f'        {target}["{preferred_key}"] = {preferred_cast}(options["{preferred}"])')
     return "\n".join(lines) + "\n" if lines else ""
 
 

@@ -45,6 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .chunkers import (CHUNKERS, document_text, element_pages, locate,
                        page_at)
 from .extractors.builtin import CODE_SUFFIXES
+from .history import without_hosts
 from .schema import Chunk, link_neighbors
 from .sources import FileSystemSource
 from .tokens import token_budget
@@ -433,7 +434,7 @@ def run_list(source, ledger_rows: list, run_id: str,
             row["content_hash"] = source.fingerprint(entry)
         except Exception as exc:  # unreadable file, files-service error, ...
             row.update(status="failed", content_hash="",
-                       error_text=f"unreadable: {exc}"[:500])
+                       error_text=f"unreadable: {without_hosts(exc)}"[:500])
             inventory.append(row)
             continue
         old = previous.get(doc_id)
@@ -585,7 +586,7 @@ def run_extract(inventory: list, registry, extractor_name=None, source=None,
                                       "(empty or scanned-only document)")
                 newly_skipped.append(row)
         except Exception as exc:  # per-doc failure contract (§2)
-            row.update(status="failed", error_text=str(exc)[:500])
+            row.update(status="failed", error_text=without_hosts(exc)[:500])
             log(f"rag extract: FAILED {row['source_uri']}: {exc}")
         updated.append(row)
     done = sum(1 for r in updated if r.get("extractor") and r["status"] not in ("failed", "skipped"))
@@ -849,7 +850,7 @@ def run_load(embedded_chunks: list, inventory: list, adapter, collection: str,
                     row["status"] = "ingested"
                     loaded += 1
         except Exception as exc:
-            row.update(status="failed", error_text=str(exc)[:500])
+            row.update(status="failed", error_text=without_hosts(exc)[:500])
             failed += 1
             log(f"rag load: FAILED doc {row['doc_id']}: {exc}")
         row["updated_at"] = _now()
@@ -914,7 +915,7 @@ def run_retrieve(questions: list, embedder, adapter, collection: str,
         except Exception as exc:
             failed += 1
             rows.append({"question": question, "rank": 0, "distance": 0.0,
-                         "score": 0.0, "error_text": str(exc)[:500]})
+                         "score": 0.0, "error_text": without_hosts(exc)[:500]})
             log(f"rag retrieve: FAILED {question[:60]!r}: {exc}")
             continue
         if not hits:
@@ -1147,7 +1148,7 @@ def run_purge(doc_ids: list, ledger: list, adapter, collection: str,
             report.append({"doc_id": doc_id,
                            "source_uri": (known or {}).get("source_uri", ""),
                            "chunks_removed": 0, "ledger_removed": "no",
-                           "outcome": "failed", "error_text": str(exc)[:500]})
+                           "outcome": "failed", "error_text": without_hosts(exc)[:500]})
             log(f"rag purge: FAILED doc {doc_id}: {exc}")
     # only a document whose chunks actually went loses its ledger row: a
     # failed erasure that was forgotten anyway would leave the chunks
