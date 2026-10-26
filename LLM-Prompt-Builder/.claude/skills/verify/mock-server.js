@@ -529,6 +529,32 @@ addRagFolder(RAG_CONTENT_ROOT, 'rag-folder-content');
 ['jobs', 'models', 'steps', 'rag_core'].forEach((name) => addRagFolder(`${RAG_CONTENT_ROOT}/${name}`, `rag-folder-${name}`));
 addRagFolder('/Public', 'folder-public');
 const ragFolderById = (id) => Object.values(ragFolders).find((folder) => folder.id === id);
+// SAS Content below /Public for the folder picker of the Documents step, and
+// the top folders it lists (/folders/rootFolders; a hidden one is not listed).
+function addContentFolder(parentPath, name) {
+  const folder = addRagFolder(`${parentPath}/${name}`);
+  ragFolders[parentPath].members.push({ name, uri: `/folders/folders/${folder.id}`, contentType: 'folder' });
+  return folder;
+}
+addContentFolder('/Public', 'Policies');
+addContentFolder('/Public/Policies', 'round trip');
+const CONTENT_ROOTS = [
+  { id: 'rag-folder-root', name: 'SAS Agentic AI Accelerator', type: 'folder' },
+  { id: 'folder-public', name: 'Public', type: 'folder' },
+  { id: 'folder-hidden', name: 'ESP Projects', type: 'hiddenFolder' },
+];
+
+// The compute server for the same picker: the folders of its file system and
+// the sessions the page starts in the ingestion compute context. A session's
+// state answers 404 once after its creation, as SAS Viya 2026.09 did.
+const COMPUTE_FOLDERS = {
+  '/': ['mnt', 'opt', 'tmp'],
+  '/mnt': ['data'],
+  '/mnt/data': ['issue47', 'policies', 'zz manifest', 'zz verify'],
+  '/opt': ['sas'],
+};
+const computeSessions = {};
+let computeSessionCount = 0;
 function ragFolderMembers(folder) {
   const kind = folder.path.startsWith(RAG_CONTENT_ROOT + '/') ? folder.path.slice(RAG_CONTENT_ROOT.length + 1) : '';
   if (kind === 'steps') {
@@ -938,6 +964,7 @@ http
         if (ragSource[1] === 'rag-src-retrieve') return text(res, 200, ragRetrievalTemplate());
         return text(res, 200, fs.readFileSync(path.join(repoRoot(), RAG_SOURCES[ragSource[1]].file)));
       }
+      if (p === '/folders/rootFolders') return json(res, 200, { items: CONTENT_ROOTS, count: CONTENT_ROOTS.length });
       if (p === '/folders/folders/@item') {
         const folder = ragFolders[(u.searchParams.get('path') || '').replace(/\/+$/, '')];
         if (folder) return json(res, 200, { id: folder.id, name: folder.name, uri: `/folders/folders/${folder.id}` });
@@ -1085,7 +1112,45 @@ http
             .map((entry) => ({ version: 1, ...entry })),
         });
       }
-      if (p === '/compute/contexts') return json(res, 200, { items: [] });
+      if (p === '/compute/contexts') {
+        const named = /^eq\(name,'(.*)'\)$/.exec(u.searchParams.get('filter') || '');
+        if (!named || named[1] === 'no-such-context') return json(res, 200, { items: [] });
+        const name = named[1].replace(/''/g, "'");
+        return json(res, 200, { items: [{ id: `ctx-${encodeURIComponent(name)}`, name }], count: 1 });
+      }
+      const computeCreate = /^\/compute\/contexts\/([^/]+)\/sessions$/.exec(p);
+      if (computeCreate && req.method === 'POST') {
+        const id = `pick-${++computeSessionCount}`;
+        let body = {};
+        try { body = JSON.parse(raw); } catch {}
+        computeSessions[id] = { context: decodeURIComponent(computeCreate[1]).replace(/^ctx-/, ''), body, polls: 0, deleted: false };
+        return json(res, 201, { id, name: body.name, attributes: body.attributes });
+      }
+      const computeSession = /^\/compute\/sessions\/([^/]+)(\/state|\/files\/(.*)\/members)?$/.exec(p);
+      if (computeSession) {
+        const session = computeSessions[computeSession[1]];
+        if (!session || session.deleted) return json(res, 404, { message: 'A session with the ID could not be found.' });
+        if (req.method === 'DELETE' && !computeSession[2]) {
+          session.deleted = true;
+          res.writeHead(204);
+          return res.end();
+        }
+        if (computeSession[2] === '/state') {
+          session.polls += 1;
+          if (session.polls === 1) return json(res, 404, { message: 'A session with the ID could not be found.' });
+          return text(res, 200, 'idle');
+        }
+        if (computeSession[3] !== undefined) {
+          const folder = '/' + computeSession[3].split('~fs~').filter(Boolean).map(decodeURIComponent).join('/');
+          const names = COMPUTE_FOLDERS[folder] ?? (Object.values(COMPUTE_FOLDERS).flat().some((name) => folder.endsWith(`/${name}`)) ? [] : null);
+          if (names === null) return json(res, 404, { message: `The path requested "${folder}" is not available.` });
+          const items = [
+            ...names.map((name) => ({ name, isDirectory: true, path: folder, readOnly: false, size: 4096 })),
+            { name: 'readme.txt', isDirectory: false, path: folder, readOnly: false, size: 12 },
+          ];
+          return json(res, 200, { items, count: items.length, start: 0, limit: 1000 });
+        }
+      }
 
       // -- CAS: the promoted ledger (columns and rows are two services) ----------
       const ragLedgerRoute = /^\/(casManagement|casRowSets)\/servers\/cas-shared-default\/caslibs\/([^/]+)\/tables\/([^/]+_LEDGER)\/(columns|rows)$/.exec(p);

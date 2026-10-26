@@ -174,6 +174,33 @@ offered, nothing of the Builder is loaded and nothing RAG is requested from
 SAS Viya. With it enabled, the first request for RAG is made when a user
 chooses the kind.
 
+### The folder picker and its compute session
+
+The document folder of a setup is chosen with **Browse**, never typed, so a
+setup names a folder its author could see. For SAS Content the picker lists
+folders through the Folders service. For the compute server it needs a
+compute session: no other service lists that file system, and only a session
+shows what the ingestion will see - the same file system, as the same user.
+
+- The session is started in the **ingestion compute context** as soon as the
+  RAG kind is shown, because a new session takes about half a minute to be
+  ready (13 s to create and 21 s to be idle, measured on SAS Viya 2026.09).
+  Listing a folder afterwards takes a fraction of a second.
+- It is named *Prompt Builder - RAG folder picker* and is kept alive with a
+  request every minute while the RAG kind is shown. It is deleted when the
+  user switches to a prompt or decision template or leaves the page.
+- It is created with an idle timeout of five minutes (the session attribute
+  `sessionInactiveTimeout`), so a session whose page stopped asking - a
+  closed laptop, a lost network - ends by itself.
+- **Start folders.** The options **RAG: start folder on the compute server**
+  and **RAG: start folder in SAS Content** set where the picker opens; blank,
+  the default, opens it at the top. With a start folder set and its
+  **allow folders above** option not ticked, the picker cannot go above it and
+  a setup can only be saved with a folder below it. This guides the users of
+  the page; it is no permission. What the file system or SAS Content lets a
+  user read decides what the picker shows, and the ingestion job reads the
+  folder its definition names.
+
 The policy values are recorded onto each setup as it is created, so a setup
 keeps what it was built with.
 

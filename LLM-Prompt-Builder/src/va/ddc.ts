@@ -274,7 +274,33 @@ function buildOptionsConfig(config: RuntimeConfig): Record<string, unknown> {
               'ragComputeContext',
               'RAG: ingestion compute context',
               rb.computeContext,
-              'SAS Compute context the ingestion job runs in (passed to Job Execution as _contextName). It MUST run as the requesting user: the stock "SAS Job Execution compute context" runs its servers as a service account, and the ingestion steps cannot reuse the CAS session they need there. "SAS Studio compute context" works. Its Python also needs the packages from the RAG administration guide. Separate from the optimization compute context.'
+              'SAS Compute context the ingestion job runs in (passed to Job Execution as _contextName). It MUST run as the requesting user: the stock "SAS Job Execution compute context" runs its servers as a service account, and the ingestion steps cannot reuse the CAS session they need there. "SAS Studio compute context" works. Its Python also needs the packages from the RAG administration guide. Separate from the optimization compute context. The folder picker for the compute server lists its folders in a session of this context, so a user sees the folders the ingestion can read.'
+            ),
+            // Where the folder picker of the Documents step starts, for each of
+            // the two document locations, and whether it may go above that.
+            textField(
+              'ragServerFolder',
+              'RAG: start folder on the compute server',
+              rb.serverFolder,
+              'The folder of the compute server file system the folder picker of a RAG setup opens in, such as /data/documents. Blank: the picker opens at / and every folder the user may read can be chosen. Set a folder to keep the users of this page below it - see the next option.'
+            ),
+            switchField(
+              'ragServerBrowseAbove',
+              'RAG: allow folders above the compute server start folder',
+              optionFlag(rb.serverBrowseAbove, false),
+              'Unticked (the default): with a start folder set, the picker cannot go above it, and a setup can only name a folder below it. Ticked: the picker opens in the start folder and can go up from there. Without a start folder this has no effect. This guides the users of this page; it is no permission - what the file system lets the user read decides, and the ingestion job reads the folder its definition names.'
+            ),
+            textField(
+              'ragContentFolder',
+              'RAG: start folder in SAS Content',
+              rb.contentFolder,
+              'The SAS Content folder the folder picker of a RAG setup opens in, such as /Public/Policies. Blank: the picker opens at the top of SAS Content and every folder the user may read can be chosen.'
+            ),
+            switchField(
+              'ragContentBrowseAbove',
+              'RAG: allow folders above the SAS Content start folder',
+              optionFlag(rb.contentBrowseAbove, false),
+              'Unticked (the default): with a start folder set, the picker cannot go above it, and a setup can only name a folder below it. Ticked: the picker can go up from there. Without a start folder this has no effect.'
             ),
             {
               name: 'storeSslmode',
@@ -387,8 +413,9 @@ function textField(
 }
 
 /**
- * A checkbox: one of the three feature switches, or the TLS verification
- * default of manifested models.
+ * A checkbox: one of the three feature switches, the TLS verification
+ * default of manifested models, or whether the folder picker of the RAG
+ * Documents step may go above its start folder.
  *
  * Not a dropdown with the keys 'true' and 'false', which is what these were:
  * VA does not restore such a dropdown. After every reload of the object the

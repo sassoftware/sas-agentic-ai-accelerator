@@ -37,6 +37,7 @@ import { initVaIntegration } from '../va/ddc';
 import { createKindSelector, type BuilderKind, type KindSelector, type KindSelectorKind } from '../ui/kind-selector';
 import { buildPromptBuilder, type PromptBuilderController } from './prompt-builder';
 import { buildRagBuilder } from './rag-builder';
+import { closeFolderSession, openFolderSession } from '../api/compute-files-api';
 import type { PromptBuilderText } from '../types';
 
 /** Prefix of the builders' element ids (`app-obj-LPB-…`, `app-obj-RGB-…`). */
@@ -233,6 +234,13 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
     // its builder is hidden.
     promptArea.hidden = flow !== 'prompt';
     ragArea.hidden = flow !== 'rag';
+    // The compute session the folder picker of the Documents step lists the
+    // compute server in: started when the RAG part is shown, so that it is
+    // ready - it takes about half a minute - by the time a folder is chosen,
+    // and deleted when a prompt or decision template is shown again (see
+    // compute-files-api.ts for how it ends when the page is left).
+    if (flow === 'rag' && ragUsable) openFolderSession(String(ragBuilder.computeContext ?? ''));
+    else closeFolderSession();
     if (flow === 'prompt') {
       promptController?.showSetup();
       promptSelector?.focusChecked();

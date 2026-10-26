@@ -34,7 +34,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate, chooseFolder } = require('./page-waits.cjs');
 const { resolvePython, compilePython, evaluateInModule } = require('./python-check.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -527,7 +527,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
 
     // -- author and save ---------------------------------------------------------
     await goRagStep(page, 'documents');
-    await page.fill(rgb('source-path'), '/mnt/data/zz verify');
+    await chooseFolder(page, '/mnt/data/zz verify');
     await page.selectOption(rgb('embed-model'), 'bge_small_en_v15');
     assert((await value(page, 'embed-dims')) === '384', 'the vector width follows the embedding model');
     await goRagStep(page, 'store');
@@ -1411,6 +1411,138 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     assert(promptRequests.length === 0, `no request of the prompt side is made (got: ${promptRequests.map((e) => e.url).join(' | ')})`);
   });
 
+  // ---- picker: the document folder is chosen, never typed ------------------------
+  // The compute server is listed in a compute session of the ingestion compute
+  // context, started when the RAG kind is shown and deleted when it is left;
+  // SAS Content through the Folders service. Start folders keep the picker -
+  // and what a setup may be saved with - below them.
+  await section('picker', async (page) => {
+    const PICKER = rgb('source-folder-picker');
+    const sessionPosts = (log) => log.filter((e) => e.method === 'POST' && /^\/compute\/contexts\/[^/]+\/sessions$/.test(e.url));
+    const sessionDeletes = (log) => log.filter((e) => e.method === 'DELETE' && /^\/compute\/sessions\/pick-\d+$/.test(e.url));
+    const shownFolders = () => page.$$eval(`${PICKER} [data-folder]`, (els) => els.map((e) => e.dataset.folder).join(','));
+    const pickerLine = () => page.textContent(`${PICKER}-current`);
+    const pickerStatus = () => page.textContent(`${PICKER}-status`);
+    const openPicker = async () => {
+      await page.click(rgb('source-browse'));
+      await dialogShown(page, PICKER);
+    };
+    const closePicker = async () => {
+      await page.click(`${PICKER} .btn-secondary`);
+      await page.waitForSelector(PICKER, { state: 'detached' });
+    };
+
+    // -- the session, as soon as the RAG kind is shown ---------------------------------
+    await resetLog();
+    await openRag(page);
+    await selectRagProject(page, 'rag-proj');
+    await waitUntil(async () => sessionPosts(await getLog()).length === 1, 'a compute session is started when the RAG kind is shown');
+    const log = await getLog();
+    const lookup = log.find((e) => e.method === 'GET' && e.url.startsWith('/compute/contexts?'));
+    assert(lookup && decodeURIComponent(lookup.url).includes("eq(name,'rag-ctx')"), `the session is started in the ingestion compute context (looked up: ${lookup ? decodeURIComponent(lookup.url) : 'nothing'})`);
+    const created = JSON.parse(sessionPosts(log)[0].body);
+    assert(
+      sessionPosts(log)[0].url === '/compute/contexts/ctx-rag-ctx/sessions' && created.name === 'Prompt Builder - RAG folder picker' && created.attributes?.sessionInactiveTimeout === 300,
+      `it is named for the picker and ends by itself after five idle minutes (got ${sessionPosts(log)[0].url} ${JSON.stringify(created)})`
+    );
+
+    // -- the compute server: a setup's folder, the folders around it -----------------------
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup with a compute server folder opens');
+    await goRagStep(page, 'documents');
+    assert((await value(page, 'source-path')) === '/mnt/data/policies', 'the field shows the folder the setup was saved with');
+    assert(await page.$eval(rgb('source-path'), (e) => e.readOnly), 'the folder cannot be typed: the field is read-only');
+    assert((await page.textContent(rgb('source-path-note'))) === '', 'with no start folder set, nothing is said beside it');
+    await openPicker();
+    await waitUntil(async () => (await pickerStatus()) === 'No folders here.', 'the picker opens in the folder of the setup, which has no folders below it');
+    assert((await pickerLine()).includes('/mnt/data/policies'), `"Choose this folder" would take that folder (says: ${await pickerLine()})`);
+    await page.click(`${PICKER}-up`);
+    await waitUntil(async () => (await shownFolders()) === 'issue47,policies,zz manifest,zz verify', 'Up lists the folders of /mnt/data - folders only, no file');
+    const listing = (await getLog()).find((e) => e.method === 'GET' && /^\/compute\/sessions\/pick-\d+\/files\/~fs~mnt~fs~data\/members/.test(e.url));
+    assert(Boolean(listing), 'a folder is listed through the files of the compute session, its path written with ~fs~');
+    await page.click(`${PICKER} [data-folder="zz verify"]`);
+    await waitUntil(async () => (await pickerLine()).includes('/mnt/data/zz verify'), 'a folder of the list is opened with a click');
+    await page.click(`${PICKER}-choose`);
+    await page.waitForSelector(PICKER, { state: 'detached' });
+    assert((await value(page, 'source-path')) === '/mnt/data/zz verify', 'Choose this folder puts the folder into the field');
+
+    // -- SAS Content: its top folders, the hidden one left out ----------------------------
+    await page.selectOption(rgb('source-kind'), 'sascontent');
+    assert((await value(page, 'source-path')) === '', 'a change of the location empties the folder: a folder of the other one means nothing there');
+    await openPicker();
+    await waitUntil(async () => (await shownFolders()) === 'Public,SAS Agentic AI Accelerator', 'SAS Content opens at its top folders, without a hidden one');
+    assert(await page.isDisabled(`${PICKER}-choose`), 'the top of SAS Content cannot be chosen');
+    assert(await page.isDisabled(`${PICKER}-up`), 'and there is nothing above it');
+    await page.click(`${PICKER} [data-folder="Public"]`);
+    await page.click(`${PICKER} [data-folder="Policies"]`);
+    await waitUntil(async () => (await pickerLine()).includes('/Public/Policies'), 'a SAS Content folder is opened');
+    await page.click(`${PICKER}-choose`);
+    await page.waitForSelector(PICKER, { state: 'detached' });
+    assert((await value(page, 'source-path')) === '/Public/Policies', 'and chosen');
+    const contentReads = (await getLog()).filter((e) => e.url.startsWith('/folders/rootFolders') || /^\/folders\/folders\/[^/]+\/members/.test(e.url));
+    assert(contentReads.length >= 2, `SAS Content is listed through the Folders service (got ${contentReads.length} request(s))`);
+
+    // -- leaving the RAG kind deletes the session; coming back starts one ------------------
+    await resetLog();
+    await goRagStep(page, 'setup');
+    await page.click('#RGB-kind-llm');
+    await waitUntil(async () => sessionDeletes(await getLog()).length === 1, 'the session is deleted when a prompt template is shown');
+    await page.click('#LPB-kind-rag');
+    await waitUntil(async () => sessionPosts(await getLog()).length === 1, 'and a new one is started when the RAG kind is shown again');
+    await resetLog();
+    await page.goto('about:blank');
+    await waitUntil(async () => sessionDeletes(await getLog()).length === 1, 'leaving the page deletes the session (pagehide, sent with keepalive)');
+
+    // -- a start folder the picker may not go above -----------------------------------------
+    await openRag(page, `${APP_URL}&ragServerFolder=/mnt/data`);
+    await selectRagProject(page, 'rag-proj');
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup opens below the start folder /mnt/data');
+    await goRagStep(page, 'documents');
+    assert((await page.textContent(rgb('source-path-note'))) === '', 'a folder below the start folder is not flagged');
+    await openPicker();
+    await waitUntil(async () => (await pickerStatus()) === 'No folders here.', 'the picker opens in the folder of the setup');
+    await page.click(`${PICKER}-up`);
+    await waitUntil(async () => (await shownFolders()) === 'issue47,policies,zz manifest,zz verify', 'it goes up to the start folder');
+    assert(await page.isDisabled(`${PICKER}-up`), 'and not above it: Up is off there');
+    const crumbs = await page.$$eval(`${PICKER}-path > *`, (els) => els.map((e) => e.textContent).join(''));
+    assert(crumbs === '/mnt/data', `the breadcrumb starts at the start folder (got ${crumbs})`);
+    await closePicker();
+
+    await openRag(page, `${APP_URL}&ragServerFolder=/mnt/data/zz%20verify`);
+
+    await selectRagProject(page, 'rag-proj');
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup opens with a folder outside the start folder');
+    await goRagStep(page, 'documents');
+    assert((await page.textContent(rgb('source-path-note'))).includes('/mnt/data/zz verify'), `a setup saved with a folder outside the start folder says so beside it (says: ${await page.textContent(rgb('source-path-note'))})`);
+    await resetLog();
+    await goRagStep(page, 'store');
+    await page.click(rgb('save'));
+    await page.waitForSelector(`${rgb('save-result')} .alert-danger li`);
+    const refused = await page.textContent(`${rgb('save-result')} .alert-danger`);
+    assert(refused.includes('is not below /mnt/data/zz verify'), `and Save setup refuses it, naming the start folder (says: ${refused.trim().slice(0, 200)})`);
+    assert(uploads(await getLog(), 'rag-setup-1', 'rag-setup.json').length === 0, 'nothing is written');
+
+    await openRag(page, `${APP_URL}&ragServerFolder=/mnt/data/zz%20verify&ragServerBrowseAbove=true`);
+
+    await selectRagProject(page, 'rag-proj');
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup opens where the picker may go above the start folder');
+    await goRagStep(page, 'documents');
+    assert((await page.textContent(rgb('source-path-note'))) === '', 'with leave to go above the start folder, the folder is not flagged');
+    await openPicker();
+    await page.click(`${PICKER}-up`);
+    await page.click(`${PICKER}-up`);
+    await waitUntil(async () => (await shownFolders()) === 'data', 'the picker goes above the start folder');
+    await closePicker();
+
+    // -- a compute context that is not there --------------------------------------------------
+    await openRag(page, `${BASE}/?${PROMPT}&${RAG}&ragComputeContext=no-such-context`);
+    await selectRagProject(page, 'rag-proj');
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'the setup opens with an unknown ingestion compute context');
+    await goRagStep(page, 'documents');
+    await openPicker();
+    await waitUntil(async () => (await pickerStatus()).includes('There is no compute context named no-such-context'), 'the picker says that the ingestion compute context is not there');
+    await closePicker();
+  });
+
   // ---- manifest: what a manifest says beside its button ---------------------------
   await section('manifest', async (page) => {
     const TLS_WARNING = rgb('manifest-tls-warning');
@@ -1791,7 +1923,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       `a double click on Create creates one setup, and no second request is refused for its name (requests: ${setupPosts.map((e) => e.status).join(', ')})`
     );
     await goRagStep(page, 'documents');
-    await page.fill(rgb('source-path'), '/mnt/data/zz manifest');
+    await chooseFolder(page, '/mnt/data/zz manifest');
     await page.selectOption(rgb('embed-model'), 'bge_small_en_v15');
     await goRagStep(page, 'store');
     await page.selectOption(rgb('backend'), 'pgvector');

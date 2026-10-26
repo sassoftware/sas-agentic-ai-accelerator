@@ -151,4 +151,31 @@ function gate(timeout = 180000) {
   };
 }
 
-module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate };
+/**
+ * The document folder of a RAG setup, chosen as a user chooses it: Browse,
+ * the folder picker from the top of its tree down to `folder`, then "Choose
+ * this folder". The field cannot be typed into. `prefix` is the id the
+ * picker's elements start with.
+ */
+async function chooseFolder(page, folder, prefix = '#app-obj-RGB-source', timeout = 120000) {
+  const dialog = `${prefix}-folder-picker`;
+  await page.click(`${prefix}-browse`);
+  await dialogShown(page, dialog, timeout);
+  // from the top: the first entry of the breadcrumb is a link where the picker is below it
+  const top = await page.$(`${dialog} nav button`);
+  if (top) await top.click();
+  let walked = '';
+  for (const segment of folder.split('/').filter(Boolean)) {
+    await page.click(`${dialog} [data-folder="${segment.replace(/"/g, '\\"')}"]`, { timeout });
+    walked += `/${segment}`;
+    await page.waitForFunction(
+      ({ line, path }) => document.querySelector(line)?.textContent?.includes(path),
+      { line: `${dialog}-current`, path: walked },
+      { timeout }
+    );
+  }
+  await page.click(`${dialog}-choose`);
+  await page.waitForSelector(dialog, { state: 'detached', timeout });
+}
+
+module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate, chooseFolder };

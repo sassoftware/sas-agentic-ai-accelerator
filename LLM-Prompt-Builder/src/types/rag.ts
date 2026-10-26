@@ -84,6 +84,22 @@ export interface RagBuilderConfig {
   /** '1' saves the <prefix>_CHUNKS table to disk, '0' keeps it in memory. */
   persistChunks: string;
   /**
+   * Where the folder picker of the Documents step starts on the file system
+   * of the compute server (option `ragServerFolder`). Blank: at `/`, with
+   * nothing to restrict. An admin sets it on purpose - there is no default.
+   */
+  serverFolder: string;
+  /**
+   * Whether the picker may go above `serverFolder` (option
+   * `ragServerBrowseAbove`, a checkbox: read it through `optionFlag`). Off:
+   * a folder outside it cannot be chosen. A guide for the users of this page,
+   * not a permission - the ingestion job reads what its definition names.
+   */
+  serverBrowseAbove: string | boolean;
+  /** The same for SAS Content (options `ragContentFolder`, `ragContentBrowseAbove`). */
+  contentFolder: string;
+  contentBrowseAbove: string | boolean;
+  /**
    * The `enable_<backend>` flags and anything else the options pane adds.
    * Checkbox options store booleans, everything else strings - so an
    * index-signature read must narrow before use (see `optionFlag`).

@@ -175,6 +175,12 @@ const RAG_DEFAULTS: RagBuilderConfig = {
   embedReplicas: '1',
   persistElements: '1',
   persistChunks: '1',
+  // Where the folder picker of the Documents step starts. Blank on purpose:
+  // an admin decides whether users are kept to a folder, nothing is preset.
+  serverFolder: '',
+  serverBrowseAbove: false,
+  contentFolder: '',
+  contentBrowseAbove: false,
   // One enable flag per backend, generated from the single list so adding a
   // backend does not mean remembering to add a default here. A site that
   // operates only one store switches the others off, so they never appear.
@@ -219,6 +225,10 @@ const RAG_URL_PARAMETERS: ReadonlyArray<readonly [parameter: string, key: string
   ['embedReplicas', 'embedReplicas'],
   ['persistElements', 'persistElements'],
   ['persistChunks', 'persistChunks'],
+  ['ragServerFolder', 'serverFolder'],
+  ['ragServerBrowseAbove', 'serverBrowseAbove'],
+  ['ragContentFolder', 'contentFolder'],
+  ['ragContentBrowseAbove', 'contentBrowseAbove'],
   ...RAG_BACKENDS.map((backend) => [backendOptionKey(backend), backendOptionKey(backend)] as const),
 ];
 

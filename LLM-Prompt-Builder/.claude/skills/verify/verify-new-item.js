@@ -78,7 +78,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, dialogsGone, gate } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate, chooseFolder } = require('./page-waits.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -1140,7 +1140,7 @@ function same(got, wanted, label, fieldsOnly = false) {
   const fillRagSetup = async (page) => {
     await goStep(page, 'RGB', 'documents');
     await page.selectOption(rgb('source-kind'), 'sascontent');
-    await page.fill(rgb('source-path'), '/typed/folder');
+    await chooseFolder(page, '/Public/Policies');
     await page.selectOption(rgb('extractor'), { index: 1 });
     await page.check(rgb('include-code'));
     await page.selectOption(rgb('embed-model'), { index: 1 });
@@ -1169,7 +1169,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await atRest();
   };
   const typedRagIsShown = (shown) =>
-    shown.controls['documents #app-obj-RGB-source-path'] === '/typed/folder' &&
+    shown.controls['documents #app-obj-RGB-source-path'] === '/Public/Policies' &&
     shown.controls['documents #app-obj-RGB-include-code'] === 'true' &&
     shown.controls['documents #app-obj-RGB-token-limit'] === '128' &&
     shown.controls['store #app-obj-RGB-collection'] === 'typed_collection' &&
@@ -1513,7 +1513,7 @@ function same(got, wanted, label, fieldsOnly = false) {
     await createRagSetup(page);
     const deleted = await page.inputValue(rgb('setup'));
     await goStep(page, 'RGB', 'documents');
-    await page.fill(rgb('source-path'), '/mnt/data/issue47');
+    await chooseFolder(page, '/mnt/data/issue47');
     await page.selectOption(rgb('embed-model'), { index: 1 });
     await goStep(page, 'RGB', 'store');
     await page.selectOption(rgb('backend'), 'pgvector');

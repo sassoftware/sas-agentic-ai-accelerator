@@ -289,7 +289,7 @@ def test_one_report_carries_both_seed_kinds():
     # every label a fold can produce is an option of the merged report
     assert set(SHARED_LABELS) | set(RAG_ONLY_LABELS) | set(LEGACY_RENAMES.values()) | {RAG_SWITCH} \
         <= set(MERGED_REPORT_LABELS)
-    assert len(MERGED_REPORT_LABELS) == len(set(MERGED_REPORT_LABELS)) == 28
+    assert len(MERGED_REPORT_LABELS) == len(set(MERGED_REPORT_LABELS)) == 32
     assert not LEGACY_DROPPED & set(MERGED_REPORT_LABELS)
 
 

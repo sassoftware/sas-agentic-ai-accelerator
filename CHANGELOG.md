@@ -4,7 +4,7 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
-Claude on AWS Bedrock gets one sampling option per request, the RAG runtime stores no host name in the text of a failure, and Ollama and vLLM definitions take their server from the container only - a reasoning model served by Ollama answers.
+The document folder of a RAG setup is chosen in a folder picker, Claude on AWS Bedrock gets one sampling option per request, the RAG runtime stores no host name in the text of a failure, and Ollama and vLLM definitions take their server from the container only - a reasoning model served by Ollama answers.
 
 ### Upgrading from 2.3.2
 
@@ -12,13 +12,20 @@ Only where it applies to your site; nothing else changes.
 
 1. Update the checkout and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
 2. Where `claude_haiku_4_5_bedrock` is deployed: `mdb register claude_haiku_4_5_bedrock --update` and `mdb publish claude_haiku_4_5_bedrock --wait`, then restart its Deployment.
-3. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core` and ingestion job. Rows written before keep their text.
+3. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core`, ingestion job and Prompt Builder; then reload the Prompt Builder report. Rows written before keep their text, and a setup keeps the folder it was saved with.
 4. For Ollama and vLLM definitions of your own (the release ships none), per definition: `mdb generate <id>`, `mdb register <id> --update`, `mdb publish <id> --wait`, then `mdb deploy <id>` with `OLLAMA_BASE_URL` / `VLLM_BASE_URL` set to the server the cluster reaches, and apply the YAML. The `base_url` option leaves options.json and the Prompt Builder. For a reasoning model (gpt-oss, Qwen3 and the like), add it again with `mdb add` first - or set `reasoning_effort`, `max_tokens: 4000` and `runtime.timeout_s: 300` by hand.
+5. Optional, where RAG is used: set **RAG: start folder on the compute server** and **RAG: start folder in SAS Content** in the Options pane of the Prompt Builder object, and tick the **allow folders above** options where users may go above them ([The folder picker and its compute session](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#the-folder-picker-and-its-compute-session)).
+
+### Added
+
+- **A folder picker for the document folder of a RAG setup.** **Browse** lists the folders the user may read, of the compute server or of SAS Content; the folder can no longer be typed. The compute server is listed in a session of the ingestion compute context, started as soon as the RAG kind is shown (it takes about half a minute), pinged every minute, deleted when the page shows a template or is left, and ended by SAS Viya after five idle minutes.
+- **Four options for where the picker starts:** `ragServerFolder`, `ragServerBrowseAbove`, `ragContentFolder`, `ragContentBrowseAbove`. A start folder is blank by default; set, with its allow-above option off, the picker stays below it and a setup can only be saved with a folder below it.
 
 ### Changed
 
 - **The server of an Ollama or vLLM definition is no scoring option.** The score code reads `OLLAMA_BASE_URL` / `VLLM_BASE_URL`, else the default of the definition; a `base_url` a caller sends is ignored. The Prompt Builder no longer shows the server's address as a field and no longer sends it with every call.
 - **`mdb deploy` writes the server into the Deployment** of an Ollama or vLLM definition, and the token (`OLLAMA_API_KEY` / `VLLM_API_KEY`) as an optional reference to the key Secret.
+- **`mdb package-check`: an option label the shipped Prompt Builder report lacks is drift**, as a changed file is: the report gains it when it is saved in Visual Analytics with the newer page before the export of a release. `--release` still fails for it, and `mdb package-export` still refuses such a report.
 
 ### Fixed
 

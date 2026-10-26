@@ -95,3 +95,28 @@ export async function ensureFolderPath(path: string): Promise<FolderInfo | null>
   }
   return current;
 }
+
+/**
+ * The folders directly below `path` in SAS Content, by name, for the folder
+ * picker of a RAG setup; `/` lists the top folders (rootFolders, without the
+ * hidden ones). null when the folder is not there or cannot be read: the
+ * Folders service answers 404 for both. Only what the user may read is
+ * listed.
+ */
+export async function listContentFolders(path: string): Promise<string[] | null> {
+  const names = (items: { name?: string }[]): string[] =>
+    items
+      .map((item) => item.name ?? '')
+      .filter((name) => name !== '')
+      .sort((a, b) => a.localeCompare(b));
+  if (path === '/' || path === '') {
+    const roots = await viyaGetAll<FolderInfo>('/folders/rootFolders?limit=200');
+    return names(roots.filter((root) => root.type !== 'hiddenFolder'));
+  }
+  const folder = await getFolderByPath(path);
+  if (!folder) return null;
+  const members = await viyaGetAll<FolderMember>(
+    `/folders/folders/${folder.id}/members?filter=${encodeURIComponent("eq(contentType,'folder')")}&limit=200`
+  );
+  return names(members.filter((member) => member.contentType === 'folder'));
+}

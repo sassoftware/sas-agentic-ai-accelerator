@@ -15,6 +15,11 @@ export interface ViyaFetchOptions {
   body?: string | FormData | Blob;
   accept?: string;
   contentType?: string;
+  /**
+   * Send the request on while the page is being left (fetch `keepalive`): the
+   * DELETE of the compute session of the folder picker, sent at `pagehide`.
+   */
+  keepalive?: boolean;
 }
 
 /**
@@ -114,6 +119,9 @@ export async function viyaFetch(
 
   if (options.body !== undefined) {
     fetchOptions.body = options.body;
+  }
+  if (options.keepalive) {
+    fetchOptions.keepalive = true;
   }
 
   let response: Response;
