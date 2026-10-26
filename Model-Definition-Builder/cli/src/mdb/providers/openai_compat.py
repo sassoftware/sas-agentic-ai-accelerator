@@ -18,8 +18,10 @@ from ..core.manifest import (
     AuthBlock, GenerationBlock, MetadataBlock, ModelManifest, OptionSpec,
     PricingBlock, ProviderBlock, RuntimeBlock, TagsBlock,
 )
-from ..core.netutil import get_json
-from .base import CatalogModel, ProviderAdapter, Question, SmokeResult, call_timeout, http_smoke_failure
+from ..core.netutil import DEFAULT_TIMEOUT, get_json
+from .base import (
+    ADAPTIVE_MAX_TOKENS, CatalogModel, ProviderAdapter, Question, SmokeResult, call_timeout, http_smoke_failure,
+)
 
 
 class OpenAICompatAdapter(ProviderAdapter):
@@ -128,6 +130,13 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
     baked in, and an optional bearer token is read from a second env var. The
     model weights live on the server, not in the SCR image, so the container
     only needs the thin api-wrapper requirements.
+
+    The OpenAI-compatible /models listing names the models and nothing else
+    (vLLM adds max_model_len). With ``show_api`` the catalog asks Ollama's own
+    /api/show per model for what a definition depends on: whether the model
+    reasons ("thinking" - gpt-oss, Qwen3, ...), embeds instead of chatting, and
+    its context and vector lengths. A reasoning model added as a plain chat
+    model spent its 1000-token budget on reasoning and answered nothing.
     """
 
     template = "openai_compat_selfhosted"
@@ -135,7 +144,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
 
     def __init__(self, id: str, display_name: str, provider_tag: str,
                  base_url_env: str, base_url_default: str, token_env: str,
-                 docs_url: str = ""):
+                 docs_url: str = "", show_api: bool = False):
         super().__init__(
             id=id, display_name=display_name, provider_tag=provider_tag,
             key_name=None, env_key_var=None, base_url=base_url_default,
@@ -144,6 +153,7 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
         self.base_url_env = base_url_env
         self.base_url_default = base_url_default
         self.token_env = token_env
+        self.show_api = show_api
 
     def _resolved_base(self, answers: Optional[dict] = None) -> str:
         # For CLI-side operations (smoke test, catalog browse) the environment
@@ -157,7 +167,9 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
 
     def questions(self) -> list[Question]:
         return [
-            Question("kind", "Model kind: llm or embedding", default="llm", required=False),
+            # Blank: what the server's catalog says the model is (Ollama), else llm.
+            Question("kind", "Model kind: llm or embedding (blank = as the server reports it)",
+                     default="", required=False),
             Question("base_url", f"Server base URL (blank = {self.base_url_default}, "
                                  f"overridable at runtime via {self.base_url_env})",
                      default=self.base_url_default, required=False),
@@ -171,6 +183,18 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
 
     def _wants_embedding(self, cm: CatalogModel, answers: dict) -> bool:
         return (answers.get("kind") or cm.kind or "llm").strip().lower() == "embedding"
+
+    def default_options(self, cm: CatalogModel) -> dict[str, OptionSpec]:
+        if cm.kind == "llm" and cm.reasoning:
+            # Both servers accept reasoning_effort; Ollama ignores
+            # max_completion_tokens (50 asked, 1649 produced), so the budget
+            # stays max_tokens - large enough for the reasoning AND the answer.
+            return {
+                "reasoning_effort": OptionSpec(default="medium"),
+                "max_tokens": OptionSpec(default=ADAPTIVE_MAX_TOKENS,
+                                         max=float(cm.context_length) if cm.context_length else None),
+            }
+        return super().default_options(cm)
 
     def build_manifest(self, cm: CatalogModel, model_id: str, answers: dict, modeler: str) -> ModelManifest:
         kind_answer = (answers.get("kind") or "").strip().lower()
@@ -252,8 +276,39 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
         for entry in payload.get("data", []):
             ref = entry.get("id", "")
             if ref:
-                models.append(CatalogModel(ref=ref, display_name=entry.get("name") or ref, source="live"))
+                cm = CatalogModel(ref=ref, display_name=entry.get("name") or ref, source="live",
+                                  context_length=entry.get("max_model_len"))  # vLLM
+                if self.show_api:
+                    self._describe(session, base, headers, cm)
+                models.append(cm)
         return models
+
+    @staticmethod
+    def _describe(session: requests.Session, base: str, headers: dict, cm: CatalogModel) -> None:
+        """Fill `cm` from Ollama's /api/show; a server that has none leaves it as it is."""
+        root = base[:-len("/v1")] if base.endswith("/v1") else base
+        try:
+            response = session.post(f"{root}/api/show", headers=headers, json={"model": cm.ref},
+                                    timeout=DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            shown = response.json()
+        except (requests.RequestException, ValueError):
+            return
+        capabilities = shown.get("capabilities") or []
+        info = shown.get("model_info") or {}
+
+        def _length(suffix: str) -> Optional[int]:
+            return next((value for key, value in info.items()
+                         if key.endswith(suffix) and isinstance(value, int)), None)
+
+        # An embedding model can list "thinking" too (qwen3-embedding); what
+        # decides is that it does not complete text.
+        if "embedding" in capabilities and "completion" not in capabilities:
+            cm.kind = "embedding"
+            cm.embedding_length = _length(".embedding_length")
+        else:
+            cm.reasoning = "thinking" in capabilities
+        cm.context_length = _length(".context_length") or cm.context_length
 
     def smoke_test(self, manifest: ModelManifest, api_key: Optional[str],
                    session: requests.Session) -> SmokeResult:
@@ -274,6 +329,15 @@ class SelfHostedOpenAICompatAdapter(OpenAICompatAdapter):
                 if response.status_code >= 300:
                     return http_smoke_failure(response, body)
                 dims = len(body["data"][0]["embedding"])
+                declared = manifest.options.get("Embedding_Length")
+                if declared is not None and declared.default != dims:
+                    # vLLM's /models does not say the vector length, so a
+                    # definition added from it can carry the 768 fallback -
+                    # and a vector store sized by it refuses every vector.
+                    return SmokeResult(ok=False, detail=(
+                        f"Server returned a {dims}-dim embedding from {base}, but Embedding_Length is "
+                        f"{declared.default} - set options.Embedding_Length.default to {dims} in definition.yaml "
+                        "and run mdb generate."))
                 return SmokeResult(ok=True, detail=f"Server returned a {dims}-dim embedding from {base}.")
             response = session.post(
                 f"{base}/chat/completions", headers=headers,

@@ -16,7 +16,7 @@ from typing import Literal, Optional
 from .drift import FileStatus, classify
 from .facts import read_row
 from .generator import (
-    AZURE_TEMPLATES, CoreAssets, GenerationError, list_custom_options, render_assets,
+    AZURE_TEMPLATES, SELFHOSTED_TEMPLATES, CoreAssets, GenerationError, list_custom_options, render_assets,
 )
 from .manifest import MANIFEST_FILENAME, ModelManifest, load_manifest
 from ..viya.answer import one_line
@@ -163,7 +163,7 @@ def validate_folder(folder: Path, core: CoreAssets, fact_sheet: Path) -> list[Is
 
     # V011 - self-hosted OpenAI-compatible definition with no base URL: the score
     # script has no endpoint to call unless the env var is set in the deployment.
-    if manifest.runtime.template in ("openai_compat_selfhosted", "emb_openai_compat_selfhosted") \
+    if manifest.runtime.template in SELFHOSTED_TEMPLATES \
             and not (params.get("base_url") or "").strip():
         env_var = params.get("base_url_env", "the base-URL environment variable")
         issues.append(Issue(

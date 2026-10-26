@@ -106,7 +106,7 @@ After adding, open `definition.yaml` to set the correct `Embedding_Length` and `
 
 ## Use a self-hosted Ollama or vLLM server
 
-If you already run models on **Ollama** or **vLLM**, `mdb` can point a definition at that server for either chat or embeddings. The model weights stay on the server; the published container just calls it. The server URL is not baked in — it resolves at run time from the `OLLAMA_BASE_URL` / `VLLM_BASE_URL` environment variable (or a per-call option), so the same model works across your dev, test and production servers.
+If you already run models on **Ollama** or **vLLM**, `mdb` can point a definition at that server for either chat or embeddings. The model weights stay on the server; the published container just calls it. The server URL belongs to the deployment, not to a call: the container reads it from its `OLLAMA_BASE_URL` / `VLLM_BASE_URL` environment variable (else the default of the definition), so the same model works across your dev, test and production servers, and nobody using the model sees or changes it. For Ollama, `mdb add` asks the server what the model is: a reasoning model (gpt-oss, Qwen3) gets a *Reasoning Effort* and an output budget of 4000 tokens, an embedding model its vector and context length.
 
 ```bash
 # a chat model served by a local Ollama, addressed by its Ollama tag
@@ -117,7 +117,7 @@ mdb add vllm nomic-ai/nomic-embed-text-v1.5 --id nomic_embed_vllm --kind embeddi
   --base-url http://vllm-svc.ml.svc:8000/v1 --yes
 ```
 
-Set `OLLAMA_BASE_URL` / `VLLM_BASE_URL` (and an optional `OLLAMA_API_KEY` / `VLLM_API_KEY`) in your `.env` for local smoke tests, and in each deployment's environment to point at that environment's server.
+Set `OLLAMA_BASE_URL` / `VLLM_BASE_URL` (and an optional `OLLAMA_API_KEY` / `VLLM_API_KEY`) in your `.env` for local smoke tests. `mdb deploy` writes the server into the Deployment it renders - the variable of your shell, else the default of the definition - and reads the token, when the server has one, from the key Secret. vLLM does not say how long an embedding is: `mdb validate --live` compares the vector the server returns with `Embedding_Length` and names the value to set.
 
 ## Register and publish to SAS Viya
 

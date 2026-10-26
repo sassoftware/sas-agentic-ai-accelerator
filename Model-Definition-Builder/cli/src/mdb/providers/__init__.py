@@ -73,6 +73,7 @@ def _builtin_adapters() -> list[ProviderAdapter]:
             base_url_default="http://localhost:11434/v1",
             token_env="OLLAMA_API_KEY",
             docs_url="https://ollama.com/search",
+            show_api=True,
         ),
         SelfHostedOpenAICompatAdapter(
             id="vllm",

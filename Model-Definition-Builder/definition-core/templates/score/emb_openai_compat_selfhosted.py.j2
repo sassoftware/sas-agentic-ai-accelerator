@@ -6,11 +6,13 @@ import sys
 import requests
 
 # Self-hosted OpenAI-compatible embedding server (Ollama, vLLM, or any endpoint
-# that speaks the /embeddings wire format). The base URL resolves per call:
-# options override > {{ base_url_env }} container environment variable > the
-# default baked into this file - so one published image can point at different
-# inference servers without a rebuild. An optional bearer token is read from
-# the {{ token_env }} environment variable (leave unset for an open server).
+# that speaks the /embeddings wire format). The base URL is the
+# {{ base_url_env }} environment variable of the container, else the default
+# baked into this file - so one published image can point at different
+# inference servers without a rebuild. It is no scoring option: where the
+# container sends its requests is a property of the deployment, not of a call.
+# An optional bearer token is read from the {{ token_env }} environment
+# variable (leave it unset for an open server).
 modelVersion = '{{ model_version }}'
 
 # Initiate the logger to write output information to the log
@@ -32,10 +34,11 @@ def scoreModel(document, project, options):
     document, project = _scalar(document), _scalar(project)
     optionsDefaults = {
 {{ options_defaults_block }}
-        "base_url": os.environ.get("{{ base_url_env }}", "{{ base_url_default }}"),
     }
     options = {**optionsDefaults, **_parse_options(options)}
-    modelEndpoint = (options.get('base_url') or '').rstrip('/') + '/embeddings'
+    # An empty variable counts as unset, like a missing one.
+    baseUrl = os.environ.get("{{ base_url_env }}") or "{{ base_url_default }}"
+    modelEndpoint = baseUrl.rstrip('/') + '/embeddings'
     headers = {"Content-Type": "application/json"}
     api_token = os.environ.get("{{ token_env }}", "")
     if api_token:
@@ -59,6 +62,10 @@ def scoreModel(document, project, options):
         raise
     if responseObject.status_code < 200 or responseObject.status_code >= 300:
         logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        if responseObject.status_code in (401, 403):
+            # SCR shows the caller the failing source line, not the message:
+            # the line itself names the remedy.
+            raise RuntimeError("The inference server refused the token - set {{ token_env }} in the key Secret of the container (mdb deploy prints the command)")
         raise RuntimeError(f"Request failed: {responseObject.status_code}")
     embedding = json.dumps(responseJson['data'][0]['embedding'])
     tokens = (responseJson.get('usage', {}) or {}).get('prompt_tokens', 0)

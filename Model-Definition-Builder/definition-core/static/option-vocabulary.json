@@ -311,6 +311,18 @@
                         "maximum": "high"
                     }
                 },
+                "openai_compat_selfhosted": {
+                    "_comment": "Ollama and vLLM pass reasoning_effort to the model's own levels (gpt-oss: low | medium | high), so the two ends of the normalized scale map onto that range - measured on Ollama 0.40 with gpt-oss:20b (low: 434 tokens, medium: 2100).",
+                    "body_key": "reasoning_effort",
+                    "cast": "str",
+                    "value_map": {
+                        "minimal": "low",
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "maximum": "high"
+                    }
+                },
                 "azure_openai_env": {
                     "_comment": "Azure's current GPT-5.x deployments expose 'none' | 'low' | 'medium' | 'high' | 'xhigh' and reject 'minimal', so the normalized scale maps its two ends onto that range - verified live against gpt-5.6-luna. A definition pointed at an older deployment should omit reasoning_effort instead.",
                     "body_key": "reasoning_effort",

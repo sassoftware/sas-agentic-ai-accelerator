@@ -104,9 +104,10 @@ def _valid_default(spec_type, vocab):
 
 def test_every_option_the_generator_can_write_is_read_back_as_written(core):
     """Every option of the vocabulary and an inline option of every type, with
-    a default the rule takes, plus API_KEY and the base_url of the
-    self-hosted templates: the options.json the generator writes passes the
-    rule, and each entry holds the default, type and values it was given."""
+    a default the rule takes, plus API_KEY: the options.json the generator
+    writes passes the rule, and each entry holds the default, type and values
+    it was given. No template writes a base_url: where a container sends its
+    requests is never an option."""
     options = {name: OptionSpec(default=_valid_default(vocab.get("type"), vocab))
                for name, vocab in core.vocabulary.items()}
     options.update({
@@ -122,7 +123,7 @@ def test_every_option_the_generator_can_write_is_read_back_as_written(core):
         written = json.loads(_render_options_json(_manifest(options, template=template), core))
         check_options_json(written)
         assert written["API_KEY"]["default"] == "OpenAI"
-        assert ("base_url" in written) == (template == "openai_compat_selfhosted")
+        assert "base_url" not in written
         for name, spec in options.items():
             entry = written[name]
             assert entry["default"] == spec.default and type(entry["default"]) is type(spec.default), name

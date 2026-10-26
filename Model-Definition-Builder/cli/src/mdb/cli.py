@@ -27,8 +27,8 @@ from typer.core import TyperGroup
 from . import __version__
 from .core import drift, facts
 from .core.generator import (
-    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, CoreAssets, GenerationError, OptionError, OptionRuleError,
-    _render_options_json, check_options_file, drop_family_value_maps, effective_score_file, list_custom_options,
+    AZURE_ENV_TEMPLATE, AZURE_TEMPLATES, SELFHOSTED_TEMPLATES, CoreAssets, GenerationError, OptionError,
+    OptionRuleError, _render_options_json, check_options_file, drop_family_value_maps, effective_score_file, list_custom_options,
     render_assets,
 )
 from .core.importer import import_folder
@@ -4141,6 +4141,7 @@ def deploy(
     out_dir = Path(_not_empty("--out", out, "folder"))
     out_dir.mkdir(parents=True, exist_ok=True)
     key_vars: list[str] = []  # the variables the Secret has to hold, in order
+    token_vars: list[str] = []  # the optional server tokens the Secret may hold (self-hosted servers)
     pv_rendered = False  # a manifest of the PV variant was written
     routes: list[tuple] = []  # --ingress contour: (model_id, Service, port) per rendered model
     for folder in ctx.resolve_targets(ids or [], all_):
@@ -4196,6 +4197,35 @@ def deploy(
                 raise typer.Exit(1)
             if env_var not in key_vars:
                 key_vars.append(env_var)
+        server_note = ""
+        if manifest.runtime.template in SELFHOSTED_TEMPLATES:
+            # Where the container sends its requests belongs to the Deployment:
+            # the base URL as a value (the workstation's variable, else the
+            # definition's default) and the server's token, when it has one,
+            # from the key Secret - optional, so an open server needs none.
+            base_env = params.get("base_url_env", "OPENAI_COMPAT_BASE_URL")
+            token_env = params.get("token_env", "OPENAI_COMPAT_API_KEY")
+            base_url = (os.environ.get(base_env, "").strip() or params.get("base_url", "")).strip()
+            try:
+                # Each entry goes right after the template's first one, so the
+                # last added reads first: the server, then its token.
+                lines = _with_key_secret(lines, token_env, key_secret, optional=True,
+                                         comment="The server's bearer token, if it has one - from a Kubernetes "
+                                                 "Secret; the pod starts without it.")
+                if base_url:
+                    lines = _with_env_value(lines, base_env, base_url,
+                                            "The inference server this container calls - change it to re-point "
+                                            "the model, no rebuild.")
+            except ValueError as exc:
+                console.print(f"[red]{_plain(manifest.model_id)}: {_plain(exc)}[/red]")
+                raise typer.Exit(1)
+            if not base_url:
+                console.print(f"[yellow]{_plain(manifest.model_id)}: neither {_plain(base_env)} nor the definition "
+                              f"names the server - add {_plain(base_env)} to the env list before applying.[/yellow]",
+                              soft_wrap=True)
+            if token_env not in token_vars:
+                token_vars.append(token_env)
+            server_note = f" - server {base_url or '(not set)'}, optional token {key_secret}/{token_env}"
         try:
             lines = _with_placement(lines, **placement)
         except ValueError as exc:
@@ -4220,6 +4250,7 @@ def deploy(
             variant = " (Azure variant - connection from the container environment)"
         if env_var:
             variant += f" - key from Secret {key_secret}/{env_var}"
+        variant += server_note
         console.print(f"[green]{_plain(manifest.model_id)}: {_plain(target)}[/green]" + _plain(variant))
     router = None
     if contour and routes:
@@ -4265,6 +4296,22 @@ def deploy(
         # the shell expands: "NAME":"'"$NAME"'"
         patch = ",".join('"' + name + '":"\'"$' + name + '"\'"' for name in key_vars)
         console.print("  Where the Secret exists already, add or replace these keys - every other key it holds stays:")
+        console.print(f"  kubectl patch secret {_plain(key_secret)} -n {_plain(namespace)} --type merge "
+                      f"-p '{{\"stringData\":{{{_plain(patch)}}}}}'", soft_wrap=True)
+    if token_vars:
+        # Optional: an open server needs nothing. The same two commands as for
+        # a key - create where the Secret is missing (a patch of a missing
+        # Secret fails: zeus had none), patch where it exists - names only.
+        literals = " ".join(f'--from-literal={name}="${name}"' for name in token_vars)
+        patch = ",".join('"' + name + '":"\'"$' + name + '"\'"' for name in token_vars)
+        console.print(f"A server that asks for a bearer token reads it from {_plain(', '.join(token_vars))} in the Secret "
+                      f"{_plain(key_secret)} (optional - an open server needs none). Add it, the value filled in by "
+                      "the shell from its own environment, then scale the Deployment to 0 and back to 1 - a pod "
+                      "reads its environment when it starts:", soft_wrap=True)
+        if not key_vars:
+            console.print(f"  kubectl create secret generic {_plain(key_secret)} {_plain(literals)} -n {_plain(namespace)}",
+                          soft_wrap=True)
+            console.print("  Where the Secret exists already, add or replace these keys - every other key it holds stays:")
         console.print(f"  kubectl patch secret {_plain(key_secret)} -n {_plain(namespace)} --type merge "
                       f"-p '{{\"stringData\":{{{_plain(patch)}}}}}'", soft_wrap=True)
     if tls_secret != DEFAULT_TLS_SECRET:
@@ -4382,10 +4429,25 @@ def _router_lines(template: str, routes: list[tuple], *, host: str, namespace: s
     return lines
 
 
-def _with_key_secret(lines: list[str], env_var: str, secret: str) -> list[str]:
+def _with_key_secret(lines: list[str], env_var: str, secret: str, optional: bool = False,
+                     comment: str = "The provider key (auth.mode env) - from a Kubernetes Secret, "
+                                    "never from the image.") -> list[str]:
     """The Deployment's env list with `env_var` read from `secret` (key = the
-    variable's name). An entry of that name the template already declares
-    (AZURE_OPENAI_API_KEY in the Azure template) is replaced, not doubled."""
+    variable's name); `optional` lets the pod start without that key. An entry
+    of that name the template already declares (AZURE_OPENAI_API_KEY in the
+    Azure template) is replaced, not doubled."""
+    source = ["valueFrom:", "  secretKeyRef:", f"    name: {secret}", f"    key: {env_var}"]
+    if optional:
+        source.append("    optional: true")
+    return _with_env_entry(lines, env_var, source, comment)
+
+
+def _with_env_value(lines: list[str], env_var: str, value: str, comment: str) -> list[str]:
+    """The Deployment's env list with `env_var` set to `value` (replacing an entry of that name)."""
+    return _with_env_entry(lines, env_var, [f"value: {json.dumps(value)}"], comment)
+
+
+def _with_env_entry(lines: list[str], env_var: str, source: list[str], comment: str) -> list[str]:
     def entry_end(start: int) -> int:
         depth = len(lines[start]) - len(lines[start].lstrip())
         end = start + 1
@@ -4404,14 +4466,7 @@ def _with_key_secret(lines: list[str], env_var: str, secret: str) -> list[str]:
         raise ValueError("the deployment template has no env list (no SAS_SCR_LOG_LEVEL_SCR_IO entry) to add "
                          f"{env_var} to")
     indent = lines[anchor[0]][:len(lines[anchor[0]]) - len(lines[anchor[0]].lstrip())] if anchor else "        "
-    block = [
-        f"{indent}# The provider key (auth.mode env) - from a Kubernetes Secret, never from the image.",
-        f"{indent}- name: {env_var}",
-        f"{indent}  valueFrom:",
-        f"{indent}    secretKeyRef:",
-        f"{indent}      name: {secret}",
-        f"{indent}      key: {env_var}",
-    ]
+    block = [f"{indent}# {comment}", f"{indent}- name: {env_var}"] + [f"{indent}  {line}" for line in source]
     return lines[:at] + block + lines[at:]
 
 

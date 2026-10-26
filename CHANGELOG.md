@@ -4,20 +4,32 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
-Claude on AWS Bedrock gets one sampling option per request, and the RAG runtime stores no host name in the text of a failure.
+Claude on AWS Bedrock gets one sampling option per request, the RAG runtime stores no host name in the text of a failure, and Ollama and vLLM definitions take their server from the container only - a reasoning model served by Ollama answers.
 
 ### Upgrading from 2.3.2
 
 Only where it applies to your site; nothing else changes.
 
-1. Where `claude_haiku_4_5_bedrock` is deployed: `mdb register claude_haiku_4_5_bedrock --update` and `mdb publish claude_haiku_4_5_bedrock --wait`, then restart its Deployment.
-2. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core` and ingestion job. Rows written before keep their text.
+1. Update the checkout and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
+2. Where `claude_haiku_4_5_bedrock` is deployed: `mdb register claude_haiku_4_5_bedrock --update` and `mdb publish claude_haiku_4_5_bedrock --wait`, then restart its Deployment.
+3. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core` and ingestion job. Rows written before keep their text.
+4. For Ollama and vLLM definitions of your own (the release ships none), per definition: `mdb generate <id>`, `mdb register <id> --update`, `mdb publish <id> --wait`, then `mdb deploy <id>` with `OLLAMA_BASE_URL` / `VLLM_BASE_URL` set to the server the cluster reaches, and apply the YAML. The `base_url` option leaves options.json and the Prompt Builder. For a reasoning model (gpt-oss, Qwen3 and the like), add it again with `mdb add` first - or set `reasoning_effort`, `max_tokens: 4000` and `runtime.timeout_s: 300` by hand.
+
+### Changed
+
+- **The server of an Ollama or vLLM definition is no scoring option.** The score code reads `OLLAMA_BASE_URL` / `VLLM_BASE_URL`, else the default of the definition; a `base_url` a caller sends is ignored. The Prompt Builder no longer shows the server's address as a field and no longer sends it with every call.
+- **`mdb deploy` writes the server into the Deployment** of an Ollama or vLLM definition, and the token (`OLLAMA_API_KEY` / `VLLM_API_KEY`) as an optional reference to the key Secret.
 
 ### Fixed
 
 - **Bedrock no longer sends `temperature` and `topP` together.** Claude refuses a request with both, as on Anthropic's own API (fixed there in 1.1.0). Both Bedrock templates send the one the caller set, `temperature` where the caller set both or neither; `claude_haiku_4_5_bedrock` is regenerated.
 - **The RAG runtime keeps host names out of the text of a failure.** A database or HTTP error names the server it failed at - SingleStore the internal host and port of a node. `error_text` of the ledger and the step tables, `rag_runs`, `rag_doc_events` and the message of the ingestion job now hold `<host>` in its place; file names in the text stay.
 - **The Logging README says what the collection-script tests need** (bash and GNU sed) and that they are skipped without them.
+- **A reasoning model added from Ollama answers.** `mdb add ollama` reads `/api/show`: a model that thinks gets `reasoning_effort`, `max_tokens` 4000 and 300 seconds per call (gpt-oss:20b answered nothing with 1000 tokens and timed out at 60 seconds with 4000), an embedding model its vector and context length. vLLM definitions take the context length from `/models`.
+- **An answer cut off by the output budget fails, naming the remedy**, instead of returning an empty response.
+- **A server that refuses the token names the variable to set** (`OLLAMA_API_KEY` / `VLLM_API_KEY`) instead of `Request failed: {responseObject.status_code}`, and `mdb deploy` prints the command that creates the key Secret, not only the patch of an existing one.
+- **`mdb validate --live` refuses an `Embedding_Length` the server does not return** (a vLLM embedding definition kept the 768 fallback).
+- **The model card of an Ollama or vLLM definition** named an `endpoint_url` option that never existed.
 
 ## [2.3.2] - 2026-10-23
 
