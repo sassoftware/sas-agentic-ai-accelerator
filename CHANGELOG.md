@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.4.0] - 2026-10-26
 
 The document folder of a RAG setup is chosen in a folder picker, Claude on AWS Bedrock gets one sampling option per request, the RAG runtime stores no host name in the text of a failure, and Ollama and vLLM definitions take their server from the container only - a reasoning model served by Ollama answers.
 
@@ -10,7 +10,7 @@ The document folder of a RAG setup is chosen in a folder picker, Claude on AWS B
 
 Only where it applies to your site; nothing else changes.
 
-1. Update the checkout and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
+1. Update the checkout to 2.4.0 and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`.
 2. Where `claude_haiku_4_5_bedrock` is deployed: `mdb register claude_haiku_4_5_bedrock --update` and `mdb publish claude_haiku_4_5_bedrock --wait`, then restart its Deployment.
 3. Where RAG is used: `mdb builders-import` (or `mdb content-deploy --only RAG --to "<your RAG content root>"`) brings the changed `rag_core`, ingestion job and Prompt Builder; then reload the Prompt Builder report. Rows written before keep their text, and a setup keeps the folder it was saved with.
 4. For Ollama and vLLM definitions of your own (the release ships none), per definition: `mdb generate <id>`, `mdb register <id> --update`, `mdb publish <id> --wait`, then `mdb deploy <id>` with `OLLAMA_BASE_URL` / `VLLM_BASE_URL` set to the server the cluster reaches, and apply the YAML. The `base_url` option leaves options.json and the Prompt Builder. For a reasoning model (gpt-oss, Qwen3 and the like), add it again with `mdb add` first - or set `reasoning_effort`, `max_tokens: 4000` and `runtime.timeout_s: 300` by hand.
