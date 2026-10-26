@@ -169,12 +169,16 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
   }
 
   // Best-effort: stamp the current user on newly created prompts and setups.
-  try {
-    const user = await getUserInfo();
-    getAppState().userName = user?.id ?? null;
-  } catch {
-    getAppState().userName = null;
-  }
+  // Asked for alongside the builders, not before them, and awaited before a
+  // builder is shown: nothing can be created before the user is known.
+  const userKnown = getUserInfo().then(
+    (user) => {
+      getAppState().userName = user?.id ?? null;
+    },
+    () => {
+      getAppState().userName = null;
+    }
+  );
 
   // One area per flow, both children of the root for the life of the page.
   // The areas carry no layout of their own: the step header inside a builder
@@ -373,6 +377,7 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
           controller = readyController;
         },
       });
+      await userKnown;
       promptArea.replaceChildren(element);
       promptController = controller;
       return;
@@ -419,6 +424,7 @@ export async function mountBuilderShell(root: HTMLElement): Promise<void> {
   ragArea.hidden = false;
   try {
     await ensureRagBuilt();
+    await userKnown;
     showFlow('rag');
   } catch (error) {
     console.error('Failed to build the RAG Builder.', error);
