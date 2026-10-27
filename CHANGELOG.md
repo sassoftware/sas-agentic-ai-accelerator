@@ -2,6 +2,15 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+Weaviate (1.33 or newer) is a third vector store for RAG.
+
+### Added
+
+- **Weaviate backend.** `rag_core.adapters.weaviate` talks to Weaviate's REST and GraphQL API with `requests` - no driver to install - and carries the same chunk lineage as pgvector and SingleStore: retire, restore, as-of reads, prune, erasure. Cutover moves a collection alias. The governance DDL is the create-collection request, saved as `vector-store-ddl.json`. The manifested retrieval model reads Weaviate over GraphQL. Weaviate keeps no run history (`rag_runs`, `rag_doc_events`, `rag_configs` are SQL): the Load step and the ingestion job say so in the log and publish nothing. Hybrid search waits for all backends.
+- **The RAG steps offer Weaviate.** *RAG - Load Vector Store*, *Retrieve Context* and *Purge Documents* 1.5 list it under *Runtime*, with the *TLS* control; *Register Setup* 1.5 names the port and the JSON DDL. The database name is not used by Weaviate.
+
 ## [2.4.5] - 2026-11-05
 
 `mdb check` honours `SAS_VIYA_VERIFY_SSL=false` from the environment of mdb in its compute session, and no longer reports the jobs' TLS verification as missing.
