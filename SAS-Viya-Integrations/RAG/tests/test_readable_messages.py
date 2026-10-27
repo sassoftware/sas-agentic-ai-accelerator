@@ -120,7 +120,10 @@ def test_the_about_tab_says_so_in_a_version_of_its_own(path):
                 return found
         return None
     changelog = find(ui["pages"])
-    newest = changelog.split("\n* Version: ")[0]
+    # the version of its own; a later version (Weaviate) may stand above it
+    entries = ["* Version: " + entry for entry in ("\n" + changelog).split("\n* Version: ")[1:]]
+    newest = next(entry for entry in entries
+                  if entry.startswith("* Version: %s (20OCT2026)" % NEW_VERSIONS[path.stem]))
     assert newest.startswith("* Version: %s (20OCT2026)\n      - A quotation mark, a percent sign, an ampersand or a "
                              "semicolon of a message in the log or of the run summary is written as a character that "
                              "reads the same" % NEW_VERSIONS[path.stem])

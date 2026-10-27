@@ -382,19 +382,26 @@ class _Store:
 class _Adapter:
     HISTORY_DIALECT = "postgres"
 
-    def __init__(self, store):
+    def __init__(self, store, run_history=True):
         self._store = store
+        self._run_history = run_history
 
     def raw_connection(self):
         return self._store
 
+    def capabilities(self):
+        return {"run_history": self._run_history}
 
-def _hand_over(tmp_path, record="1", store=None, workpath=None):
+
+def _hand_over(tmp_path, record="1", store=None, workpath=None, run_history=True):
     """The lines of the job's Python between the count of the collection and
     the line that closes the store, run. Returns (the stub of SAS, the calls
     of record_history, the store)."""
+    from rag_core.steps import keeps_run_history
+
     python = _python()
-    start = python.index('        if P["recordHistory"] != "0":')
+    start = python.index('        if P["recordHistory"] != "0" and not '
+                         'keeps_run_history(adapter):')
     end = python.index("        adapter.close()\n", start)
     block = textwrap.dedent(python[start:end])
     # the two functions the block calls are the ones of the program
@@ -404,7 +411,8 @@ def _hand_over(tmp_path, record="1", store=None, workpath=None):
     store = store if store is not None else _Store(STORE_RUNS, STORE_EVENTS)
     recorded = []
     scope = {
-        "SAS": sas, "adapter": _Adapter(store), "stages": [], "inventory": [],
+        "SAS": sas, "adapter": _Adapter(store, run_history), "stages": [],
+        "inventory": [], "keeps_run_history": keeps_run_history,
         "real_rows": [], "discovered": [], "run_id": THIS, "cfg_hash": "0123456789",
         "total": 3, "dims": 384, "load_stats": {},
         "client": types.SimpleNamespace(usage={}),
@@ -510,6 +518,17 @@ def test_with_the_history_switched_off_nothing_is_read_written_or_handed_over(tm
     sas, recorded, store = _hand_over(tmp_path, record="0")
     assert recorded == [] and store.statements == []
     assert sas.macros == {} and sas.log == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_store_without_run_history_records_and_hands_over_nothing(tmp_path):
+    """Weaviate: the history tables are SQL the store cannot run. The run is
+    not failed and not reported as a failed record - the log says the store
+    keeps none, and _rag_histState stays off, so SAS publishes nothing."""
+    sas, recorded, store = _hand_over(tmp_path, run_history=False)
+    assert recorded == [] and store.statements == []
+    assert sas.macros == {}
+    assert any("keeps no run history" in str(line) for line in sas.log)
     assert list(tmp_path.iterdir()) == []
 
 
