@@ -1359,4 +1359,4 @@ def test_no_path_of_the_manifest_holds_a_character_double_quotes_do_not_keep():
     PowerShell and bash read as it stands unless the path holds a character double quotes do not keep. `--only`
     takes a path of this manifest and nothing else, so the hints are right while no path of it holds one."""
     paths = [entry.path for entry in content.load_manifest(REPOSITORY).all_entries()]
-    assert len(paths) == 74 and not [path for path in paths if cli._NOT_KEPT_IN_DOUBLE_QUOTES.intersection(path)]
+    assert len(paths) == 75 and not [path for path in paths if cli._NOT_KEPT_IN_DOUBLE_QUOTES.intersection(path)]
