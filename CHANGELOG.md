@@ -2,7 +2,7 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.4.1] - 2026-10-27
 
 The Prompt Builder page is a quarter of its size, opens sooner and no longer needs `'unsafe-eval'`.
 
@@ -10,7 +10,7 @@ The Prompt Builder page is a quarter of its size, opens sooner and no longer nee
 
 Step 1 is for every site with the Prompt Builder; step 2 is optional.
 
-1. `mdb builders-import`, then reload the Prompt Builder report.
+1. Update the checkout to 2.4.1, then `mdb builders-import` and reload the Prompt Builder report.
 2. Optional: remove `'unsafe-eval'` from `script-src` of the SAS Job Execution content security policy, unless another page served by SAS Job Execution on your site needs it ([Setup Additional UIs](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs)).
 
 ### Changed
