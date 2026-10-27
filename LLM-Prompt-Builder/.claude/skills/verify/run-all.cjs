@@ -32,10 +32,11 @@ const WORK = process.cwd();
 const DIST = path.resolve(process.env.VERIFY_DIST || path.join(PROJECT, 'dist', 'index.html'));
 const PORT = Number(process.env.MOCK_PORT) || 4173;
 const BASE = `http://localhost:${PORT}`;
-const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-new-item', 'verify-write-lock', 'verify-outcomes', 'verify-reads', 'verify-round-trip', 'verify-options', 'verify-locales', 'verify-tokens', 'verify-waits'];
+const SUITES = ['verify', 'verify-decision', 'verify-rag', 'verify-new-item', 'verify-write-lock', 'verify-outcomes', 'verify-reads', 'verify-round-trip', 'verify-options', 'verify-locales', 'verify-tokens', 'verify-waits', 'verify-loader'];
 // The locale check, the token scan and the census of the waits read files
-// only: no mock, no browser.
-const NEEDS_MOCK = (suite) => !['verify-locales', 'verify-tokens', 'verify-waits'].includes(suite);
+// only: no mock, no browser. The loader check opens the built page in a
+// browser but serves it itself and calls no service: no mock either.
+const NEEDS_MOCK = (suite) => !['verify-locales', 'verify-tokens', 'verify-waits', 'verify-loader'].includes(suite);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const mockAnswers = () =>

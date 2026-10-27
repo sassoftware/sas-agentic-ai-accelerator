@@ -342,11 +342,13 @@ default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsa
 
 **2. SAS Job Execution** — `sas.commons.web.security` → *SAS Job Execution* →
 `content-security-policy` (replace `<sas-viya-host>` with your environment's URL).
-The `'unsafe-inline'` and `'unsafe-eval'` in `script-src` are what allow the
-base64-decoded single-file bundle to run:
+The `'unsafe-inline'` in `script-src` is what lets the single-file bundle run: its
+small loader unpacks the gzipped script and adds it as an inline script. The page
+needs no `'unsafe-eval'` (releases up to 2.4.0 did); keep it only where another page
+served by SAS Job Execution on your site needs it:
 
 ```
-default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://<sas-viya-host>; style-src 'self' 'unsafe-inline'; img-src * blob: data:; child-src 'self' blob: data: ; frame-ancestors 'self'; form-action 'self';
+default-src 'self'; script-src 'self' 'unsafe-inline' https://<sas-viya-host>; style-src 'self' 'unsafe-inline'; img-src * blob: data:; child-src 'self' blob: data: ; frame-ancestors 'self'; form-action 'self';
 ```
 
 **3. IFrame sandbox attributes** — verify the `sas.visualanalytics` definition's

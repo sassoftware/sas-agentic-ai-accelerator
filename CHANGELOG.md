@@ -2,6 +2,24 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+The Prompt Builder page is a quarter of its size, opens sooner and no longer needs `'unsafe-eval'`.
+
+### Upgrading from 2.4.0
+
+Step 1 is for every site with the Prompt Builder; step 2 is optional.
+
+1. `mdb builders-import`, then reload the Prompt Builder report.
+2. Optional: remove `'unsafe-eval'` from `script-src` of the SAS Job Execution content security policy, unless another page served by SAS Job Execution on your site needs it ([Setup Additional UIs](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs)).
+
+### Changed
+
+- **The page is gzipped.** The build stores the script and the stylesheet gzipped and base64-encoded, and a small loader unpacks them in the browser; the file shrinks from 1.24 MB to 0.35 MB. SAS Job Execution serves it uncompressed, so every load transfers that much less, and the build fails if a Go template action (`{{`) is left in the page.
+- **No `'unsafe-eval'`.** The loader runs the script as an inline script instead of through `new Function`; `'unsafe-inline'` is enough.
+- **The first view asks for what it needs at once.** The projects, the LLMs with their options, the provider keys and the decision models load side by side instead of one after another, and the current user alongside them.
+- **DOMPurify 3.4.17** (from 3.4.16), for three advisories of modes the page does not use.
+
 ## [2.4.0] - 2026-10-26
 
 The document folder of a RAG setup is chosen in a folder picker, Claude on AWS Bedrock gets one sampling option per request, the RAG runtime stores no host name in the text of a failure, and Ollama and vLLM definitions take their server from the container only - a reasoning model served by Ollama answers.

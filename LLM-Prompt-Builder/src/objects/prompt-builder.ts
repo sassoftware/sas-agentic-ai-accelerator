@@ -674,6 +674,40 @@ export async function buildPromptBuilder(
     // written into the score code and decides nothing the page does itself.
     const tlsVerificationOn = promptBuilderObject?.sslVerify !== false;
 
+    // The credential domain the provider keys come from. 'none' skips the
+    // lookup (for deployments using only key-less models); with a non-blank
+    // default, an empty URL parameter cannot express "off".
+    const credentialDomainRaw = String(promptBuilderObject?.credentialDomain ?? '').trim();
+    const credentialDomain = credentialDomainRaw.toLowerCase() === 'none' ? '' : credentialDomainRaw;
+
+    // What the first view waits for is asked for at once, here, and each
+    // answer is awaited where it is used below: the project listings, the
+    // LLMs with their options, the provider keys and the decision models do
+    // not depend on each other. Asked one after another they kept the page
+    // empty for about 3 s on a SAS Viya across the Atlantic (2.4.0). A
+    // request that fails still fails where its answer is awaited; the catch
+    // only keeps the browser from reporting it as unhandled meanwhile.
+    const startedEarly = <T>(promise: Promise<T>): Promise<T> => {
+      promise.catch(() => undefined);
+      return promise;
+    };
+    // The second listing is asked for even with decision templates switched
+    // off: a decision project carries Prompt-Engineering too, and knowing
+    // which ones they are is what keeps them out of the LLM list.
+    const projectListingsLoaded = startedEarly(
+      Promise.all([
+        getModelProjects(`contains(tags,'Prompt-Engineering')`),
+        getModelProjects(`contains(tags,'${DECISION_PROJECT_TAG}')`),
+      ])
+    );
+    const llmsLoaded = startedEarly(loadAvailableLLMs());
+    const secretsLoaded = startedEarly(
+      credentialDomain ? resolveDomainSecrets(credentialDomain) : Promise.resolve<Record<string, string>>({})
+    );
+    const decisionModelsLoaded = startedEarly(
+      decisionEnabled ? loadDecisionModels() : Promise.resolve({ models: [] as AvailableLLM[], withAttributes: [] as string[] })
+    );
+
     // Experiment-tracker rows for THIS object instance. Kept in the closure
     // (not on window) so two prompt-builder panes don't clobber each other.
     let petRows: PETRow[] = [];
@@ -1321,15 +1355,10 @@ export async function buildPromptBuilder(
       );
     }
 
-    // Get all projects in the specified repository and render the filterable
-    // list. The second listing is asked for even with decision templates
-    // switched off: a decision project carries Prompt-Engineering too, and
-    // knowing which ones they are is what keeps them out of the LLM list.
+    // Get all projects in the specified repository (projectListingsLoaded,
+    // started at the top) and render the filterable list.
     {
-      const [allProjects, decisionProjects] = await Promise.all([
-        getModelProjects(`contains(tags,'Prompt-Engineering')`),
-        getModelProjects(`contains(tags,'${DECISION_PROJECT_TAG}')`),
-      ]);
+      const [allProjects, decisionProjects] = await projectListingsLoaded;
       promptBuilderAllProjects = allProjects;
       promptBuilderDecisionProjectIds = new Set(decisionProjects.map((project) => project.value));
     }
@@ -2048,47 +2077,47 @@ export async function buildPromptBuilder(
     promptBuilderModelSelectorContainer.setAttribute('id', `${promptBuilderObject?.id}-model-selector-container`);
     // Load the available and deprecated LLM lists, then each LLM's options.json,
     // all in parallel — done serially this delays the first paint noticeably.
-    const [promptBuilderAllLLMOptions, promptBuilderDeprecatedLLMOptions] = await Promise.all([
-      getModelProjectModels(promptBuilderObject?.llmProjectID as string),
-      getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')"),
-    ]);
-    const promptBuilderDeprecatedLLMs: AvailableLLM[] = promptBuilderDeprecatedLLMOptions.map(o => ({ ...o, id: o.value, name: o.innerHTML }));
-    const promptBuilderAvailableLLMs: AvailableLLM[] = promptBuilderAllLLMOptions
-      .map(o => ({ ...o, id: o.value, name: o.innerHTML }))
-      .filter((obj1) => !promptBuilderDeprecatedLLMs.some((obj2) => obj1.id === obj2.id));
-    await Promise.all(
-      promptBuilderAvailableLLMs.map(async (availableLLM) => {
-        // A single unreachable/slow LLM must not break the whole builder — it
-        // just loads without its options (and, later, without a cost estimate).
-        try {
-          const availableLLMContents = await getModelContents(availableLLM.id);
-          for (const availableLLMContent of availableLLMContents) {
-            if (availableLLMContent?.name === 'options.json') {
-              availableLLM.fileURI = availableLLMContent.fileUri;
-              availableLLM.options = await readStoredJson<Record<string, ModelOption>>(availableLLM.fileURI!, 'options.json');
+    // Started at the top of buildPromptBuilder (llmsLoaded), awaited here.
+    async function loadAvailableLLMs(): Promise<{ available: AvailableLLM[]; deprecated: AvailableLLM[] }> {
+      const [allLLMOptions, deprecatedLLMOptions] = await Promise.all([
+        getModelProjectModels(promptBuilderObject?.llmProjectID as string),
+        getModelProjectModels(promptBuilderObject?.llmProjectID as string, "eq(tags,'deprecated')"),
+      ]);
+      const deprecated: AvailableLLM[] = deprecatedLLMOptions.map(o => ({ ...o, id: o.value, name: o.innerHTML }));
+      const available: AvailableLLM[] = allLLMOptions
+        .map(o => ({ ...o, id: o.value, name: o.innerHTML }))
+        .filter((obj1) => !deprecated.some((obj2) => obj1.id === obj2.id));
+      await Promise.all(
+        available.map(async (availableLLM) => {
+          // A single unreachable/slow LLM must not break the whole builder — it
+          // just loads without its options (and, later, without a cost estimate).
+          try {
+            const availableLLMContents = await getModelContents(availableLLM.id);
+            for (const availableLLMContent of availableLLMContents) {
+              if (availableLLMContent?.name === 'options.json') {
+                availableLLM.fileURI = availableLLMContent.fileUri;
+                availableLLM.options = await readStoredJson<Record<string, ModelOption>>(availableLLM.fileURI!, 'options.json');
+              }
             }
+          } catch (error) {
+            console.error(`Failed to load options for LLM ${availableLLM.name}.`, error);
+            // An options.json this page cannot read is no model without
+            // options: the model is shown as one that cannot be used.
+            availableLLM.optionsUnusable = error instanceof StoredFileUnusable;
           }
-        } catch (error) {
-          console.error(`Failed to load options for LLM ${availableLLM.name}.`, error);
-          // An options.json this page cannot read is no model without
-          // options: the model is shown as one that cannot be used.
-          availableLLM.optionsUnusable = error instanceof StoredFileUnusable;
-        }
-      })
-    );
-    // Resolve provider keys from the credential domain: a single secrets-map
-    // lookup under the signed-in user's identity (user credential overrides
-    // group credential). The domain is the ONLY key source — providers
-    // without an entry are disabled in every model selector with a note
-    // naming the domain, so access to a provider is an identity decision.
-    // 'none' skips the lookup (for deployments using only key-less models);
-    // with a non-blank default, an empty URL parameter cannot express "off".
-    const credentialDomainRaw = String(promptBuilderObject?.credentialDomain ?? '').trim();
-    const credentialDomain = credentialDomainRaw.toLowerCase() === 'none' ? '' : credentialDomainRaw;
+        })
+      );
+      return { available, deprecated };
+    }
+    const { available: promptBuilderAvailableLLMs, deprecated: promptBuilderDeprecatedLLMs } = await llmsLoaded;
+    // The provider keys of the credential domain (secretsLoaded, started at
+    // the top): a single secrets-map lookup under the signed-in user's
+    // identity (user credential overrides group credential). The domain is
+    // the ONLY key source — providers without an entry are disabled in every
+    // model selector with a note naming the domain, so access to a provider
+    // is an identity decision.
     const providersWithoutCredential = new Set<string>();
-    promptBuilderObject.API_KEYS = credentialDomain
-      ? await resolveDomainSecrets(credentialDomain)
-      : {};
+    promptBuilderObject.API_KEYS = await secretsLoaded;
     {
       const resolvedKeys = promptBuilderObject.API_KEYS as Record<string, string>;
       promptBuilderAvailableLLMs
@@ -2159,10 +2188,13 @@ export async function buildPromptBuilder(
     const promptBuilderDecisionModelsContainer = document.createElement('div');
     promptBuilderDecisionModelsContainer.id = `${promptBuilderObject?.id}-decision-model-selector-container`;
     promptBuilderDecisionModelsContainer.style.display = 'none';
-    let promptBuilderAvailableDecisionModels: AvailableLLM[] = [];
     // Asked for only while decision templates are switched on - switched off,
-    // the page sends no request about decision models at all.
-    if (decisionEnabled) {
+    // the page sends no request about decision models at all. Started at the
+    // top of buildPromptBuilder (decisionModelsLoaded), awaited here; the
+    // names of the models whose attributes were read come back with them.
+    async function loadDecisionModels(): Promise<{ models: AvailableLLM[]; withAttributes: string[] }> {
+      const models: AvailableLLM[] = [];
+      const withAttributes: string[] = [];
       try {
         const decisionProjects = await getModelProjects(
           `and(eq(repositoryId,'${promptBuilderObject?.modelRepositoryID}'),eq(name,'${DECISION_PROJECT_NAME}'))`
@@ -2173,38 +2205,50 @@ export async function buildPromptBuilder(
             getModelProjectModels(decisionProjectID),
             getModelProjectModels(decisionProjectID, "eq(tags,'deprecated')"),
           ]);
-          promptBuilderAvailableDecisionModels = decisionModelOptions
-            .map((option) => ({ ...option, id: option.value, name: option.innerHTML }))
-            .filter((model) => !deprecatedDecisionModels.some((deprecated) => deprecated.value === model.id));
+          models.push(
+            ...decisionModelOptions
+              .map((option) => ({ ...option, id: option.value, name: option.innerHTML }))
+              .filter((model) => !deprecatedDecisionModels.some((deprecated) => deprecated.value === model.id))
+          );
+          // Per model, its options and its attributes are asked for side by
+          // side: both need only the id.
           await Promise.all(
-            promptBuilderAvailableDecisionModels.map(async (model) => {
-              try {
-                const contents = await getModelContents(model.id);
-                const optionsContent = contents.find((content) => content?.name === 'options.json');
-                if (optionsContent?.fileUri) {
-                  model.fileURI = optionsContent.fileUri;
-                  model.options = await readStoredJson<Record<string, ModelOption>>(optionsContent.fileUri, 'options.json', isDecisionModelOptions);
+            models.flatMap((model) => [
+              (async () => {
+                try {
+                  const contents = await getModelContents(model.id);
+                  const optionsContent = contents.find((content) => content?.name === 'options.json');
+                  if (optionsContent?.fileUri) {
+                    model.fileURI = optionsContent.fileUri;
+                    model.options = await readStoredJson<Record<string, ModelOption>>(optionsContent.fileUri, 'options.json', isDecisionModelOptions);
+                  }
+                } catch (error) {
+                  console.error(`Failed to load options for decision model ${model.name}.`, error);
+                  model.optionsUnusable = error instanceof StoredFileUnusable;
                 }
-              } catch (error) {
-                console.error(`Failed to load options for decision model ${model.name}.`, error);
-                model.optionsUnusable = error instanceof StoredFileUnusable;
-              }
+              })(),
               // The card shows what the registration says the model is and
               // accepts, so the attributes are read up front rather than at
               // the first run.
-              try {
-                Object.assign(model, extractCostAttributes(await getModelDetails(model.id)));
-                llmAttributesFetched.add(model.name);
-              } catch (error) {
-                console.error(`Failed to load the attributes of decision model ${model.name}.`, error);
-              }
-            })
+              (async () => {
+                try {
+                  Object.assign(model, extractCostAttributes(await getModelDetails(model.id)));
+                  withAttributes.push(model.name);
+                } catch (error) {
+                  console.error(`Failed to load the attributes of decision model ${model.name}.`, error);
+                }
+              })(),
+            ])
           );
         }
       } catch (error) {
         console.error('Failed to load the decision models.', error);
       }
+      return { models, withAttributes };
     }
+    const { models: promptBuilderAvailableDecisionModels, withAttributes: decisionModelsWithAttributes } =
+      await decisionModelsLoaded;
+    decisionModelsWithAttributes.forEach((name) => llmAttributesFetched.add(name));
     for (const model of promptBuilderAvailableDecisionModels) {
       llmAttributesByName.set(model.name, model);
       const keyName = model.options?.API_KEY?.default as string | undefined;

@@ -6,9 +6,9 @@
  * characters on one line that reads like a name (`$name$`) is replaced by the
  * value of that parameter - by nothing when there is none. Measured on a live
  * system: such text is gone from the served page. Inside code that cuts the
- * code; the scripts are safe because the build stores them base64-encoded
- * (no `$` in that alphabet), so what is left to look at is the HTML and the
- * inlined stylesheet.
+ * code; the script and the stylesheet are safe because the build stores them
+ * gzipped and base64-encoded (no `$` in that alphabet), so what is left to
+ * look at is the HTML and the small loader that unpacks them.
  *
  * It needs no mock, no browser and no copy: `node verify-tokens.js` runs it
  * where it lies, as a module or as CommonJS (the only import is a dynamic
@@ -49,7 +49,13 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
   });
 
   const dollars = (page.match(/\$/g) || []).length;
-  const encodedScripts = (page.match(/atob\("/g) || []).length;
+  // Every inline script is either packed (gzip + base64, of a type no browser
+  // runs) or the loader, which unpacks the packed ones and is plain text.
+  const inline = [...page.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/gi)].filter(
+    ([, attrs, body]) => body.trim() && !/\bsrc\s*=/i.test(attrs)
+  );
+  const packed = inline.filter(([, attrs]) => attrs.includes('type="text/x-pb-gzip"'));
+  const loaders = inline.filter(([, attrs, body]) => !attrs.trim() && body.includes('DecompressionStream'));
   const harmful = found.filter((entry) => !entry.comment);
   let failed = 0;
   const check = (ok, label) => {
@@ -57,8 +63,11 @@ Promise.all([import('node:fs'), import('node:path')]).then(([fs, path]) => {
     console.log(`${ok ? 'OK ' : 'FAIL'}  ${label}`);
   };
   check(
-    !/<script(?![^>]*\bsrc\s*=)[^>]*>(?!document\.addEventListener\("DOMContentLoaded",function\(\)\{new Function\()[^<]/.test(page),
-    `every inline script of ${path.basename(file)} is stored encoded (${encodedScripts} of them), so no script text can hold a token`
+    packed.length >= 2 &&
+      packed.every(([, , body]) => /^[A-Za-z0-9+/=]+$/.test(body)) &&
+      loaders.length === 1 &&
+      packed.length + loaders.length === inline.length,
+    `the script and the stylesheet of ${path.basename(file)} are packed (${packed.length}, base64 only) and the one other inline script is the loader (${loaders.length}), so no code text can hold a token`
   );
   check(
     harmful.length === 0,

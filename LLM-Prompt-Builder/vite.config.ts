@@ -8,17 +8,20 @@
  * `npm run build` produces a single self-contained `dist/index.html`:
  *   - inlineIntoHtml() puts the one script and the one stylesheet of the
  *     build into the HTML file.
- *   - goTemplateSafeScripts() then base64-encodes every inline <script> body so
- *     the SAS Job Execution Go template engine does not choke on the `{{`/`}}`
- *     sequences that a minified bundle inevitably contains, and removes the
- *     bundler's `$vite$` marker comment from the stylesheet, which SAS Job
- *     Execution would take for a parameter token.
+ *   - goTemplateSafeScripts() then gzips the script and the stylesheet and
+ *     stores them base64-encoded, so the SAS Job Execution Go template engine
+ *     does not choke on the `{{`/`}}` sequences that a minified bundle
+ *     inevitably contains, and no `$name$` reads as a parameter token. A small
+ *     loader unpacks them in the browser. SAS Job Execution serves the page
+ *     uncompressed, so this also cuts what every load transfers to about a
+ *     quarter.
  *
  * That single file is uploaded as a SAS Job Execution definition and embedded in
- * a SAS Visual Analytics report. Requires `'unsafe-inline'` and `'unsafe-eval'`
- * in the Job Execution CSP (see README).
+ * a SAS Visual Analytics report. Requires `'unsafe-inline'` in `script-src` of
+ * the Job Execution CSP (see README); no `'unsafe-eval'`.
  */
 import { defineConfig, type Plugin } from 'vite';
+import { gzipSync } from 'fflate';
 
 /**
  * Put the one script and the one stylesheet of the build into index.html, the
@@ -83,12 +86,6 @@ function inlineIntoHtml(): Plugin {
 }
 
 /**
- * Base64-encode every inline <script> so its content survives Go template
- * processing, then decode-and-run it on DOMContentLoaded via `new Function`.
- * Scripts with a `src` attribute (there should be none after inlining) and
- * empty scripts are left untouched.
- */
-/**
  * Normalize the entry template's line endings before Vite parses it, so a
  * checkout with CRLF endings (e.g. Windows with autocrlf) produces exactly
  * the same bundle as a LF checkout — CI byte-compares the committed
@@ -105,7 +102,108 @@ function normalizeTemplateEol(): Plugin {
   };
 }
 
+/** The type of the elements that carry a packed script or stylesheet: no browser runs it. */
+const PACKED_TYPE = 'text/x-pb-gzip';
+
+/**
+ * Unpacks the page in the browser. It reads every packed element in order,
+ * gunzips it with the browser's own DecompressionStream and decodes the bytes
+ * as UTF-8 (the German texts, the arrows). The stylesheet goes in first; the
+ * script runs once the document is parsed, as an inline <script> element - so
+ * the page needs `'unsafe-inline'` in `script-src`, and no `'unsafe-eval'`. It
+ * runs inside a function, as `new Function` ran it before: nothing it declares
+ * lands on `window`. The unpacking is asynchronous, so the script starts
+ * after the load event of the frame - when Visual Analytics has already posted
+ * the message that asks for the Options pane, once: the loader keeps every
+ * message that arrives before the script has run and dispatches it again
+ * after. A browser without DecompressionStream (before 2023) gets a sentence
+ * instead of an empty page.
+ *
+ * Plain ES5 text, because it is not bundled: it must hold neither `{{` nor
+ * `}}` (Go template actions), nor a `$` (SAS Job Execution parameter tokens).
+ */
+const LOADER = [
+  '(function () {',
+  // VA posts the message that carries the resultName once, at the load event
+  // of the frame - before the unpacked script has run and registered its
+  // listener. The loader keeps what arrives meanwhile and hands it on.
+  '  var early = [];',
+  '  function keep(event) {',
+  '    early.push(event);',
+  '  }',
+  "  window.addEventListener('message', keep);",
+  "  var packed = Array.prototype.slice.call(document.querySelectorAll('script[type=\"" + PACKED_TYPE + "\"]'));",
+  '  function say(text) {',
+  '    function write() {',
+  "      var note = document.createElement('p');",
+  "      note.style.cssText = 'font-family: sans-serif; margin: 2rem;';",
+  '      note.textContent = text;',
+  '      document.body.replaceChildren(note);',
+  '    }',
+  "    if (document.body) write(); else document.addEventListener('DOMContentLoaded', write);",
+  '  }',
+  "  if (typeof DecompressionStream !== 'function' || typeof TextDecoder !== 'function') {",
+  "    say('This page needs a current browser: Chrome, Edge, Firefox or Safari of 2023 or later.');",
+  '    return;',
+  '  }',
+  '  function unpack(element) {',
+  '    var binary = atob(element.textContent);',
+  '    var bytes = new Uint8Array(binary.length);',
+  '    for (var i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);',
+  "    var text = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));",
+  '    return new Response(text).arrayBuffer().then(function (buffer) {',
+  "      return new TextDecoder('utf-8').decode(buffer);",
+  '    });',
+  '  }',
+  '  var parsed = new Promise(function (resolve) {',
+  "    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', resolve); else resolve();",
+  '  });',
+  '  Promise.all(packed.map(unpack)).then(function (texts) {',
+  '    packed.forEach(function (element, index) {',
+  "      if (element.getAttribute('data-kind') !== 'style') return;",
+  "      var style = document.createElement('style');",
+  '      style.textContent = texts[index];',
+  '      element.parentNode.insertBefore(style, element);',
+  '    });',
+  '    return parsed.then(function () {',
+  '      packed.forEach(function (element, index) {',
+  "        if (element.getAttribute('data-kind') !== 'script') return;",
+  "        var script = document.createElement('script');",
+  "        script.textContent = '(function () {\\n' + texts[index] + '\\n})();';",
+  '        element.parentNode.insertBefore(script, element);',
+  '      });',
+  "      window.removeEventListener('message', keep);",
+  '      early.forEach(function (event) {',
+  "        window.dispatchEvent(new MessageEvent('message', {",
+  '          data: event.data,',
+  '          origin: event.origin,',
+  '          lastEventId: event.lastEventId,',
+  '          source: event.source,',
+  '          ports: Array.prototype.slice.call(event.ports || [])',
+  '        }));',
+  '      });',
+  '    });',
+  '  }).catch(function (error) {',
+  "    console.error('The page could not be unpacked.', error);",
+  "    say('The page could not be unpacked: ' + error);",
+  '  });',
+  '})();',
+].join('\n');
+
+/**
+ * Gzip (level 9) and base64-encode the inline script and stylesheet into
+ * packed elements, and put the loader after them. Base64 holds no brace and
+ * no `$`, so neither the Go template engine of SAS Job Execution nor its
+ * `$name$` tokens can touch the code; the build fails if `{{` or `}}` is
+ * left anywhere in the page. fflate, not Node's zlib: its output is the same
+ * on every platform and Node version, and CI compares the committed file
+ * with a fresh build byte for byte (mtime 0 keeps the gzip header fixed).
+ */
 function goTemplateSafeScripts(): Plugin {
+  const pack = (kind: 'script' | 'style', text: string): string =>
+    `<script type="${PACKED_TYPE}" data-kind="${kind}">${Buffer.from(
+      gzipSync(new TextEncoder().encode(text), { level: 9, mtime: 0 })
+    ).toString('base64')}</script>`;
   return {
     name: 'go-template-safe-scripts',
     enforce: 'post',
@@ -121,31 +219,20 @@ function goTemplateSafeScripts(): Plugin {
           // (CI compares the committed file against a fresh Linux build).
           html = html.replace(/\r\n?/g, '\n');
           // The bundler ends the inlined stylesheet with a marker comment,
-          // /*$vite$:1*/. SAS Job Execution serves this page as the form of a
-          // job definition and replaces text between two dollar signs that
-          // reads like a name by the value of that parameter - by nothing
-          // when there is none. Inside a comment that cuts no code, but the
-          // served page then differs from the built one, and the token scan
-          // of the verify suites would have to make an exception for it. The
-          // marker has no use once everything is inlined, so it is removed -
-          // from the stylesheets only; the scripts are left as they are.
-          html = html.replace(
-            /<style([^>]*)>([\s\S]*?)<\/style>/gi,
-            (_match, attrs: string, css: string) =>
-              `<style${attrs}>${css.replace(/\/\*\$vite\$:\d+\*\//g, '')}</style>`
+          // /*$vite$:1*/, of no use once everything is inlined.
+          html = html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_match, css: string) =>
+            pack('style', css.replace(/\/\*\$vite\$:\d+\*\//g, ''))
           );
-          html = html.replace(
-            /<script([^>]*)>([\s\S]*?)<\/script>/gi,
-            (match, attrs: string, code: string) => {
-              if (!code.trim() || /\bsrc\s*=/i.test(attrs)) return match;
-              const encoded = Buffer.from(code, 'utf-8').toString('base64');
-              // Decode base64 -> bytes -> UTF-8 text so non-ASCII source (the
-              // German locale's umlauts, em dashes, etc.) is reconstructed
-              // correctly. A bare atob() maps each byte to a Latin-1 code point
-              // and mangles any multi-byte UTF-8 sequence.
-              return `<script>document.addEventListener("DOMContentLoaded",function(){new Function(new TextDecoder().decode(Uint8Array.from(atob("${encoded}"),function(c){return c.charCodeAt(0)})))()});</script>`;
+          html = html.replace(/<script([^>]*)>([\s\S]*?)<\/script>/gi, (match, attrs: string, code: string) => {
+            if (!code.trim() || /\bsrc\s*=/i.test(attrs) || attrs.includes(PACKED_TYPE)) return match;
+            return pack('script', code);
+          });
+          html = html.replace('</head>', `<script>\n${LOADER}\n</script>\n</head>`);
+          for (const action of ['{{', '}}']) {
+            if (html.includes(action)) {
+              this.error(`go-template-safe-scripts left "${action}" in ${file.fileName}: SAS Job Execution would take it for a template action`);
             }
-          );
+          }
           file.source = html;
         }
       }
