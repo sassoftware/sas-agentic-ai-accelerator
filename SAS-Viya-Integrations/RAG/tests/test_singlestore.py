@@ -34,9 +34,9 @@ def test_registry_returns_singlestore():
         get_adapter("faiss")
 
 
-def test_registry_lists_both_backends_with_labels_and_drivers():
+def test_registry_lists_every_backend_with_labels_and_drivers():
     listed = dict(backends())
-    assert set(listed) == {"pgvector", "singlestore"}
+    assert set(listed) == {"pgvector", "singlestore", "weaviate"}
     assert listed["singlestore"] == "SingleStore"
     assert driver_for("singlestore") == "singlestoredb"
     assert driver_for("nope") == ""

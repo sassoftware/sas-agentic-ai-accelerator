@@ -5,7 +5,8 @@
 Scores are normalized HIGHER-IS-BETTER on every backend (fixes the portal
 pgVector direction bug); absolute scores are never comparable across backends.
 `ddl()` returns what ensure_collection would execute — the vector-store-ddl.sql
-governance artifact and the DBA pre-creation path. `cutover()` is the §2
+governance artifact (vector-store-ddl.json on Weaviate, where it is the
+create-collection request body) and the DBA pre-creation path. `cutover()` is the §2
 collection-versioning switch; backends without aliases implement it as a
 transactional rename or pointer and say so in capabilities().
 """

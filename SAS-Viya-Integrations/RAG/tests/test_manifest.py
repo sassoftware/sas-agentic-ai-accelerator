@@ -277,6 +277,16 @@ def test_registration_writes_artifacts_and_registers_the_model():
     assert len(posted) == 5, "one file per artifact"
 
 
+def test_a_weaviate_setup_stores_its_ddl_as_json(monkeypatch):
+    """Weaviate has no SQL: its DDL is the create-collection JSON, and the
+    artifact is named for what it is."""
+    monkeypatch.setitem(SETTINGS, "BACKEND", "weaviate")
+    stub = _StubViya()
+    result = _register(stub)
+    assert "vector-store-ddl.json" in result["artifacts"]
+    assert "vector-store-ddl.sql" not in result["artifacts"]
+
+
 def test_re_registering_updates_the_model_instead_of_duplicating_it():
     stub = _StubViya(existing_model=True)
     result = _register(stub)
