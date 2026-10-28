@@ -184,13 +184,21 @@ class FakeWeaviate:
                                          "vector": list(obj.get("vector") or [])}
         return {"id": obj["id"], "result": {}}
 
-    def _check_paths(self, name, where):
+    def _check_paths(self, name, where, graphql=False):
         if not where:
             return
         if "operands" in where:
             for operand in where["operands"]:
-                self._check_paths(name, operand)
+                self._check_paths(name, operand, graphql)
             return
+        for key, value in where.items():
+            # as measured on 1.39.12: GraphQL knows no value*Array field (a list
+            # goes under valueText), REST batch delete needs it for a list
+            if graphql and key.startswith("value") and key.endswith("Array"):
+                raise ValueError(f'In field "{key}": Unknown field.')
+            if not graphql and key.startswith("value") and isinstance(value, list) \
+                    and not key.endswith("Array"):
+                raise ValueError(f"{key} expects a single value")
         prop = where["path"][0]
         declared = {p["name"] for p in self.classes[name]["properties"]}
         if prop != "id" and prop not in declared:
@@ -265,7 +273,7 @@ class FakeWeaviate:
             args = json.loads("{" + _gql_to_json(rest[1:end]) + "}")
             rest = rest[end + 1:].lstrip()
         where = args.get("where")
-        self._check_paths(name, where)
+        self._check_paths(name, where, graphql=True)
         rows = [(i, o) for i, o in self.objects[name].items()
                 if self._matches(i, o, where)]
         if kind == "Aggregate":

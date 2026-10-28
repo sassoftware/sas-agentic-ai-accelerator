@@ -141,9 +141,15 @@ def _version(text: str) -> tuple:
 def gql(value, key: str = "") -> str:
     """A value as GraphQL input. Strings are JSON-escaped (GraphQL string
     escapes are JSON's), operators are enums and checked against a list -
-    nothing a caller passes is spliced in unescaped."""
+    nothing a caller passes is spliced in unescaped.
+
+    Where trees are built in REST form, where a list operand sits under
+    `valueTextArray` (batch delete needs that); GraphQL has no such field and
+    takes the list under `valueText`, so the `Array` suffix is dropped here."""
     if isinstance(value, dict):
-        return "{" + ", ".join(f"{k}: {gql(v, k)}" for k, v in value.items()) + "}"
+        return "{" + ", ".join(
+            f"{k[:-5] if k.startswith('value') and k.endswith('Array') else k}: {gql(v, k)}"
+            for k, v in value.items()) + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(gql(v, key) for v in value) + "]"
     if key in _GQL_ENUM_KEYS:
