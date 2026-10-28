@@ -1716,9 +1716,19 @@ became generally available, is refused with a message that says so.
   collections are created with `content` and `context_header` BM25-indexed,
   so hybrid retrieval can be added later without re-ingesting.
 
-Not yet measured against a live Weaviate: the adapter is tested against an
-in-memory stand-in of the API (`tests/test_weaviate.py`); the live round trip
-in the same file runs when `WEAVIATE_HOST` is set.
+The adapter is tested against an in-memory stand-in of the API
+(`tests/test_weaviate.py`); the live round trip in the same file runs when
+`WEAVIATE_HOST` is set. Measured live on 2026-10-28 against Weaviate 1.39.12
+(single node, API key, auto-schema off) on SAS Viya Stable 2026.10: the live
+round trip passed (it found that GraphQL takes a list under `valueText`, not
+`valueTextArray`, now fixed), and `Ingest-Documents.sas` as a job in the
+*SAS Studio compute context* ingested three Markdown documents from a SAS
+Content folder through an EmbeddingGemma embedding container (768
+dimensions), skipped them unchanged on the next run, and retired and replaced
+them after a change; `Test-Retrieval.sas` returned the expected document at
+rank 1 for three questions and only the new version after the change. Not
+measured: the custom steps, the retrieval model and the RAG Builder (which
+does not offer Weaviate yet).
 
 :::warning The SingleStore ANN index is opt-in for a reason
 Measured on a live cluster, an HNSW index there **loses rows**: the same query
