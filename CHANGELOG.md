@@ -2,6 +2,12 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Added
+
+- **A TLS switch for the programs and custom steps that run in SAS.** *Get-All-Prompts*, *Start-Here*, *Ingest-Documents*, *Test-Retrieval*, *Optimize-Prompt-DSPy* and the custom steps that call SAS Viya now honour `SAS_VIYA_CABUNDLE` and `SAS_VIYA_VERIFY_SSL=false` set in the SAS session, for test systems whose CA bundle cannot verify their own ingress. Nothing changes when neither is set. See [A program or custom step fails with CERTIFICATE_VERIFY_FAILED](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Troubleshooting-Guide#program-certificate-verify-failed).
+
 ## [2.4.1] - 2026-10-27
 
 The Prompt Builder page is a quarter of its size, opens sooner and no longer needs `'unsafe-eval'`.

@@ -43,6 +43,10 @@ READS = {"symget", "sasfnc"}
 # The one argument of the two that is no text of the program: NOTE, WARNING or ERROR
 KEYWORDS = {"logMessage": {"messageType"}, "symput": set()}
 ESCAPING = "sas_safe"
+# The one function that writes a fixed text to the log without the escaping function: the TLS switch of the programs
+# says in a constant message that verification is off. The message holds no quote, no semicolon and no macro trigger.
+FIXED_MESSAGE_FUNCTION = "_viya_tls_verify"
+NOT_IN_A_FIXED_MESSAGE = re.compile(r"""['"%&;\n]|/\*""")
 
 
 def call_sites(source):
@@ -74,6 +78,10 @@ def call_sites(source):
         call = parent_of.get(attribute)
         if not (isinstance(call, ast.Call) and call.func is attribute):
             bypasses.append(f"line {node.lineno}: SAS.{attribute.attr} is handed on and not called")
+            continue
+        if (attribute.attr == "logMessage" and function_of(call) == FIXED_MESSAGE_FUNCTION and not call.keywords and len(call.args) == 2
+                and all(isinstance(argument, ast.Constant) and isinstance(argument.value, str) for argument in call.args)
+                and not NOT_IN_A_FIXED_MESSAGE.search(call.args[0].value)):
             continue
         sites.append((attribute.attr, function_of(call)))
         if any(isinstance(argument, ast.Starred) for argument in call.args) or any(keyword.arg is None for keyword in call.keywords):
