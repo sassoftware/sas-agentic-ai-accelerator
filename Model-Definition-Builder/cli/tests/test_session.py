@@ -182,6 +182,22 @@ def test_create_session_passes_the_password_grant_positionally(env, fake_sasctl)
     assert session.auth_summary == f"{URL} as u (password grant)"
 
 
+@pytest.mark.parametrize("value, verified", [
+    (None, True), ("true", True), ("TRUE", True), ("", True),
+    ("false", False), ("False", False), (" no ", False), ("0", False),
+    # a typo or a word of its own keeps the check - it used to switch it off
+    ("ture", True), ("yes", True), ("1", True), ("off", True),
+])
+def test_sas_viya_verify_ssl_is_off_only_for_a_false_word(env, fake_sasctl, value, verified):
+    env.setenv(s.URL_ENV, URL)
+    env.setenv(s.USER_ENV, "u")
+    env.setenv(s.PASSWORD_ENV, "p")
+    if value is not None:
+        env.setenv("SAS_VIYA_VERIFY_SSL", value)
+    s.create_session()
+    assert fake_sasctl == [((URL, "u", "p"), {"verify_ssl": verified})]
+
+
 # -- a sign-in that is refused while sign-ins overlap ---------------------------------
 
 class AuthenticationError(ValueError):

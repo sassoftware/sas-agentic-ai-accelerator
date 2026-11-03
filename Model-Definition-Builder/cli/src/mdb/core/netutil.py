@@ -28,10 +28,22 @@ def env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+#: The values that switch TLS verification off - the words the programs and
+#: custom steps that run in SAS take for SAS_VIYA_VERIFY_SSL as well.
+TLS_OFF_WORDS = ("false", "no", "0")
+
+
+def tls_verify_off(name: str) -> bool:
+    """True only when the variable holds one of TLS_OFF_WORDS. Unset, true, a
+    typo - anything else keeps verification on: a mistyped setting must not
+    stop the check."""
+    return os.environ.get(name, "").strip().lower() in TLS_OFF_WORDS
+
+
 def make_session(verify_ssl: bool = True) -> requests.Session:
     session = requests.Session()
     session.trust_env = True  # proxies + CA bundles from the environment
-    if not verify_ssl or env_flag("MDB_VERIFY_SSL", True) is False:
+    if not verify_ssl or tls_verify_off("MDB_VERIFY_SSL"):
         session.verify = False
         import urllib3
 
