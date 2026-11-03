@@ -14,6 +14,11 @@ This changelog documents all the different updates that occur for this framework
 - **The check gives each part a verdict.** A table *By part* opens it: prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models - each `ready`, a number to do, or `not used here`. A part the Prompt Builder options switch off, and the driver of a RAG backend they do not offer, are `not used` instead of `missing`.
 - **The compute server says why it cannot reach SAS Viya.** A certificate it does not trust, a host it cannot reach or a timeout is one line with what to do, in place of a line per check that said the service did not answer. Where RAG or prompt optimization run in a compute context whose sessions are not yours, the check says so.
 
+### Fixed
+
+- **`mdb decision-node-migrate` moves a Call LLM node inside a branch.** The import that moves a decision rewrote only the steps at the top of the flow; a node in a branch, in the default case of a branch or in a condition kept the old node type, and the read back reported the decision `FAILED` on every run. The move now writes the new node type into every step of every version itself.
+- **`mdb decision-node-migrate` exports the decision alone.** A dependency of it that cannot be exported - a sub-decision, a code file or a model elsewhere - no longer fails the move with `the export ended failed`.
+
 ## [2.4.2] - 2026-11-03
 
 The programs and custom steps that call SAS Viya from SAS can trust a CA bundle of their own or skip TLS verification on a test system, and `mdb` reads its TLS switches the same way.

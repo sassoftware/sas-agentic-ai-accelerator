@@ -39,6 +39,9 @@ EXPORT_REQUEST = "application/vnd.sas.transfer.export.request+json"
 IMPORT_REQUEST = "application/vnd.sas.transfer.import.request+json"
 PACKAGE_MEDIA = "application/vnd.sas.transfer.package+json"
 EXPORT_OPTIONS = {"includeDependencies": "true", "includeRules": "true"}
+#: An export of the objects alone: what a re-import over themselves needs. A decision keeps its dntStatic connectors
+#: in its own object (measured on viya4-s2 on 2026-11-03), and a broken dependency cannot fail the export.
+OBJECTS_ONLY = {"includeDependencies": "false", "includeRules": "false"}
 RUNNING_STATES = ("pending", "queued", "running")
 DEFAULT_TIMEOUT = 600
 
@@ -137,9 +140,10 @@ def task_problems(tasks: list) -> list[str]:
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
-def start_export(session, name: str, item_uris: list[str], description: str = "") -> dict:
+def start_export(session, name: str, item_uris: list[str], description: str = "", options: dict | None = None) -> dict:
+    """Start an export of the items; `options` in place of EXPORT_OPTIONS (with its dependencies and rules)."""
     body = {"version": 1, "name": name, "description": description,
-            "items": list(item_uris), "options": dict(EXPORT_OPTIONS)}
+            "items": list(item_uris), "options": dict(EXPORT_OPTIONS if options is None else options)}
     response = session.post("/transfer/exportJobs", data=json.dumps(body),
                             headers={"Content-Type": EXPORT_REQUEST, "Accept": "application/json"})
     if not response.ok:

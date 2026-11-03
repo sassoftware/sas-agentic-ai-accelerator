@@ -34,6 +34,7 @@ from mdb.core.packages import (decisions_package, filter_package, named_users, n
 from mdb.viya import content as viya_content
 from mdb.viya import decision_nodes, transfer
 from mdb.viya.decision_nodes import CALL_LLM_NODE_ID, CALL_LLM_NODE_NAME
+from mdb.core.packages import node_type_uris
 
 # the fixtures of `mdb builders-import`, with a fake transfer service and a SAS Viya in memory
 from test_builder_commands import (NO_CONTEXT, Site, _built, discovery, importing, no_discovery, out, site)  # noqa: F401
@@ -204,11 +205,16 @@ def sid(monkeypatch):
     site.fail_import, site.skip_import, site.mappings, site.deleted = set(), set(), [], []
     #: decisions whose import ends completed with a task, and moves only their current version
     site.half_import = set()
+    #: decisions whose steps sit in a branch within a branch: the export nests them, and the import moves no nested
+    #: step by the mapping - it keeps the address the uploaded content names (measured on viya4-s2, 2026-11-03)
+    site.nested = set()
     site.after_import = None
     jobs: dict = {}
     uploads: dict = {}
 
-    def start_export(session, name, items, description=""):
+    def start_export(session, name, items, description="", options=None):
+        # the move exports the decision alone: no dependency of it can fail the export
+        assert options == transfer.OBJECTS_ONLY, options
         uri = f"/transfer/exportJobs/e{len(jobs)}"
         (decision_uri,) = items
         jobs[uri] = {"state": "completed", "packageUri": f"/transfer/packages/x{len(jobs)}",
@@ -231,6 +237,12 @@ def sid(monkeypatch):
             if summary["type"] == "decision":
                 summary["id"] = decision_id
                 summary["links"][0]["uri"] = summary["links"][0]["href"] = f"/decisions/flows/{decision_id}"
+                if decision_id in site.nested:
+                    obj = detail["transferObject"]
+                    body = json.loads(base64.b64decode(obj["content"]))
+                    for version in [body["decisionVersionRep"], *body["revisions"]]:
+                        version["flow"]["steps"] = nested_in_branches(version["flow"]["steps"])
+                    obj["content"] = base64.b64encode(json.dumps(body).encode()).decode()
         assert uri
         return json.dumps(package)
 
@@ -248,6 +260,12 @@ def sid(monkeypatch):
         tasks = []
         if decision_id in site.fail_import:
             tasks.append({"resourceType": "decision", "name": name_of, "state": "failed", "message": "locked"})
+        elif decision_id in site.nested:
+            body = json.loads(base64.b64decode(package["transferDetails"][0]["transferObject"]["content"]))
+            packaged = [*body["revisions"], body["decisionVersionRep"]]
+            for version, imported in zip(site.decisions[decision_id]["versions"], packaged):
+                version["uris"] = node_type_uris(imported) or version["uris"]
+            tasks.append({"resourceType": "decision", "name": name_of, "state": "completed"})
         elif decision_id not in site.skip_import:
             moves = {c["source"]: c["target"] for c in mapping["connectors"]["dntStatic"]}
             versions = site.decisions[decision_id]["versions"]
@@ -275,6 +293,18 @@ def sid(monkeypatch):
 
 
 TARGET = "1b1b1b1b-0000-4000-8000-000000000002"
+
+
+def nested_in_branches(steps: list) -> list:
+    """Steps as SAS Intelligent Decisioning writes them in a branch within a branch: a step of the type
+    application/vnd.sas.decision.step.branch holds its cases in `branchCases[i].onTrue.steps` and `defaultCase.steps`
+    (the shape of the decisions measured on viya4-s2 on 2026-11-03)."""
+    def branch(inner):
+        return {"type": "application/vnd.sas.decision.step.branch", "name": "ZZ branch", "branchType": "equals",
+                "branchCases": [{"label": "'a'", "onTrue": {"steps": inner},
+                                 "simpleCondition": {"lhsTerm": {"name": "llmURL"}, "operator": "=", "rhsConstant": "'a'"}}],
+                "defaultCase": {"steps": []}}
+    return [branch([branch(steps)])]
 #: The program that gives the Call LLM node the code and the terms of the release.
 UPDATE_PROGRAM = ("SAS-Viya-Integrations/SAS-Intelligent-Decisioning-Integration/"
                   "Update-Custom-SAS-Intelligent-Decisioning-Node.sas")
@@ -377,6 +407,60 @@ def test_locked_versions_are_moved_by_a_re_import_and_read_back(sid):
            f"{NODE}{TARGET} - read back" in text
     # the export, its job record and the upload are deleted; the record of the import is kept
     assert sorted(sid.deleted) == ["/transfer/exportJobs/e0", "/transfer/packages/u0", "/transfer/packages/x0"]
+
+
+def test_a_node_in_a_branch_within_a_branch_is_moved_in_every_version(sid):
+    """Reported from a site on SAS Viya 2026.07 and measured on viya4-s2 (2026.10) on 2026-11-03: the dntStatic mapping
+    of the re-import moves the steps at the top of a flow only. A step in a branch kept the old address, so the read
+    back failed the decision, and a second run exported and imported it again with the same outcome."""
+    sid.node(OLD, "ZZ Call")
+    sid.decision("d1", "In a branch", [OLD], [OLD])
+    sid.decision("d2", "At the top", [OLD])
+    sid.nested.add("d1")
+    code, text = migrate("--apply")
+
+    assert code == 0, text
+    assert sid.uses("d1") == [[NODE + TARGET], [NODE + TARGET]] and sid.uses("d2") == [[NODE + TARGET]]
+    assert "moved       decision 'In a branch' (d1): version(s) 1.0 (locked), 2.0 (current) call "            f"{NODE}{TARGET} - read back" in text
+    # a second run finds it done
+    code, text = migrate("--apply")
+    assert code == 0 and len(sid.mappings) == 2, text
+
+
+def test_the_steps_of_every_version_are_readdressed_at_any_depth():
+    """The content of a packaged decision as the export of viya4-s2 wrote it (2026-11-03), reduced: the current
+    version and the versions, each with the node in a branch case within a branch, in the default case of a branch
+    and in a condition - its address in `customObject.uri` and in the `customObjectCode` link of the step."""
+    old, new, other = NODE + OLD, NODE + TARGET, NODE + "2c2c2c2c-0000-4000-8000-000000000003"
+
+    def node_step(uri):
+        return {"type": "application/vnd.sas.decision.step.custom.object",
+                "customObject": {"isRestDNT": False, "name": "Call LLM", "type": "dntStatic", "uri": uri},
+                "links": [{"href": uri, "method": "GET", "rel": "customObjectCode", "uri": uri,
+                           "responseType": "application/vnd.sas.decision.step.code"}]}
+
+    def flow():
+        return {"steps": [
+            {"type": "application/vnd.sas.decision.step.branch", "branchCases": [{"onTrue": {"steps": [
+                {"type": "application/vnd.sas.decision.step.branch", "branchCases": [{"onTrue": {"steps": [node_step(old)]}}],
+                 "defaultCase": {"steps": []}}]}}], "defaultCase": {"steps": [node_step(old)]}},
+            {"type": "application/vnd.sas.decision.step.condition", "conditionExpression": "llmURL = 'a'",
+             "onTrue": {"steps": [node_step(old)]}, "onFalse": {"steps": [node_step(other)]}},
+            {"type": "application/vnd.sas.decision.step.object",
+             "customObject": {"type": "decisionPythonFile", "uri": "/decisions/codeFiles/c1/revisions/r1"}},
+            node_step(old + "-not-this-one")]}
+
+    body = {"decisionVersionRep": {"flow": flow()}, "revisions": [{"flow": flow()}],
+            "globalVariables": {}, "specificVersionExport": False}
+    obj = {"content": base64.b64encode(json.dumps(body).encode()).decode()}
+
+    assert decision_nodes.readdress_steps(obj, old, new) == 2 * 3 * 3
+    moved = json.loads(base64.b64decode(obj["content"]))
+    for version in (moved["decisionVersionRep"], *moved["revisions"]):
+        assert node_type_uris(version) == [new, other, old + "-not-this-one"]
+        assert json.dumps(version).count(old + '"') == 0
+    # a content that is not JSON is left as it is
+    assert decision_nodes.readdress_steps({"content": "not base64"}, old, new) == 0
 
 
 def test_a_failed_import_task_fails_the_run_and_the_old_node_is_not_deleted(sid):
