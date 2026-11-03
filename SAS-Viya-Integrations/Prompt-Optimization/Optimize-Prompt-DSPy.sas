@@ -248,7 +248,28 @@ P = {
 P = {k: str(v).strip() for k, v in P.items()}
 BASE = str(SAS.symget("_opt_viyaHost") or "").rstrip("/")
 TOKEN = os.environ.get("SAS_SERVICES_TOKEN", "")
-VERIFY = os.environ.get("SSLCALISTLOC") or os.environ.get("CAS_CLIENT_SSL_CA_LIST") or True
+
+
+def _viya_tls_verify():
+    # TLS verification for calls from this SAS session to SAS Viya.
+    #
+    # SAS_VIYA_VERIFY_SSL=false (or no / 0) switches verification off, for a test system whose CA bundle cannot
+    # verify the certificate of its own ingress - the name mdb uses for the same thing. SAS_VIYA_CABUNDLE names a
+    # CA bundle to verify against instead. With neither set, the bundle of the session (SSLCALISTLOC, then
+    # CAS_CLIENT_SSL_CA_LIST), else the certificates Python trusts by default - as before.
+    if os.environ.get('SAS_VIYA_VERIFY_SSL', '').strip().lower() in ('false', 'no', '0'):
+        import warnings
+        warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+        try:
+            SAS.logMessage('SAS_VIYA_VERIFY_SSL is false - the TLS certificate of SAS Viya is not verified in this step.', 'warning')
+        except Exception:
+            pass
+        return False
+    return (os.environ.get('SAS_VIYA_CABUNDLE') or os.environ.get('SSLCALISTLOC')
+            or os.environ.get('CAS_CLIENT_SSL_CA_LIST') or True)
+
+
+VERIFY = _viya_tls_verify()
 def _int_param(raw_value, fallback):
     """Lenient numeric-parameter parse: this runs at module level, OUTSIDE
     main()'s try/except, where an unhandled exception would bypass the

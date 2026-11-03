@@ -1376,7 +1376,7 @@ def test_the_program_asks_with_get_and_nothing_else():
     for word in ("post", "put", "delete", "patch", "request", "Session", "urlopen", "method"):
         assert not re.search(rf"\b{word}\s*\(", block) and f"'{word.upper()}'" not in block and f'"{word.upper()}"' not in block, word
     assert not re.search(r"\b(subprocess|socket|urllib\.request|http\.client|shutil)\b", block)
-    assert [node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)] == ["html", "importlib.util", "json", "os", "re", "requests"]
+    assert [node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)] == ["html", "importlib.util", "json", "os", "re", "requests", "warnings"]
     # the one file the Python writes is the page, in the WORK folder
     opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open"]
     assert len(opened) == 1 and ast.unparse(opened[0].args[0]) == "os.path.join(setting('_sh_work'), PAGE_FILE)"

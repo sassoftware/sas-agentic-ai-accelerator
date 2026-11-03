@@ -208,6 +208,46 @@ The messages of `Log-Parser-Code.sas`, `Get-All-Prompts.sas` and `Link-Logs-To-M
 | Many rows with `match_method` = `none` | Expected for direct calls of a model, for the health check of a prompt optimization, for queries whose prompt does not follow within `_lnk_query_window` seconds and for embeddings outside of an ingestion run. For the calls of a published prompt or decision: look whether `MODEL_CATALOG` holds its template (`role` = `prompt` or `decision`, `runID` empty) and whether the template has 20 characters of fixed text - the link program counts the templates that have less in a NOTE. For the calls of an optimization or of a judge: look whether the catalog holds rows of the role `optimization` or `judge` for the prompt, with the model the calls went to in `target_model` |
 | Rows with `match_method` = `ambiguous` | Two callers fit equally well: two prompts or decision templates with the same text, one question asked of two collections in the same second, two RAG setups with one collection of which neither is the registration of the other, two ingestion runs that overlap, a run table that several setups share. `match_candidates` is their number |
 
+### A program or custom step fails with CERTIFICATE_VERIFY_FAILED {#program-certificate-verify-failed}
+
+This error can be encountered in the log of a program or custom step that runs in SAS and calls the SAS Viya REST APIs from PROC PYTHON: *Get-All-Prompts*, *Start-Here*, *Ingest-Documents*, *Test-Retrieval*, *Optimize-Prompt-DSPy*, the custom step *LLM - Get All Prompts* and the nine *RAG* steps. The step ends with an ERROR line like this one:
+
+```text
+ERROR: Python-Subprocess - SAS Model Manager could not be read: SSLError: HTTPSConnectionPool(host='<SAS Viya host>', port=443): Max retries exceeded with url: /modelRepository/projects?filter=eq(tags,'Prompt-Engineering')&start=0&limit=100 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)')))
+```
+
+The cause is that the CA bundle the SAS session trusts (*SSLCALISTLOC*, normally */security/trustedcerts.pem*) cannot verify the certificate the ingress presents. Often the ingress sends only its leaf certificate, and the bundle does not hold the CA that issued it, so OpenSSL cannot build a chain. To confirm it, list the certificates the ingress sends and then verify them against the bundle, copied from a pod:
+
+```bash
+openssl s_client -connect <SAS Viya host>:443 -servername <SAS Viya host> -showcerts </dev/null | grep -E "^ *[0-9]+ s:|^ *i:"
+openssl s_client -connect <SAS Viya host>:443 -servername <SAS Viya host> -CAfile trustedcerts.pem </dev/null | grep "Verify return code"
+```
+
+A single certificate in the first output, issued by a CA that is not in the bundle, and a verify return code of 20 or 21 in the second one (*unable to get local issuer certificate*, *unable to verify the first certificate*) are this case.
+
+The proper fix, and the one for production, is to complete the trust chain: add the issuing CA through the customer-provided CA certificates of the deployment, or have the ingress send its full chain.
+
+On a test system that is created and torn down often, the programs and steps listed above can be told what to do instead. Both settings have to be in the environment of the SAS session, which PROC PYTHON inherits:
+
+- **SAS_VIYA_CABUNDLE=\<path\>** verifies against the CA bundle at that path, for example the bundle of the session plus the missing CA. Verification stays on, and this is the one to prefer.
+- **SAS_VIYA_VERIFY_SSL=false** (or *no* or *0*) switches verification off for these calls and writes a WARNING line to the SAS log in every step that runs with it off. Any other value, a typo included, leaves verification as it was. It wins over *SAS_VIYA_CABUNDLE*.
+
+With neither set, nothing changes: the bundle of the session (*SSLCALISTLOC*, then *CAS_CLIENT_SSL_CA_LIST*), else the certificates Python trusts by default. There are three ways to set them:
+
+1.   In a program: `options set=SAS_VIYA_VERIFY_SSL "false";` at the top, or above the `%include` of the program.
+2.   For a compute context: in SAS Environment Manager open the context, and under the SAS options of its advanced settings add `-set SAS_VIYA_VERIFY_SSL false`.
+3.   For every session of a server: an `options set=` line in the autoexec of the server.
+
+A `%let` is not enough: it sets a macro variable, which PROC PYTHON does not read as part of its environment.
+
+The setting also has to reach the Python process before it starts. PROC PYTHON keeps one Python process for the whole SAS session, and that process reads the environment once, when it starts: an `options set=` after a PROC PYTHON has already run does not reach it. Put the `options set=` before the first PROC PYTHON of the session, or, when one has already run (in SAS Studio, for example), run `proc python restart; run;` after the `options set=`. That starts a new Python process, which reads the environment again; anything the earlier steps left in Python is lost.
+
+The settings do not reach everything that talks to SAS Viya. CAS (SWAT) connections and PROC HTTP verify through the TLS settings of SAS itself, and manifested models have settings of their own: *LLMCONTAINERSSLVERIFY*, *RAGEMBED_SSLVERIFY* and *RAGSTORE_SSLVERIFY*, described in [the TLS default written at manifest time](./Deployment-of-Decisions.md#tls-default-at-manifest-time).
+
+:::warning
+With verification off, the token of the session is sent to a server whose identity is not checked. Use it on test systems only.
+:::
+
 ## SAS Container Runtime
 
 This part of the troubleshooting guide describes issues that can occur when publishing decisions or models that call the LLMs to a SAS Container Runtime (SCR) publishing destination (independent of AWS, Azure, GCP or Private Docker).

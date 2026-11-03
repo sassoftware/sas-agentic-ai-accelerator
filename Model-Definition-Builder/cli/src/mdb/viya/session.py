@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..core.netutil import tls_verify_off
 from .answer import one_line
 
 TOKEN_ENV = "SAS_VIYA_TOKEN"
@@ -299,7 +300,8 @@ def create_session():
             'sasctl is not installed - install the Viya extra: pip install -e "Model-Definition-Builder/cli[viya]"'
         ) from exc
     auth = resolve_auth()
-    verify = os.environ.get("SAS_VIYA_VERIFY_SSL", "true").strip().lower() == "true"
+    # Off only for false / no / 0, as the programs that run in SAS read it
+    verify = not tls_verify_off("SAS_VIYA_VERIFY_SSL")
     if not verify:
         import urllib3
 
