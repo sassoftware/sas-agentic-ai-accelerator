@@ -729,7 +729,8 @@ def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sit
         "_contextName", "contentRoot", "caslib", "releaseTable", "factSheets")
     release_owned = {p["name"] for e in shipped.objects() if e.kind == "jobDefinition" for p in e.parameters
                      if not p["siteSetting"]}
-    assert release_owned == {"_action", "_output_type", "guideUrl"}
+    # mdbReport is what mdb check asks of Start Here for one run: the release's, never a value of the site
+    assert release_owned == {"_action", "_output_type", "guideUrl", "mdbReport"}
 
 
 def test_the_pictures_of_the_usage_report_are_listed_with_their_hashes(shipped):

@@ -30,9 +30,11 @@ With `mdb` installed and your `.env` filled in ([Setup SAS Model Manager](./Setu
 # first install
 mdb setup               # the repository, the projects, the release table, the authorization commands of the repository
 mdb builders-import     # the content folder
+mdb check               # the installation check, by part, with what to do
 
 # upgrade
 mdb builders-import
+mdb check
 ```
 
 A site that created the *Call LLM* node of SAS Intelligent Decisioning with `Create-Custom-SAS-Intelligent-Decisioning-Node.sas` of an earlier release has it under an id of its own, and the package brings it under `f9efcbb7-f57b-4a62-b56d-1a89595e2039`. There `mdb builders-import` asks the site before it uploads anything of the decisions: it leaves the decision `Decisions/Call LLM Node` and the node type out, imports everything else, and ends with exit code 1 and the command to run once, before the import:
@@ -45,7 +47,7 @@ mdb builders-import
 
 [The Call LLM node and its id](./Deployment-of-Decisions.md#call-llm-node-uuid) says what the migration does and why the old node is never deleted while a decision uses it; `--no-decisions` imports without the decision instead.
 
-Then open [Start Here](#start-here), in a compute context that runs as you:
+Then run [`mdb check`](#mdb-check), or open [Start Here](#start-here) in a compute context that runs as you - both show the same installation check:
 
 ```
 https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here&_contextName=<a compute context that runs as you>
@@ -146,7 +148,7 @@ The page shows what its SAS session may read, so it is opened in a compute conte
 
 Measured on SAS Viya 2026.09 on 2026-10-12, when the job definition did not have the parameter: opened without it the job ran in the `SAS Job Execution compute context`, which runs its sessions under a service account on that system. SAS Viya answered every request with 401, and the page read `13 ok, 0 missing, 15 not checked`, twelve of the fifteen lines with the advice to ask an administrator. With `&_contextName=SAS Studio compute context` the same page had 97 lines that were ok. In the second pass of that day the job definition carried the parameter: opened without it in the address the job ran in the `SAS Studio compute context` and the page read `97 ok, 2 missing, 1 not checked`; opened in the `SAS Job Execution compute context` - with the parameter, and from a job definition without it - the page was built completely (97 and 96 ok), no request was answered 401, and a probe in that context printed that the user of the session was not the user it was started for. What a session of a compute context may read depends on how the system configures the context. Where every request is refused the page has one line at its top in place of those lines: in a session of another user, that it does not run as you and where to open it; in a session that ran as you, to ask for the rights (403) or about the sign-in (401). One user written with a domain behind `@` or in front of a backslash is one person. Neither user id is written to the page. In a session of another user the page links itself in each compute context it found, but the one it ran in. Measured on 2026-10-13: opened in the `SAS Job Execution compute context` the page carried the note that what a session may read depends on how the system configures its compute context, and one link, `Open this page in the compute context: SAS Studio compute context`; opened without the parameter it had no such link. The one line for a session that is refused everything and the comparison of two users who are written differently are **not run in SAS**: no request was refused in the second, the third or the fourth pass.
 
-The job writes one HTML page: what the accelerator is, links to the Prompt Builder report and the LLM Usage Report by the address they have on your system, links to these guides, and the **installation check**. Every line of the check has one of three states — `ok`, `missing`, `not checked` — with what was found and one sentence what to do:
+The job writes one HTML page: what the accelerator is, links to the Prompt Builder report and the LLM Usage Report by the address they have on your system, links to these guides, and the **installation check**. Every line of the check has one of four states — `ok`, `missing`, `not checked`, `not used` — with what was found and one sentence what to do. Every line belongs to one part of the accelerator - prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models -, and the table **By part** at the top of the check gives each part one verdict: `ready`, the number of lines to do, the number not checked, or `not used here`, with the first thing to do. A part the options of the Prompt Builder report switch off (`enableRag`, `enableOptimization`, `enableDecision`) is `not used here`, and so is the driver of a RAG backend the options do not offer (`enable_pgvector`, `enable_singlestore`): their lines that are not ok are `not used` rather than `missing`. Where the options cannot be read, every part counts as used. The sections:
 
 | Section | What is looked at |
 | --- | --- |
@@ -165,6 +167,7 @@ What holds for the page:
 
 - **It changes nothing.** Every request is a GET, and the one file the program writes is the page, in the WORK folder of its session.
 - **A site that lacks something gets a line, not a failed job.** A service that does not answer, a right the session lacks and a folder that is not there are lines of the page: `not checked` with the HTTP status, or `missing`. Where PROC PYTHON does not run in the compute context, the page says that and nothing else.
+- **No answer at all is one line.** Where no request of the session gets an answer, the page has one line at its top in place of a line per check, and it names the cause the requests ended with: the Python of the compute context does not trust the TLS certificate of SAS Viya - set `SAS_VIYA_CABUNDLE`, or `SAS_VIYA_VERIFY_SSL=false` on a test system ([A program or custom step fails with CERTIFICATE_VERIFY_FAILED](./Troubleshooting-Guide.md#program-certificate-verify-failed)) -, the host cannot be reached from inside the cluster, or it did not answer in time.
 - **It shows what its session may read.** Open it in a compute context that runs as you (`_contextName`). In a compute context that runs under a service account the session is the service account: what it may not read is `not checked` with the HTTP status, and a session that is refused everything gets one line at the top. No token and no user id is written to the page, and of an answer that was refused only the status.
 - **The content root is a parameter.** The job definition checks the folder its parameter `contentRoot` names: `/SAS Agentic AI Accelerator` as shipped, and the folder a deploy or an import was given with `--content-root`. Add `&contentRoot=<folder>` to the address to check another one. The parameters name the CAS library and the CAS server of the report tables (`caslib`, `casServer`), the credential domain, the repository and the three projects by the names `mdb setup` gives them, the compute contexts to look for and the address of the guides; all of them but the address of the guides are settings of the site, which a deploy and an import leave as the site has them. The guides are links only on `https://sassoftware.github.io` or on this SAS Viya; another address is shown as text, with a line that says why. `SAS-Viya-Integrations/Setup/README.md` lists them.
 
@@ -176,6 +179,41 @@ Measured on SAS Viya 2026.09 on 2026-10-12, with the program as it was then, fro
 - **It changed nothing and showed no secret.** A listing of the folder before and after a page differed in nothing. No page held a token, a password, a host name or an e-mail address, and the user id only inside the folder path the page was given; the publishing destinations are listed by their names.
 
 Measured in the second pass of 2026-10-12, from a second test root: the parameter `_contextName` of the job definition (above); with the registered step deleted and its `.step` uploaded as a file, the row `missing | a file of that name is there, and no registered step` with the advice to import the package or run `mdb content-deploy`; after an import registered the step, `ok | present, and a file of that name lies beside it` with the advice to delete the file; after the file was deleted, `ok | present`; and `release.json` read through the check of its address. Not measured: the page for a user without administrator rights, and the program pasted into SAS Studio. Measured on 2026-10-13 for a test root, with the page as it was then - opened in the `SAS Job Execution compute context`, without a parameter, and with a `guideUrl` of another site: 105 checks each time (98 ok, 6 missing, 1 not checked); the section *CAS tables of the logging chain* with five rows, one of them ok; the link to the other compute context in the session of another user only; and with the other `guideUrl` the five guide entries as text, without a link. In that pass, with a file of the test root replaced by a reference of its name that pointed at a file of another folder, the page read `RAG/rag_core/tokens.py (file) | ok | present` and `70 of 72 entries of release.json`, while `mdb content-deploy` reported that entry as FAILED. The page had read the kind of a member from its `contentType`, which for a reference is the kind of the object it names. It now takes a member whose type says `reference` for no entry. Measured in the second pass of 2026-10-13: for that state the page read `RAG/rag_core/tokens.py (file) | missing | a reference of that name is in its folder, and the object it names lives elsewhere` with the advice to remove the reference and `69 of 72 entries of release.json are present`, and for two test roots, each in both compute contexts, 105 checks (98 ok, 6 missing, 1 not checked). The page judges a reference as `mdb` does: one that has the name of an entry and names an object of the kind of the entry stands in the way of that entry. In the same pass, with the file and a reference of its name both in the folder, `mdb content-deploy` and `mdb builders-import` failed the entry and the page said `ok | present`. Such an entry is now `missing | present, and a reference of that name is in its folder, which names an object that lives elsewhere`, with the advice to remove the reference; it is still counted in `N of M entries of release.json are present`, and its line is shown above the folded list. A report that is there stays `ok | present` whatever lies beside it: `mdb` writes no report and fails none over a reference. A reference to an object of another kind is no part of the check, and the line of `release.json` is judged the same way. Measured in the third pass of 2026-10-13, with the file and a reference of its name to a `.csv` file in one folder: that line, `70 of 72 entries of release.json are present` as without the reference, and 97 ok and 7 missing against 98 and 6; with a reference of that name to a folder the row was `ok | present`. The page was changed once more after that pass: it tells what a folder holds under the name of an entry the way `mdb content-deploy` does (the row *Content* above). Measured on 2026-10-14 for two test roots, against a dry run of `mdb content-deploy`: a reference named like the step without its ending, and a reference of the name of the step to a `.csv` file beside it, left the step `ok | present` and `equal`; a folder replaced by a reference to a folder elsewhere was `missing` on the page and `FAILED` in `mdb`, with the entries below it; and the rows of the two reports read `missing | not in its folder` with the advice to import the package or run `mdb builders-import`. SAS Viya refused with HTTP 409 to put two objects of one name and kind into one folder, and a reference beside an object of its name and kind. **Not run in SAS**: two objects of one name and a name two folders have, which SAS Viya did not let a pass set up, a report with a reference beside it, the one line for a session that is refused everything as it is now, and a project without a model as `missing`.
+
+### `mdb check`: the installation check from the command line {#mdb-check}
+
+```bash
+mdb check [--content-root <folder>] [--compute-context <name>] [--no-deploy] [--all] [--json] [--timeout <seconds>]
+```
+
+`mdb check` runs the installation check of [Start Here](#start-here) as you and prints it by part:
+
+1. It brings the job definition `Start Here` to the state of the checkout, in place, as `mdb content-deploy --only "Start Here"` does: the id stays, and so does the compute context the site gave it. `--no-deploy` runs it as it is on the site.
+2. It submits the job through SAS Job Execution in the compute context the job definition names, or the one `--compute-context` names for this run, and waits for it (`--timeout`, 300 seconds).
+3. It reads the lines of the check from the log of the job - a job submitted through the API keeps its log and no page - and deletes the job record.
+4. It prints the verdict of each part and, for every line that is not ok, what was found and what to do; `--all` prints the lines that are ok as well, and `--json` the whole report.
+
+Measured on SAS Viya 2026.10 on 2026-11-03, for a test content root that `mdb content-deploy` had filled - it holds no report, which only the package brings:
+
+```text
+Bringing Start Here in /ZZ_VERIFY mdb check to this checkout:
+  updated      jobDefinition Start Here  (parameters; id <its id> kept)
+Running Start Here ...
+Start Here ran in SAS Studio compute context (31 s): 103 ok, 3 missing, 1 not checked.
+
+Prompt building                   3 to do
+  missing      Prompt Builder/Prompt Builder (report): not in its folder
+               what to do: Import the package of the accelerator again, or run mdb builders-import: a report comes with the package, and mdb content-deploy writes none.
+  ...
+
+Logging and the LLM Usage Report  ready
+
+RAG                               ready
+```
+
+Run with `--compute-context "SAS Job Execution compute context"`, the same check ended with `The job ran as another user than you, in the compute context SAS Job Execution compute context: it saw what that account may read.` and the option to run it as you. The line for a compute context that does not trust the certificate of SAS Viya is tested with the program, not measured on a system.
+
+`mdb` adds what the job cannot know. Where no request of the job reached SAS Viya, `mdb`, which did reach it, says that the cause lies between the compute server and SAS Viya, not in the installation. Where the job ran as another user than you, it names the option that runs it as you. Where PROC PYTHON did not run in the compute context, or the program of Start Here on the site is older than `mdb`, it says so. The exit code is 0 when prompt building is ready, 1 when it is not or the job gave no report, and 2 when the command could not start. Start Here only reads: the job record is all the command creates, and it is deleted.
 
 ### The tables of the reports {#load-accelerator-tables}
 

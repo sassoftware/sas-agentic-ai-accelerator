@@ -60,6 +60,25 @@
  *   - the publishing destinations
  *   - the compute contexts the Prompt Builder options and this job name
  *
+ * BY PART. Every line belongs to one part of the accelerator - prompt
+ * building, logging and the LLM Usage Report, RAG, prompt optimization,
+ * decision models - and the page opens with one verdict per part: ready, the
+ * number of lines to do, not checked, or not used here. A part the options
+ * of the Prompt Builder report switch off (enableRag, enableOptimization,
+ * enableDecision, the RAG backends with enable_pgvector / enable_singlestore)
+ * is not used here: its lines that are not ok say so instead of missing.
+ *
+ * NO ANSWER AT ALL. Where no request of the page got an answer - the
+ * certificate of SAS Viya is not trusted by the Python of the compute
+ * context, the host cannot be reached from it, or it timed out - one line at
+ * the top says which of these it was and what to do, in place of a line
+ * per check that says "the service did not answer".
+ *
+ * FOR MDB. With the parameter mdbReport=1, which mdb check sets, the
+ * program also writes every line as JSON into the SAS log, compressed and in
+ * base64, in lines that SAS does not wrap: a job submitted through the API
+ * keeps its log and no _webout.
+ *
  * IT CHANGES NOTHING. Every request is a GET, nothing is written but the
  * page: a file in WORK, copied to _webout. No secret is asked for - the
  * credential domain is asked for by name, never for an entry - and the page
@@ -88,6 +107,7 @@
  *   computeContexts  compute contexts to look for, separated by |
  *   guideUrl         where the guides are (the website of the accelerator); an
  *                    address of another host than that and this SAS Viya is text
+ *   mdbReport        1: the lines as JSON in the log as well, for mdb check (0)
  *
  * sh is short for Start Here
  ******************************************************************************/
@@ -111,6 +131,7 @@
 %_sh_default(decisionProject, Decision Model Project);
 %_sh_default(computeContexts, SAS Studio compute context|SAS Job Execution compute context);
 %_sh_default(guideUrl, https://sassoftware.github.io/sas-agentic-ai-accelerator);
+%_sh_default(mdbReport, 0);
 %sysmacdelete _sh_default;
 
 /* Whose session this is. SAS Job Execution hands a job the user its session
@@ -138,11 +159,13 @@ options nosyntaxcheck;
 
 proc python restart;
 submit;
+import base64
 import html
 import importlib.util
 import json
 import os
 import re
+import zlib
 from urllib.parse import quote
 try:
     import requests
@@ -272,6 +295,26 @@ NOT_ONE_TODO = 'Remove or rename all but one of them: while they are there, the 
 # What the line of a folder adds to either: mdb writes nothing into a folder whose entry it fails, nor below it
 BELOW_TOO = ' Nothing is written below the folder either.'
 
+# A line of a part that the options of the Prompt Builder switch off: what it found does not matter there
+NOT_USED = 'not used'
+# The parts of the accelerator, in the order of the page. Prompt building is what every site needs
+CORE = 'Prompt building'
+LOGGING = 'Logging and the LLM Usage Report'
+RAG_PART = 'RAG'
+OPTIMIZATION = 'Prompt optimization'
+DECISIONS = 'Decision models'
+PARTS = (CORE, LOGGING, RAG_PART, OPTIMIZATION, DECISIONS)
+# The option of the Prompt Builder report that switches a part on, and whether it is on where the option is not set -
+# as the Prompt Builder reads it (config.ts); prompt building and logging have none
+PART_SWITCH = {RAG_PART: ('enableRag', False), OPTIMIZATION: ('enableOptimization', False), DECISIONS: ('enableDecision', True)}
+# The RAG backends the Prompt Builder offers, by the option that switches each off (on where not set), and the
+# package each needs
+BACKEND_SWITCH = {'psycopg2-binary': ('enable_pgvector', 'pgvector'), 'singlestoredb': ('enable_singlestore', 'SingleStore')}
+ON_WORDS = ('true', '1', 'yes', 'on')
+OFF_WORDS = ('false', '0', 'no', 'off')
+# The section and the troubleshooting page of the one line that stands for every request that got no answer
+TROUBLESHOOTING_TLS = 'Administration-Guide/Troubleshooting-Guide#program-certificate-verify-failed'
+
 
 # ---------------------------------------------------------------------------
 # One line of the page
@@ -381,6 +424,61 @@ def as_the_session_may_read(lines, session):
         if entry['todo'] == ASK_ADMINISTRATOR:
             entry['todo'] = AS_YOURSELF[:-1] + ' - or ask for the right the session lacks.'
     return lines
+
+
+def failure_kind(error):
+    """What kept a request from its answer, by the class of the exception requests raised: tls (the
+    certificate of SAS Viya was not trusted), timeout, connect (the host could not be reached) or other.
+    Told by the names of the classes, so that it needs no import: the SSLError of requests is a
+    ConnectionError as well, and is asked for first."""
+    names = [klass.__name__ for klass in type(error).__mro__]
+    text = str(error)
+    if 'SSLError' in names or 'CERTIFICATE_VERIFY_FAILED' in text or 'certificate verify failed' in text.lower():
+        return 'tls'
+    if any(name in names for name in ('Timeout', 'ConnectTimeout', 'ReadTimeout', 'TimeoutError')):
+        return 'timeout'
+    if any(name in names for name in ('ConnectionError', 'ConnectionRefusedError', 'gaierror')):
+        return 'connect'
+    return 'other'
+
+
+def no_answer_said(kind, host, guide):
+    """(what was found, what to do) where no request of the page got an answer, for the kind of failure."""
+    where = host or 'SAS Viya'
+    if kind == 'tls':
+        return (f'No request of this page reached SAS Viya: the Python of this compute context does not trust the TLS certificate of {where}',
+                'Point SAS_VIYA_CABUNDLE at a file with the CA certificates of your site in the SAS session of this compute context - '
+                'on a test system SAS_VIYA_VERIFY_SSL=false switches the check off - and open this page again. See ' + guide.rstrip('/')
+                + '/' + TROUBLESHOOTING_TLS)
+    if kind == 'connect':
+        return (f'No request of this page reached SAS Viya: this compute context could not connect to {where} - '
+                'the name does not resolve from inside the cluster, or the connection was refused',
+                'Have the administrator of the cluster check that the pods of the compute server reach the address the SAS option '
+                'SERVICESBASEURL names, through a proxy where the cluster needs one.')
+    if kind == 'timeout':
+        return (f'No request of this page reached SAS Viya: {where} did not answer this compute context in time',
+                'Open this page again. If the line stays, have the administrator of the cluster check the way from the compute server '
+                'to the address the SAS option SERVICESBASEURL names.')
+    return ('No request of this page reached SAS Viya: every request ended without an answer',
+            'Hand the log of this job to an administrator: it names the error.')
+
+
+def one_line_for_an_unanswered_session(lines, statuses, failures, host, guide):
+    """Where no request of the session got an answer, the lines that would say "the service did not
+    answer" one by one are taken out, and one line at the top stands for them, with the kind of failure
+    that was seen most: for the page of a site whose compute context does not trust the certificate of its
+    SAS Viya that was a line per check with the advice to look at a service that was well. The line counts
+    as the checks it stands for."""
+    if not statuses or any(status != 0 for status in statuses):
+        return lines
+    kept = [entry for entry in lines if entry['state'] != NOT_CHECKED]
+    kinds = [kind for kind in failures if kind] or ['other']
+    kind = max(('tls', 'connect', 'timeout', 'other'), key=kinds.count)
+    found, todo = no_answer_said(kind, host, guide)
+    entry = line(SESSION, 'Requests to SAS Viya', NOT_CHECKED, found, todo)
+    entry['count'] = max(len(lines) - len(kept), 1)
+    entry['failure'] = kind
+    return [entry] + kept
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +1025,113 @@ def check_installation(get, settings, installed=is_installed, version=version_of
     lines += package_lines(installed, version)
     lines += destination_lines(get)
     lines += context_lines(get, settings, options)
-    return lines, reports
+    return with_parts(lines, options), reports
+
+
+# ---------------------------------------------------------------------------
+# The parts of the accelerator
+# ---------------------------------------------------------------------------
+
+def part_of(entry):
+    """The part of the accelerator a line belongs to, by its section and what it looked at."""
+    section, what = entry['section'], entry['what']
+    if section.startswith('Python packages: '):
+        return {'Logging and Monitoring': LOGGING, 'RAG': RAG_PART, 'Prompt optimization': OPTIMIZATION}.get(
+            section[len('Python packages: '):], CORE)
+    if section == 'CAS tables of the reports':
+        return CORE if 'ACCELERATOR_RELEASES' in what or what.startswith('CAS server') else LOGGING
+    if section == 'CAS tables of the logging chain':
+        return LOGGING
+    if section == 'SAS Model Manager':
+        return RAG_PART if '(embedding model definitions)' in what else DECISIONS if '(decision model definitions)' in what else CORE
+    if section == 'Options of the Prompt Builder report':
+        return RAG_PART if what == 'embeddingProjectID' else CORE
+    if section == 'Compute contexts':
+        return OPTIMIZATION if 'option computeContext ' in what else RAG_PART if 'option ragComputeContext ' in what else CORE
+    return CORE
+
+
+def flag(value, fallback):
+    """An on/off option of the Prompt Builder report as the Prompt Builder reads it: an on word, an off
+    word, or the fallback for anything else."""
+    word = text_of(value).lower()
+    return True if word in ON_WORDS else False if word in OFF_WORDS else fallback
+
+
+def parts_in_use(options):
+    """{part: True / False / None} - None where the options could not be read, so nothing is known."""
+    return {part: (True if part not in PART_SWITCH else None if options is None
+                   else flag(options.get(PART_SWITCH[part][0]), PART_SWITCH[part][1])) for part in PARTS}
+
+
+def with_parts(lines, options):
+    """Every line with its part, and whether that part is used on this site (used: False where the options
+    switch it off). A line of a part the options switch off, or of a RAG backend they do not offer, that is
+    not ok is not used: what it found does not matter on this site."""
+    in_use = parts_in_use(options)
+    for entry in lines:
+        entry['part'] = part_of(entry)
+        entry['used'] = in_use[entry['part']] is not False
+        if entry['state'] == OK:
+            continue
+        if not entry['used']:
+            switch = PART_SWITCH[entry['part']][0]
+            entry['state'] = NOT_USED
+            entry['todo'] = f'Nothing to do: the option {switch} of the Prompt Builder switches {entry["part"]} off on this site.'
+            continue
+        backend = BACKEND_SWITCH.get(entry['what'])
+        if entry['part'] == RAG_PART and backend and options is not None and not flag(options.get(backend[0]), True):
+            entry['state'] = NOT_USED
+            entry['todo'] = f'Nothing to do: the option {backend[0]} of the Prompt Builder does not offer {backend[1]} on this site.'
+    return lines
+
+
+def part_verdicts(lines):
+    """One verdict per part that has lines, in the order of PARTS: (part, verdict, what to do first). A
+    line that was made after the parts were given - the one line of a session - is of the part its
+    section says."""
+    verdicts = []
+    for part in PARTS:
+        of_part = [entry for entry in lines if entry.get('part', part_of(entry)) == part]
+        missing = [entry for entry in of_part if entry['state'] == MISSING]
+        unchecked = [entry for entry in of_part if entry['state'] == NOT_CHECKED]
+        if of_part and part in PART_SWITCH and not any(entry.get('used', True) for entry in of_part):
+            verdicts.append((part, 'not used here', f'The option {PART_SWITCH[part][0]} of the Prompt Builder switches it off.'))
+        elif missing:
+            count = sum(entry.get('count', 1) for entry in missing)
+            verdicts.append((part, f'{count} to do', missing[0]['what'] + ': ' + missing[0]['todo']))
+        elif unchecked:
+            count = sum(entry.get('count', 1) for entry in unchecked)
+            verdicts.append((part, f'{count} not checked', unchecked[0]['what'] + ': ' + unchecked[0]['todo']))
+        elif of_part:
+            verdicts.append((part, 'ready', ''))
+    return verdicts
+
+
+def report_of(settings, lines, verdicts, session, host):
+    """What mdb check reads: every line and the verdicts. No token, no user id - the two users of the
+    session are said as whether they are one."""
+    counts = counts_of(lines)
+    unanswered = next((entry.get('failure', '') for entry in lines if entry['section'] == SESSION and entry.get('failure')), '')
+    return {'kind': 'sas-agentic-ai-accelerator/start-here', 'version': 1, 'contentRoot': settings['contentRoot'], 'host': host,
+            'counts': counts, 'unanswered': unanswered,
+            'session': {'otherUser': bool(session['other']), 'ownUser': bool(session.get('own')), 'context': session['context']},
+            'parts': [{'part': part, 'verdict': verdict, 'first': first} for part, verdict, first in verdicts],
+            'lines': [dict({key: entry.get(key, '') for key in ('section', 'what', 'state', 'found', 'todo')},
+                           part=entry.get('part', part_of(entry)), count=entry.get('count', 1)) for entry in lines]}
+
+
+# A line of the report in the log: the marker, its number, the number of lines and 76 characters of base64. The
+# log of a job wraps a line at its width, measured at 128 characters on the test system: these stay below it
+REPORT_MARKER = 'Start Here report'
+REPORT_WIDTH = 76
+
+
+def report_chunks(report):
+    """The report as the lines of the log that carry it: compressed JSON, in base64."""
+    packed = base64.b64encode(zlib.compress(json.dumps(report, ensure_ascii=True, separators=(',', ':')).encode('utf-8'), 9)).decode('ascii')
+    parts = [packed[start:start + REPORT_WIDTH] for start in range(0, len(packed), REPORT_WIDTH)] or ['']
+    return [f'{REPORT_MARKER} {number}/{len(parts)} {part}' for number, part in enumerate(parts, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +1153,9 @@ td.state { white-space: nowrap; font-weight: bold; }
 td.ok { color: #1c6b2a; }
 td.missing { color: #a1260d; }
 td.unchecked { color: #6a5300; }
+td.unused { color: #5b6068; font-weight: normal; }
+td.verdict { white-space: nowrap; font-weight: bold; }
+th[scope="row"] { background: transparent; font-size: 1rem; white-space: nowrap; }
 .summary { background: #ffffff; border-left: 0.3rem solid #0b5cab; padding: 0.6rem 0.8rem; }
 .note { font-size: 0.9rem; color: #4a4f57; }
 summary { cursor: pointer; margin: 0.5rem 0; }
@@ -961,10 +1168,13 @@ summary { cursor: pointer; margin: 0.5rem 0; }
   td.ok { color: #7fd18b; }
   td.missing { color: #ff9c8a; }
   td.unchecked { color: #e6c865; }
+  td.unused { color: #9aa0a8; }
   .note { color: #b3b8c0; }
 }
 """
-STATE_CLASS = {OK: 'ok', MISSING: 'missing', NOT_CHECKED: 'unchecked'}
+STATE_CLASS = {OK: 'ok', MISSING: 'missing', NOT_CHECKED: 'unchecked', NOT_USED: 'unused'}
+# The class of the cell of a verdict of a part, by how the verdict starts
+VERDICT_CLASS = (('ready', 'ok'), ('not used', 'unused'), ('not checked', 'unchecked'))
 
 
 def shown(value, limit=TEXT_LIMIT):
@@ -1010,7 +1220,24 @@ def rows_of(lines):
 def counts_of(lines):
     """The checks of each state. The one line of a session that was refused counts as the
     checks it stands for."""
-    return {state: sum(entry.get('count', 1) for entry in lines if entry['state'] == state) for state in (OK, MISSING, NOT_CHECKED)}
+    return {state: sum(entry.get('count', 1) for entry in lines if entry['state'] == state) for state in (OK, MISSING, NOT_CHECKED, NOT_USED)}
+
+
+def counts_said(counts):
+    """The counts as the summary and the log say them: not used only where there is such a line."""
+    return (f'{counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked'
+            + (f', {counts[NOT_USED]} not used' if counts.get(NOT_USED) else ''))
+
+
+def verdict_rows(verdicts):
+    """The table of the verdicts of the parts."""
+    rows = ['<table>', '<thead><tr><th scope="col">Part</th><th scope="col">State</th><th scope="col">First thing to do</th></tr></thead>',
+            '<tbody>']
+    for part, verdict, first in verdicts:
+        kind = next((css for word, css in VERDICT_CLASS if word in verdict), 'missing')
+        # the part is the header of its row: a row of a check starts with a cell, a row of a part does not
+        rows.append(f'<tr><th scope="row">{shown(part)}</th><td class="verdict {kind}">{shown(verdict)}</td><td>{shown(first)}</td></tr>')
+    return rows + ['</tbody>', '</table>']
 
 
 def render_page(settings, lines, reports, session=None, viya_host=''):
@@ -1060,10 +1287,13 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
         page.append('<li>' + shown('The parameter guideUrl names an address that is neither the website of the accelerator nor this SAS Viya: '
                                    'the addresses of the guides are text, not links.') + '</li>')
     page += ['</ul>', '<h2>Installation check</h2>',
-             '<p class="summary">' + shown(f'{counts[OK]} ok, {counts[MISSING]} missing, {counts[NOT_CHECKED]} not checked. ' + said,
-                                           2 * TEXT_LIMIT) + '</p>',
+             '<p class="summary">' + shown(counts_said(counts) + '. ' + said, 2 * TEXT_LIMIT) + '</p>',
              '<p class="note">' + shown('Content root ' + settings['contentRoot'] + '. ' + whose + 'It changed nothing: it only read.',
                                         2 * TEXT_LIMIT) + '</p>']
+    verdicts = part_verdicts(lines)
+    if len(verdicts) > 1:
+        # one line of a session that was refused or not answered is all there is: the summary has said it
+        page += ['<h3>' + shown('By part') + '</h3>'] + verdict_rows(verdicts)
     # Where the page says to open it in another compute context, it links itself in each one it found
     if session['other'] or (refused and not session.get('own')):
         # the contexts the page found, or - where they could not be listed - the ones the parameter computeContexts names
@@ -1154,7 +1384,8 @@ def setting(name):
 def start_here():
     """Reads SAS Viya, writes the page into the WORK folder and tells SAS that it is there."""
     settings = {name: setting(name) for name in ('contentRoot', 'caslib', 'casServer', 'credentialDomain', 'repositoryName', 'llmProject',
-                                                 'embeddingProject', 'decisionProject', 'computeContexts', 'guideUrl')}
+                                                 'embeddingProject', 'decisionProject', 'computeContexts', 'guideUrl',
+                                                 'mdbReport')}
     base = setting('_sh_viyaHost').rstrip('/')
     token = os.environ.get('SAS_SERVICES_TOKEN', '')
     def _viya_tls_verify():
@@ -1179,16 +1410,24 @@ def start_here():
     session = session_of(setting('SYSUSERID'), setting('SYS_COMPUTE_SESSION_OWNER') if setting('_sh_hasOwner') == '1' else '',
                          setting('_contextName') if setting('_sh_hasContext') == '1' else '')
     statuses = []
+    # the kind of failure of every request that got no answer: a certificate, a host, a timeout
+    failures = []
 
     def get(path, accept):
         if requests is None:
             return 0, b''
-        response = requests.get(base + path, headers={'Authorization': 'Bearer ' + token, 'Accept': accept}, verify=verify, timeout=(5, 30))
+        try:
+            response = requests.get(base + path, headers={'Authorization': 'Bearer ' + token, 'Accept': accept}, verify=verify, timeout=(5, 30))
+        except Exception as error:
+            failures.append(failure_kind(error))
+            raise
         return response.status_code, response.content
 
     try:
         lines, reports = check_installation(recorded(get, statuses), settings)
         lines = as_the_session_may_read(one_line_for_a_refused_session(lines, statuses, session), session)
+        if requests is not None:
+            lines = one_line_for_an_unanswered_session(lines, statuses, failures, base, settings['guideUrl'])
     except Exception as error:
         # A check that this program did not foresee is a line of the page as well
         lines, reports = [line('Installation check', 'The checks', NOT_CHECKED, 'they ended early with ' + type(error).__name__,
@@ -1199,8 +1438,7 @@ def start_here():
     with open(os.path.join(setting('_sh_work'), PAGE_FILE), 'w', encoding='utf-8', newline='\n') as file:
         file.write(render_page(settings, lines, reports, session, setting('_sh_viyaHost')))
     counts = counts_of(lines)
-    say('NOTE', f'Start Here: the page holds {sum(counts.values())} checks - {counts[OK]} ok, {counts[MISSING]} missing, '
-                f'{counts[NOT_CHECKED]} not checked.')
+    say('NOTE', f'Start Here: the page holds {sum(counts.values())} checks - {counts_said(counts)}.')
     refused = [entry for entry in lines if entry['section'] == SESSION]
     if refused:
         # the log takes no ampersand, so the parameter is named and not written as in an address
@@ -1208,6 +1446,10 @@ def start_here():
             'Open the page in a compute context that runs as you: the parameter _contextName, in the address of the page or in the '
             'job definition, names the context.')
         say('NOTE', 'Start Here: ' + refused[0]['found'] + '. ' + todo)
+    if settings['mdbReport'] == '1':
+        # for mdb check, which reads the log of the job: a job submitted through the API keeps no _webout
+        for chunk in report_chunks(report_of(settings, lines, part_verdicts(lines), session, base)):
+            say('NOTE', chunk)
     hand_over('_sh_rc', '0')
 
 

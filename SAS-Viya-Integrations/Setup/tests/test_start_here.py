@@ -955,7 +955,8 @@ def test_in_a_session_of_another_user_a_refused_line_advises_to_open_the_page_as
     as_user = run(monkeypatch, work(tmp_path, 'own'), site, harness.OWN_SESSION)
     other = run(monkeypatch, work(tmp_path, 'other'), site, harness.SERVICE_ACCOUNT_SESSION)
 
-    assert as_user.page.count(ASK) == 11 and "does not run as you" not in as_user.page
+    # the advice of the eleven lines that were refused, in their own cells (the table by part quotes the first of them)
+    assert as_user.page.count(f"<td>{ASK}</td>") == 11 and "does not run as you" not in as_user.page
     assert ("This page lists what the identity of the SAS session that built it can read. In a compute context that runs as a service "
             "account, that identity is the service account and not the person who opened the page.") in as_user.page
     assert "that is the service account" not in as_user.page
@@ -1275,7 +1276,8 @@ def test_every_text_of_the_page_is_escaped(monkeypatch, tmp_path):
         if name == "href":
             assert value.startswith("/SASVisualAnalytics/?reportUri=%2Freports%2Freports%2F") or value.startswith("https://docs.example.com/"), value
         elif name == "class":
-            assert value in ("summary", "note", "state ok", "state missing", "state unchecked"), value
+            assert value in ("summary", "note", "state ok", "state missing", "state unchecked", "state unused",
+                             "verdict ok", "verdict missing", "verdict unchecked", "verdict unused"), value
     assert all(set(link) == {"href", "rel"} for link in page.links)
     # and what goes to the SAS log is text for SAS
     for kind, message in done.sas.messages:
@@ -1376,7 +1378,7 @@ def test_the_program_asks_with_get_and_nothing_else():
     for word in ("post", "put", "delete", "patch", "request", "Session", "urlopen", "method"):
         assert not re.search(rf"\b{word}\s*\(", block) and f"'{word.upper()}'" not in block and f'"{word.upper()}"' not in block, word
     assert not re.search(r"\b(subprocess|socket|urllib\.request|http\.client|shutil)\b", block)
-    assert [node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)] == ["html", "importlib.util", "json", "os", "re", "requests", "warnings"]
+    assert [node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)] == ["base64", "html", "importlib.util", "json", "os", "re", "zlib", "requests", "warnings"]
     # the one file the Python writes is the page, in the WORK folder
     opened = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open"]
     assert len(opened) == 1 and ast.unparse(opened[0].args[0]) == "os.path.join(setting('_sh_work'), PAGE_FILE)"

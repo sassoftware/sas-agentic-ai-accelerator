@@ -2,6 +2,17 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Added
+
+- **`mdb check`.** It brings the job definition *Start Here* to the checkout, runs it through SAS Job Execution as you, reads the installation check from the log of the job and prints it by part, with what to do for every line that is not ok. Exit code 0 when prompt building is ready. See [`mdb check`](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#mdb-check).
+
+### Changed
+
+- **Start Here gives each part a verdict.** A table *By part* opens the check: prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models - each `ready`, a number to do, or `not used here`. A part the Prompt Builder options switch off, and the driver of a RAG backend they do not offer, are `not used` instead of `missing`.
+- **Start Here names why no request got an answer.** Where every request of the page ends without an answer, one line at the top says whether the compute context does not trust the certificate of SAS Viya, cannot reach it, or timed out, and what to do - in place of a line per check that said the service did not answer.
+
 ## [2.4.2] - 2026-11-03
 
 The programs and custom steps that call SAS Viya from SAS can trust a CA bundle of their own or skip TLS verification on a test system, and `mdb` reads its TLS switches the same way.

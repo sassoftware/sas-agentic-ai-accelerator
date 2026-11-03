@@ -1390,17 +1390,20 @@ def _scr_endpoint() -> str:
     return endpoint.rstrip("/")
 
 
-def _viya_session():
+def _viya_session(out=None):
+    """The SAS Viya session of a command; `out` is where its lines go (the console, or stderr for a command
+    whose output is JSON)."""
     from .viya.session import ViyaConfigError, create_session
+    out = out or console
     try:
         session = create_session()
-        console.print(f"[dim]SAS Viya: {_plain(session.auth_summary)}[/dim]")
+        out.print("SAS Viya: " + str(session.auth_summary), style="dim", markup=False, highlight=False)
         return session
     except ViyaConfigError as exc:
         # printed as it is, and as one line whatever the width of the terminal: the sentence of a refused
         # sign-in holds what SAS Logon answered, and read as markup a `[/red]` in it ends the command with
         # a traceback - and `cli[viya]` loses its bracket
-        console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+        out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
 
 
@@ -1896,12 +1899,12 @@ def _package_objects(package: dict) -> list[tuple[str, str]]:
     return package_objects(package)
 
 
-def _emit_outcome(outcome, indent: str = "  ") -> None:
+def _emit_outcome(outcome, indent: str = "  ", out=None) -> None:
     """One line for one entry of a deploy or of an import: what happened,
     the kind, the path and what there is to say about it."""
     note = f"  ({outcome.note})" if outcome.note else ""
-    console.print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
-                  markup=False, highlight=False, soft_wrap=True)
+    (out or console).print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
+                           markup=False, highlight=False, soft_wrap=True)
 
 
 #: What content-deploy and builders-import say of a content root that is no folder below the root of SAS
@@ -2163,6 +2166,162 @@ def content_deploy(
         console.print("Nothing was written.")
     else:
         console.print("[green]Done.[/green]")
+
+
+@app.command("check")
+def check(
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder the package was imported into (default: the content root the manifest names, "
+             "/SAS Agentic AI Accelerator)."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Run the check in this compute context. Default: the one the job definition Start Here names "
+             "(_contextName). It is used for this run only and not written anywhere."),
+    no_deploy: bool = typer.Option(
+        False, "--no-deploy",
+        help="Run Start Here as it is on the site; do not bring it to this checkout first."),
+    show_all: bool = typer.Option(False, "--all", help="Print the lines that are ok as well."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print the report of the job as JSON (progress lines go to stderr)."),
+    timeout: int = typer.Option(300, "--timeout", help="Seconds to wait for the job."),
+):
+    """Run the installation check of the content folder and say what to do.
+
+    The check is the one of the page Start Here: the job definition at the
+    root of the content folder. First the job definition is brought to the
+    state of this checkout - in place, as `mdb content-deploy --only "Start
+    Here"` does, keeping its id and the compute context the site gave it;
+    --no-deploy leaves it as it is. Then the job is submitted through SAS
+    Job Execution, as you, in the compute context it names (or the one
+    --compute-context names), and its log is read: the program writes every
+    line of the check there for mdb. The job record is deleted afterwards.
+    Start Here only reads: nothing else on the site is changed.
+
+    The lines are printed by part - prompt building, logging and the LLM
+    Usage Report, RAG, prompt optimization, decision models - with one
+    verdict each, and for every line that is not ok what was found and what
+    to do. A part the options of the Prompt Builder report switch off is
+    "not used here". Where no request of the job reached SAS Viya, one line
+    names the cause: a certificate the compute context does not trust, a
+    host it cannot reach, or a timeout - and mdb, which did reach SAS Viya
+    from here, says that the cause lies between the compute server and SAS
+    Viya.
+
+    Exit code 0 when prompt building is ready, 1 when it is not or the job
+    gave no report, 2 when the command could not start.
+    """
+    from .core.content import CheckoutSource
+    from .viya.content import FAILED, DeployError, deploy
+    from .viya.startpage import CheckError, find_start_here, run_start_here
+    out = _Console(stderr=True, emoji=False) if as_json else console
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        out.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    with _viya_session(out) as session:
+        if not no_deploy:
+            out.print(f"Bringing {START_HERE_ENTRY} in {root} to this checkout:", markup=False, highlight=False)
+            try:
+                result = deploy(session, manifest, root, False, lambda outcome: _emit_outcome(outcome, out=out),
+                                only=[START_HERE_ENTRY], source=CheckoutSource(manifest),
+                                settings=_deploy_settings(root, None), create_root=False)
+            except DeployError as exc:
+                out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+                out.print("Import the package of the accelerator first: `mdb builders-import`.", markup=False, highlight=False)
+                raise typer.Exit(1)
+            if result.failed:
+                out.print("Start Here could not be brought to this checkout - see the line above. Run `mdb check --no-deploy` to "
+                          "check with the job definition as it is.", style="red", markup=False, highlight=False, soft_wrap=True)
+                raise typer.Exit(1)
+        try:
+            uri = find_start_here(session, root)
+            out.print(f"Running {START_HERE_ENTRY}" + (f" in {compute_context}" if compute_context else "") + " ...",
+                      markup=False, highlight=False)
+            run = run_start_here(session, uri, compute_context, timeout)
+        except CheckError as exc:
+            out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(1)
+    if as_json:
+        console.print_json(json.dumps({"state": run.state, "context": run.context, "seconds": round(run.seconds),
+                                       "report": run.report, "hints": _check_hints(run, no_deploy)}))
+        raise typer.Exit(0 if _core_ready(run) else 1)
+    _print_check(run, show_all, no_deploy)
+    raise typer.Exit(0 if _core_ready(run) else 1)
+
+
+#: The entry of the manifest mdb check deploys and runs.
+START_HERE_ENTRY = "Start Here"
+
+
+def _core_ready(run) -> bool:
+    """Whether prompt building - what every site needs - is ready by the report of the job."""
+    parts = (run.report or {}).get("parts") or []
+    return run.state == "completed" and any(part.get("part") == "Prompt building" and part.get("verdict") == "ready" for part in parts)
+
+
+def _check_hints(run, no_deploy: bool) -> list:
+    """What mdb adds to the report of the job: what the job itself cannot know."""
+    hints = []
+    report = run.report
+    if run.state == "still running":
+        hints.append(f"The job had not ended after the time --timeout gives: it is the job {run.job_id} in SAS Environment Manager, "
+                     "Jobs and Flows, named Start Here (mdb check). Wait for it there, or run `mdb check --timeout <more seconds>`.")
+    elif run.state != "completed":
+        hints.append(f"The job ended {run.state}" + (f": {run.error}" if run.error else "") + ".")
+    if report is None and run.python_missing:
+        hints.append(f"PROC PYTHON did not run in the compute context {run.context or 'of the job'}: configure Python for it "
+                     "(SAS Viya: Configuring Python for SAS Viya), or run `mdb check --compute-context \"<a context with Python>\"`.")
+    elif report is None and run.state == "completed":
+        hints.append("The log of the job holds no report: the program of Start Here on the site is older than this mdb."
+                     + (" Run `mdb check` without --no-deploy, which brings it to this checkout." if no_deploy else ""))
+    if report and report.get("unanswered"):
+        hints.append("mdb reached SAS Viya from this machine, and the job did not reach it from its compute server: the cause lies "
+                     f"between the compute server and SAS Viya ({report.get('host') or 'the address of SERVICESBASEURL'}), not "
+                     "in the installation.")
+    session = (report or {}).get("session") or {}
+    if session.get("otherUser"):
+        hints.append(f"The job ran as another user than you, in the compute context {session.get('context') or run.context}: it "
+                     "saw what that account may read. Run `mdb check --compute-context \"SAS Studio compute context\"`, or another "
+                     "context that runs as you.")
+    return hints
+
+
+def _print_check(run, show_all: bool, no_deploy: bool) -> None:
+    """The report of the job, by part: the verdict, and every line that is not ok with what to do."""
+    report = run.report
+    took = f" ({round(run.seconds)} s)" if run.seconds else ""
+    where = f" in {run.context}" if run.context else ""
+    if report is None:
+        console.print(f"Start Here ran{where}{took} and gave no report.", style="red", markup=False, highlight=False, soft_wrap=True)
+    else:
+        counts = report.get("counts") or {}
+        said = ", ".join(f"{counts.get(state, 0)} {state}" for state in ("ok", "missing", "not checked", "not used")
+                         if counts.get(state) or state != "not used")
+        console.print(f"Start Here ran{where}{took}: {said}.", markup=False, highlight=False, soft_wrap=True)
+        lines = report.get("lines") or []
+        width = max((len(part.get("part", "")) for part in report.get("parts") or []), default=0) + 2
+        for part in report.get("parts") or []:
+            name, verdict = part.get("part", ""), part.get("verdict", "")
+            style = "green" if verdict == "ready" else "dim" if verdict.startswith("not used") else "yellow" if "not checked" in verdict else "red"
+            console.print()
+            console.print(f"{name:<{width}}", end="", markup=False, highlight=False)
+            console.print(verdict, style=style, markup=False, highlight=False)
+            for entry in lines:
+                if entry.get("part") != name or (entry.get("state") in ("ok", "not used") and not show_all):
+                    continue
+                console.print(f"  {entry.get('state', ''):<12} {entry.get('what', '')}: {entry.get('found', '')}",
+                              markup=False, highlight=False, soft_wrap=True)
+                if entry.get("todo"):
+                    console.print(f"  {'':<12} what to do: {entry['todo']}", markup=False, highlight=False, soft_wrap=True)
+    hints = _check_hints(run, no_deploy)
+    if hints:
+        console.print()
+        for hint in hints:
+            console.print(hint, style="yellow", markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command("package-export")

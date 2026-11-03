@@ -86,6 +86,8 @@ entries:
       - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions, siteSetting: true}
       - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for, siteSetting: true}
       - {name: guideUrl, type: character, default: "https://sassoftware.github.io/sas-agentic-ai-accelerator", label: Address of the guides}
+      # mdb check sends 1: the lines of the check go into the log as well, where mdb reads them
+      - {name: mdbReport, type: character, default: "0", label: Report for mdb check (1 or 0)}
   - path: release.json
     kind: file
     generated: release-info

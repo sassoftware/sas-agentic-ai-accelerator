@@ -27,7 +27,11 @@ What the session of a compute context may read depends on how the system configu
 
 Where SAS Viya refuses every request of the session with 401 or 403, the page has one line at its top in place of those lines: what it is, and what to do. Where the user of the SAS session (`SYSUSERID`) is another one than the user SAS Job Execution started the session for (`SYS_COMPUTE_SESSION_OWNER`), the line says that the session runs as another user than you and how the page is opened with `&_contextName=`; where the two are the same user it says that the session ran as you and to ask for the rights (403) or about the sign-in (401). The program compares the two - a domain written behind `@` or in front of a backslash is no difference - and writes neither to the page. In a session of another user that is refused by some services only, each line that is refused advises to open the page as yourself, and the note under the summary says whose session built the page. In a session of another user the page also links itself in each compute context it found - or, where the contexts could not be listed, in each one the parameter `computeContexts` names -, but the one it ran in.
 
-The installation check gives every line one of three states - `ok`, `missing`, `not checked` - with what was found and one sentence what to do:
+Where no request of the session gets an answer at all, the page has one line at its top in place of a line per check, and it names the cause the requests ended with: the Python of the compute context does not trust the TLS certificate of SAS Viya (set `SAS_VIYA_CABUNDLE`, or `SAS_VIYA_VERIFY_SSL=false` on a test system), the host cannot be reached from inside the cluster, or it did not answer in time.
+
+The installation check gives every line one of four states - `ok`, `missing`, `not checked`, `not used` - with what was found and one sentence what to do. Every line belongs to one part of the accelerator: prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models. The table *By part* at the top gives each part one verdict - `ready`, the number of lines to do, the number not checked, or `not used here` - and the first thing to do. A part the options of the Prompt Builder report switch off (`enableRag`, `enableOptimization`, `enableDecision`) is `not used here`, and so is the driver of a RAG backend it does not offer (`enable_pgvector`, `enable_singlestore`): their lines that are not ok are `not used`, not `missing`. Where the options cannot be read, every part counts as used.
+
+`mdb check` runs the job, reads the lines from its log and prints them by part, with what to do - see [`mdb check`](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#mdb-check).
 
 | Section | What is looked at |
 | --- | --- |
@@ -63,6 +67,7 @@ Parameters of the job definition:
 | `repositoryName`, `llmProject`, `embeddingProject`, `decisionProject` | `LLM Repository`, `LLM Model Project`, `Embedding Model Project`, `Decision Model Project` | The names `mdb setup` gives them |
 | `computeContexts` | `SAS Studio compute context\|SAS Job Execution compute context` | Compute contexts to look for, separated by `\|` |
 | `guideUrl` | `https://sassoftware.github.io/sas-agentic-ai-accelerator` | Where the guides are: linked on the website of the accelerator or on this SAS Viya, text anywhere else |
+| `mdbReport` | `0` | `1`: every line as JSON in the log as well, for `mdb check`, which sends it with the request |
 
 `_contextName` and `contentRoot` are settings of a site: the compute context that runs as its users, and the folder the package was imported into.
 

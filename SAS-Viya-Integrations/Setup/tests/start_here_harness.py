@@ -24,7 +24,7 @@ DEFAULT_SETTINGS = {
     "repositoryName": "LLM Repository", "llmProject": "LLM Model Project", "embeddingProject": "Embedding Model Project",
     "decisionProject": "Decision Model Project",
     "computeContexts": "SAS Studio compute context|SAS Job Execution compute context",
-    "guideUrl": "https://sassoftware.github.io/sas-agentic-ai-accelerator",
+    "guideUrl": "https://sassoftware.github.io/sas-agentic-ai-accelerator", "mdbReport": "0",
 }
 
 # What release.json of the made-up content folder lists: folders first, as mdb writes them, then the objects
