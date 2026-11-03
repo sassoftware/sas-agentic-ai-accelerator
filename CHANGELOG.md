@@ -2,7 +2,16 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.4.2] - 2026-11-03
+
+The programs and custom steps that call SAS Viya from SAS can trust a CA bundle of their own or skip TLS verification on a test system, and `mdb` reads its TLS switches the same way.
+
+### Upgrading from 2.4.1
+
+Step 1 is for every site; step 2 only where it applies.
+
+1. Update the checkout to 2.4.2, then `mdb builders-import` and reload the Prompt Builder report. The import brings the changed programs and custom steps.
+2. Only where `SAS_VIYA_VERIFY_SSL` or `MDB_VERIFY_SSL` switches verification off with another value than `false`, `no` or `0` (such as `off`): set it to `false`.
 
 ### Added
 
@@ -11,6 +20,7 @@ This changelog documents all the different updates that occur for this framework
 ### Changed
 
 - **mdb reads its TLS switches the same way.** `SAS_VIYA_VERIFY_SSL` and `MDB_VERIFY_SSL` turn verification off only for `false`, `no` or `0`. Any other value, a typo included, keeps it on; before, any value other than `true` switched it off.
+- **marked 18.1.2** (from 18.1.0) in the Prompt Builder page.
 
 ## [2.4.1] - 2026-10-27
 
