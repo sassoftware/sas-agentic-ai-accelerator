@@ -6,12 +6,13 @@ This changelog documents all the different updates that occur for this framework
 
 ### Added
 
-- **`mdb check`.** It brings the job definition *Start Here* to the checkout, runs it through SAS Job Execution as you, reads the installation check from the log of the job and prints it by part, with what to do for every line that is not ok. Exit code 0 when prompt building is ready. See [`mdb check`](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#mdb-check).
+- **`mdb check`.** It runs the installation check as you, probes the compute server in a short compute session per compute context the parts run in, prints the check by part with what to do for every line that is not ok, and writes it into the page *Start Here*. Exit code 0 when prompt building is ready. See [`mdb check`](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#mdb-check).
 
 ### Changed
 
-- **Start Here gives each part a verdict.** A table *By part* opens the check: prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models - each `ready`, a number to do, or `not used here`. A part the Prompt Builder options switch off, and the driver of a RAG backend they do not offer, are `not used` instead of `missing`.
-- **Start Here names why no request got an answer.** Where every request of the page ends without an answer, one line at the top says whether the compute context does not trust the certificate of SAS Viya, cannot reach it, or timed out, and what to do - in place of a line per check that said the service did not answer.
+- **Start Here is a page, and runs nothing.** The job definition serves one page as its form, so it opens whatever state the compute server is in. The release ships a page that says to run `mdb check`; `mdb check` writes its result into it, and an import or a deploy writes the page of the release back. *Start-Here.sas* is gone, and with it the parameters `_contextName` and `_output_type` of the job definition.
+- **The check gives each part a verdict.** A table *By part* opens it: prompt building, logging and the LLM Usage Report, RAG, prompt optimization, decision models - each `ready`, a number to do, or `not used here`. A part the Prompt Builder options switch off, and the driver of a RAG backend they do not offer, are `not used` instead of `missing`.
+- **The compute server says why it cannot reach SAS Viya.** A certificate it does not trust, a host it cannot reach or a timeout is one line with what to do, in place of a line per check that said the service did not answer. Where RAG or prompt optimization run in a compute context whose sessions are not yours, the check says so.
 
 ## [2.4.2] - 2026-11-03
 

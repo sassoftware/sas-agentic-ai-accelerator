@@ -64,7 +64,7 @@ A note on prices: the report's *Average Price* / *Total Price* calculated items 
 
 ### Setup
 
-The programs of two job definitions of the content folder, with their tests (`python -m pytest SAS-Viya-Integrations/Setup/tests`). `Start-Here.sas` is the job definition `Start Here` at the root of the folder: one HTML page with links to the two reports and to the guides, and an installation check that reads `release.json`, the content folder, the CAS tables of the reports, SAS Model Manager, the credential domain by its name, the Python packages, the publishing destinations and the compute contexts - with GET requests only. `Load-Accelerator-Tables.sas` is the job definition `Data/Load-Accelerator-Tables`: it loads the release table and the three fact sheets from the `Data` folder into CAS, the fact sheets by including `Load-Fact-Sheets.sas` from `Logging and Monitoring`. See the `README.md` there.
+The page and the program of two job definitions of the content folder, with their tests (`python -m pytest SAS-Viya-Integrations/Setup/tests`). `Start-Here.html` is the page of the job definition `Start Here` at the root of the folder: links to the guides and the command `mdb check`, which runs the installation check - `release.json`, the content folder, the CAS tables of the reports, SAS Model Manager, the credential domain by its name, the publishing destinations, the compute contexts and the compute server - and writes the result into the page. `Load-Accelerator-Tables.sas` is the job definition `Data/Load-Accelerator-Tables`: it loads the release table and the three fact sheets from the `Data` folder into CAS, the fact sheets by including `Load-Fact-Sheets.sas` from `Logging and Monitoring`. See the `README.md` there.
 
 ### Prompt-Optimization
 

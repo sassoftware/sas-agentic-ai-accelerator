@@ -25,7 +25,6 @@ STEPS = INTEGRATIONS / "Custom-Steps"
 # Every site, listed by name, so a site that is lost fails here and is not skipped
 PROGRAMS = [
     "Logging-Monitoring/Get-All-Prompts.sas",
-    "Setup/Start-Here.sas",
     "RAG-Ingestion/Ingest-Documents.sas",
     "RAG-Ingestion/Test-Retrieval.sas",
     "Prompt-Optimization/Optimize-Prompt-DSPy.sas",
@@ -123,8 +122,9 @@ def clean(monkeypatch):
 # The sites
 # ---------------------------------------------------------------------------
 
-def test_there_are_five_programs_and_ten_steps_and_each_exists():
-    assert len(PROGRAMS) == 5 and len(STEP_FILES) == 10
+def test_there_are_four_programs_and_ten_steps_and_each_exists():
+    # Start Here runs no program since mdb check: it serves a page
+    assert len(PROGRAMS) == 4 and len(STEP_FILES) == 10
     for relative in PROGRAMS:
         assert (INTEGRATIONS / relative).is_file(), relative
     for name in STEP_FILES:

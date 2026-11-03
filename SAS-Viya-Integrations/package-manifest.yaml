@@ -59,23 +59,18 @@ package: SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json
 
 entries:
   # ---- the first page, and the release of this folder ------------------------
-  # Start Here writes one HTML page: the links and the installation check. It
-  # reads release.json of the content root, so the page needs no checkout.
-  # _output_type = html is what makes SAS Job Execution show what the program
-  # writes to _webout as a page. _contextName: the page shows what its session
-  # may read, so the job runs as the user who opens it. What a session of the
-  # SAS Job Execution compute context may read depends on how a system
-  # configures that context: on 2026-10-12 one run there had every request of
-  # the page answered 401, and a later run the same day built the whole page,
-  # in a session whose SYSUSERID was not SYS_COMPUTE_SESSION_OWNER.
+  # Start Here serves one page as its form: nothing runs when it is opened. The
+  # release ships the page that says to run mdb check (Setup/Start-Here.html);
+  # mdb check writes the result of the installation check into the form, in
+  # place, and a deploy or an import writes this page back. The parameters are
+  # the settings of the check, which mdb check reads from the job definition on
+  # the site - site settings, which a deploy and an import leave as they are.
   - path: Start Here
     kind: jobDefinition
-    code: SAS-Viya-Integrations/Setup/Start-Here.sas
-    description: Start page of the SAS Agentic AI Accelerator - links to the reports and the guides, and an installation check. Reads only.
+    form: SAS-Viya-Integrations/Setup/Start-Here.html
+    description: Start page of the SAS Agentic AI Accelerator - links to the reports and the guides, and the result of the last mdb check.
     parameters:
-      - {name: _contextName, type: character, default: SAS Studio compute context, label: Context Name, siteSetting: true}
-      - {name: _action, type: character, default: execute}
-      - {name: _output_type, type: character, default: html}
+      - {name: _action, type: character, default: form}
       - {name: contentRoot, type: character, default: /SAS Agentic AI Accelerator, label: Content root, siteSetting: true}
       - {name: caslib, type: character, default: Public, label: CAS library of the report tables, siteSetting: true}
       - {name: casServer, type: character, default: cas-shared-default, label: CAS server, siteSetting: true}
@@ -86,8 +81,6 @@ entries:
       - {name: decisionProject, type: character, default: Decision Model Project, label: Project of the decision model definitions, siteSetting: true}
       - {name: computeContexts, type: character, default: "SAS Studio compute context|SAS Job Execution compute context", label: Compute contexts to look for, siteSetting: true}
       - {name: guideUrl, type: character, default: "https://sassoftware.github.io/sas-agentic-ai-accelerator", label: Address of the guides}
-      # mdb check sends 1: the lines of the check go into the log as well, where mdb reads them
-      - {name: mdbReport, type: character, default: "0", label: Report for mdb check (1 or 0)}
   - path: release.json
     kind: file
     generated: release-info

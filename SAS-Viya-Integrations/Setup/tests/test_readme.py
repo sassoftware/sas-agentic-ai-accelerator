@@ -1,8 +1,8 @@
-"""README.md of this folder: how the two jobs are opened, and what it says of the programs.
+"""README.md of this folder: how the two job definitions are opened, and what it says of them.
 
 The page holds sentences that are true of a program only as long as nobody changes the program,
 and numbers that were measured once. This file holds the ones a reader acts on: the two addresses
-with the parameter _contextName, the parameters of the two job definitions, what the page says of
+of the page and of the loader, the parameters of the two job definitions, what the page says of
 a custom step, of Load-Fact-Sheets.sas and of the width of four columns of the release table.
 """
 import re
@@ -47,41 +47,39 @@ def context_of(entry):
     return found.group(1).strip().strip('"') if found else None
 
 
-def test_both_jobs_are_opened_in_a_compute_context_that_runs_as_the_user():
-    """Measured on 2026-10-12 in the SAS Job Execution compute context: on one run SAS Viya refused every
-    request of the page, on a later run the page was built completely. The README gives each address with
-    the parameter, says what was seen on which run, and claims of no context that it always refuses."""
+def manifest_parameters(entry):
+    """{name: default} of the parameters of an entry of the manifest."""
+    text = MANIFEST.read_text(encoding="utf-8").replace("\r\n", "\n")
+    block = text.split(f"  - path: {entry}\n")[1].split("\n  - path: ")[0]
+    return {name: value.strip().strip('"') for name, value in
+            re.findall(r"\{name: (\w+), type: character, default: ([^,}]*)", block)}
+
+
+def test_the_page_is_opened_as_it_is_and_the_loader_in_a_compute_context_that_runs_as_the_user():
+    """Start Here serves a page and runs nothing: its address has no compute context. The loader runs as its
+    session: measured on 2026-10-12 in the SAS Job Execution compute context, its session was not the user's."""
     start, loader = section("Start Here"), section("Load-Accelerator-Tables")
 
-    assert ("https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here"
-            "&_contextName=<a compute context that runs as you>\n") in start
+    assert "https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Start Here\n" in start
+    assert "_contextName" not in start
+    assert "opening it runs nothing" in start and "`mdb check`" in start
     assert ("https://<your SAS Viya host>/SASJobExecution/?_program=/SAS Agentic AI Accelerator/Data/Load-Accelerator-Tables"
             "&_contextName=<a compute context that runs as you>\n") in loader
-    # what was measured on each of the two runs, with the numbers of their pages
-    assert "What the session of a compute context may read depends on how the system configures that context." in start
-    assert "the page read `13 ok, 0 missing, 15 not checked` - fifteen lines, twelve of them with the advice to ask an administrator" in start
-    assert "opened with `&_contextName=SAS Studio compute context` the same page had 97 lines that were ok." in start
-    assert "On a later run the same day the page was built completely in that context - `97 ok, 2 missing, 1 not checked`" in start
-    assert "runs its sessions under a service account" not in start and "always" not in start
-    assert "the page has one line at its top in place of those lines" in start
-    assert "The program compares the two - a domain written behind `@` or in front of a backslash is no difference - and writes neither" in start
     assert "the log then holds one NOTE that the session does not run as the user who started the job" in loader.replace("The log", "the log")
 
 
-def test_the_parameters_are_the_ones_of_the_programs_and_of_the_manifest():
+def test_the_parameters_are_the_ones_of_the_manifest_and_of_the_program():
     start, loader = parameters("Start Here"), parameters("Load-Accelerator-Tables")
 
-    for listed, program, macro in ((start, "Start-Here.sas", "_sh_default"), (loader, "Load-Accelerator-Tables.sas", "_lat_default")):
-        assert {name: value for name, value in listed.items() if not name.startswith("_")} == defaults_of(program, macro)
-        assert listed["_action"] == "execute"
-    assert start["_output_type"] == "html"
-    # the compute context is the one the job definition of the Prompt Builder has in the manifest
+    # the page: the settings of mdb check, as the manifest gives them to the job definition
+    assert start == manifest_parameters("Start Here") and start["_action"] == "form"
+    assert {name: value for name, value in loader.items() if not name.startswith("_")} == defaults_of("Load-Accelerator-Tables.sas", "_lat_default")
+    assert loader["_action"] == "execute" and loader["_output_type"] == "html"
+    # the compute context of the loader is the one the job definition of the Prompt Builder has in the manifest
     builder = context_of("Prompt Builder/SAS-LLM-Prompt-Builder-UI")
-    assert builder == "SAS Studio compute context" and start["_contextName"] == loader["_contextName"] == builder
-    # and where the manifest gives one of the two jobs the parameter, it is that context
-    for entry in ("Start Here", "Data/Load-Accelerator-Tables"):
-        assert context_of(entry) in (None, builder), entry
-    assert "`_contextName` and `contentRoot` are settings of a site" in section("Start Here")
+    assert builder == "SAS Studio compute context" and loader["_contextName"] == builder
+    assert context_of("Data/Load-Accelerator-Tables") in (None, builder) and context_of("Start Here") is None
+    assert "`contentRoot` and the other parameters but `guideUrl` are settings of a site" in section("Start Here")
 
 
 def test_what_the_page_says_of_a_custom_step_names_no_upload_as_a_way():
@@ -96,7 +94,7 @@ def test_what_the_page_says_of_an_entry_is_what_the_two_programs_say():
     """The sentences of this page a reader acts on where a line of Start Here or of the loader is not ok, each
     beside the text of the program it is about."""
     start, loader, tests = section("Start Here"), section("Load-Accelerator-Tables"), section("Tests")
-    page = (SETUP / "Start-Here.sas").read_text(encoding="utf-8")
+    page = (REPOSITORY / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "core" / "start_here.py").read_text(encoding="utf-8")
     job = (SETUP / "Load-Accelerator-Tables.sas").read_text(encoding="utf-8")
 
     # one name, and two objects of it

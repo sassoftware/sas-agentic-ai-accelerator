@@ -164,7 +164,7 @@ def test_the_request_is_the_one_start_here_asks_with():
     in a DATA step from the text of the parameter: SYMGET reads it and URLENCODE writes it, so that no statement
     of the macro language resolves the path - a comma or a parenthesis of a folder name ends no argument."""
     ask = ask_macro(program(), "_lat")
-    start_here = (SETUP / "Start-Here.sas").read_text(encoding="utf-8")
+    start_here = (SETUP.parents[1] / "Model-Definition-Builder" / "cli" / "src" / "mdb" / "core" / "start_here.py").read_text(encoding="utf-8")
 
     assert "status, folder = read_json(get, '/folders/folders/@item?path=' + segment(root))" in start_here
     assert ("_lat_ask = cats(getoption('servicesbaseurl'), '/folders/folders/@item?path=', "

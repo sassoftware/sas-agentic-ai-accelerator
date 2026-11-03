@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAS Agentic AI Accelerator - Start Here</title>
+<style>
+body { font-family: Arial, Helvetica, sans-serif; margin: 0; background: #f5f6f7; color: #1b1d21; line-height: 1.45; }
+main { max-width: 68rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.25rem; margin: 2rem 0 0.5rem; }
+h3 { font-size: 1.05rem; margin: 1.5rem 0 0.4rem; }
+p { margin: 0.4rem 0; }
+a { color: #0b5cab; }
+table { border-collapse: collapse; width: 100%; background: #ffffff; }
+th, td { text-align: left; vertical-align: top; padding: 0.35rem 0.6rem; border-bottom: 1px solid #d9dce1; overflow-wrap: anywhere; }
+th { font-size: 0.85rem; background: #e9ebee; }
+td.state { white-space: nowrap; font-weight: bold; }
+td.ok { color: #1c6b2a; }
+td.missing { color: #a1260d; }
+td.unchecked { color: #6a5300; }
+td.unused { color: #5b6068; font-weight: normal; }
+td.verdict { white-space: nowrap; font-weight: bold; }
+th[scope="row"] { background: transparent; font-size: 1rem; white-space: nowrap; }
+.summary { background: #ffffff; border-left: 0.3rem solid #0b5cab; padding: 0.6rem 0.8rem; }
+.note { font-size: 0.9rem; color: #4a4f57; }
+summary { cursor: pointer; margin: 0.5rem 0; }
+@media (prefers-color-scheme: dark) {
+  body { background: #17191c; color: #e8eaed; }
+  a { color: #7db7ff; }
+  table, .summary { background: #22252a; }
+  th { background: #2c3036; }
+  th, td { border-bottom-color: #3a3f47; }
+  td.ok { color: #7fd18b; }
+  td.missing { color: #ff9c8a; }
+  td.unchecked { color: #e6c865; }
+  td.unused { color: #9aa0a8; }
+  .note { color: #b3b8c0; }
+}
+</style>
+</head>
+<body>
+<main>
+<h1>SAS Agentic AI Accelerator</h1>
+<p>The accelerator brings large language models, embedding models and decision models into SAS Viya as models of SAS Model Manager that are published like any other model. With the Prompt Builder you write prompt templates, decision templates and RAG setups, test them against those models and register the result. The log of the containers becomes tables that say which model answered which request, for which prompt, and what it cost.</p>
+<h2>Where to go</h2>
+<ul>
+<li><a href="https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/Prompt-Builder" rel="noopener noreferrer">User Guide: Prompt Builder</a></li>
+<li><a href="https://sassoftware.github.io/sas-agentic-ai-accelerator/User-Guide/RAG" rel="noopener noreferrer">User Guide: RAG</a></li>
+<li><a href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Introduction" rel="noopener noreferrer">Administration Guide</a></li>
+<li><a href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Logging-&amp;-Monitoring" rel="noopener noreferrer">Administration Guide: Logging and Monitoring</a></li>
+<li><a href="https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Troubleshooting-Guide" rel="noopener noreferrer">Administration Guide: Troubleshooting</a></li>
+</ul>
+<h2>Installation check</h2>
+<p class="summary">This installation has not been checked yet.</p>
+<p>Run mdb check from the checkout of the accelerator, as the administrator who sets it up. It checks the content folder, the CAS tables, SAS Model Manager, the credential domain, the publishing destinations and the compute server, prints what to do, and writes the result into this page - with the links to the two reports of your site.</p>
+<pre>mdb check</pre>
+<p class="note">See https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Setup-Additional-UIs#mdb-check</p>
+</main>
+</body>
+</html>

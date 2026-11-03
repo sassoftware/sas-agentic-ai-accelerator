@@ -1,4 +1,4 @@
-"""Start-Here.sas and mdb content-deploy: ONE rule for what a folder holds under the name of an entry.
+"""mdb check and mdb content-deploy: ONE rule for what a folder holds under the name of an entry.
 
 review-20b and gate-20b: the page and mdb judged one state differently. For a step the page looked for
 objects and references under the name with and without the ending .step, where mdb takes the name of
@@ -10,7 +10,7 @@ reads and runs and does not change). It is written down here ONCE, as a table: t
 and what its folder holds under its name - how many objects of its kind, how many references to an
 object of its kind - give the outcome of mdb content-deploy and the line of the page. Each row is
 then built as a content folder that is made up (start_here_harness.Site) and asked twice: the Python
-of Start-Here.sas reads the folder, and `deploy` of mdb reads the SAME folder in a dry run. Both have
+of the check (mdb/core/start_here.py) reads the folder, and `deploy` of mdb reads the SAME folder in a dry run. Both have
 to give what the table says.
 
 What mdb does with an object it found - compare it, update it - is not part of the rule and is stood

@@ -1,182 +1,20 @@
-/******************************************************************************
- * Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
- * SPDX-License-Identifier: Apache-2.0
- *
- * Start Here: one page that says what the SAS Agentic AI Accelerator is, links
- * to its two reports and to the guides, and checks the installation.
- *
- * The program of the job definition "Start Here" at the root of the content
- * folder. Run from SAS Job Execution it writes ONE HTML page to the browser:
- * no script, no file from another host, its style inline.
- *
- * THE PAGE SHOWS WHAT ITS SAS SESSION MAY READ, so it is opened in a compute
- * context that runs under the identity of the person who opens it: the job
- * definition names that context in its parameter _contextName, and a request
- * can name another one - .../SASJobExecution/?_program=<content root>/Start
- * Here, followed by the parameter _contextName with the name of the context.
- * What the session of a compute context may read depends on how the system
- * configures that context. Measured on the test system on 2026-10-12, in its
- * SAS Job Execution compute context: on one run SAS Viya answered every
- * request with 401 and the page had 15 lines that were not checked; on a
- * later run the same day the page was built completely (97 lines ok), by a
- * session whose user (SYSUSERID) was not the user it was started for
- * (SYS_COMPUTE_SESSION_OWNER, which SAS Job Execution sets).
- * Where every request is refused the page says so in one line at its top,
- * with what to do, in place of those lines. The line says that the session
- * runs as another user than the person who opened the page where the two
- * users differ - a domain written behind @ or in front of a backslash is no
- * difference -, and whose rights to ask for where they are the same.
- *
- * WHAT IT CHECKS, each as one line with ok / missing / not checked and one
- * sentence what to do:
- *   - the release: release.json in the content root (version, commit, date)
- *   - the content: every entry release.json lists, present in this content
- *     root yes or no, so the page needs no checkout. What a folder holds
- *     under the name of an entry is told the way mdb content-deploy tells
- *     it: a member has the name of the entry to the letter, and is of its
- *     kind by what its uri starts with. A member of a folder
- *     that is a reference to an object elsewhere is no entry: it is not
- *     followed. A reference that has the name of an entry and names an
- *     object of the kind of the entry stands in the way of that entry - mdb
- *     content-deploy and the import write nothing for it -, and the line
- *     of the entry says so, where the reference is all the folder holds
- *     under that name and where it lies beside the object. Two objects of
- *     the name and kind of an entry stand in its way as well - nothing says
- *     which one is meant -, and what lies below a name two folders have is
- *     not checked. A report or a decision that
- *     is there is present whatever lies beside it: mdb writes neither
- *     and fails none over a reference. A reference to an object of
- *     another kind is no part of the check
- *   - the CAS tables the two reports bind: there, rows, loaded when
- *   - the CAS tables of the logging chain that no report binds: two further
- *     tables of Get-All-Prompts.sas
- *   - SAS Model Manager: the repository and the projects of the LLM, the
- *     embedding model and the decision model definitions, with their models;
- *     a project without a model is missing
- *   - the options of the Prompt Builder report that name the repository and
- *     the projects
- *   - the credential domain of the provider keys, by its name only
- *   - the Python packages of this compute context, for each part
- *   - the publishing destinations
- *   - the compute contexts the Prompt Builder options and this job name
- *
- * BY PART. Every line belongs to one part of the accelerator - prompt
- * building, logging and the LLM Usage Report, RAG, prompt optimization,
- * decision models - and the page opens with one verdict per part: ready, the
- * number of lines to do, not checked, or not used here. A part the options
- * of the Prompt Builder report switch off (enableRag, enableOptimization,
- * enableDecision, the RAG backends with enable_pgvector / enable_singlestore)
- * is not used here: its lines that are not ok say so instead of missing.
- *
- * NO ANSWER AT ALL. Where no request of the page got an answer - the
- * certificate of SAS Viya is not trusted by the Python of the compute
- * context, the host cannot be reached from it, or it timed out - one line at
- * the top says which of these it was and what to do, in place of a line
- * per check that says "the service did not answer".
- *
- * FOR MDB. With the parameter mdbReport=1, which mdb check sets, the
- * program also writes every line as JSON into the SAS log, compressed and in
- * base64, in lines that SAS does not wrap: a job submitted through the API
- * keeps its log and no _webout.
- *
- * IT CHANGES NOTHING. Every request is a GET, nothing is written but the
- * page: a file in WORK, copied to _webout. No secret is asked for - the
- * credential domain is asked for by name, never for an entry - and the page
- * holds no token and no user id.
- *
- * IT DOES NOT FAIL. A service that does not answer, a right the user lacks,
- * a folder that is not there: each is a line of the page. Where PROC PYTHON
- * does not run in the compute context the page says that and nothing else.
- * The condition code of the session is set back to 0 at the end for that
- * reason: SAS Job Execution shows the page of a job that completed, and its
- * own error page for one that failed.
- *
- * Parameters of the job definition:
- *   _action          execute
- *   _output_type     html - the job writes the page itself, to _webout
- *   _contextName     the compute context the job runs in: one that runs under
- *                    the identity of the person who opens the page
- *   contentRoot      the content folder (default /SAS Agentic AI Accelerator)
- *   caslib           CAS library of the tables of the reports (Public)
- *   casServer        CAS server (cas-shared-default)
- *   credentialDomain credential domain of the provider keys (agentic-ai-keys);
- *                    the option of the Prompt Builder report wins when it is set
- *   repositoryName   SAS Model Manager repository (LLM Repository)
- *   llmProject / embeddingProject / decisionProject
- *                    the projects of the definitions, by name
- *   computeContexts  compute contexts to look for, separated by |
- *   guideUrl         where the guides are (the website of the accelerator); an
- *                    address of another host than that and this SAS Viya is text
- *   mdbReport        1: the lines as JSON in the log as well, for mdb check (0)
- *
- * sh is short for Start Here
- ******************************************************************************/
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""The installation check of the content folder, and the page Start Here that shows it.
 
-/* A parameter is taken from the lines below only where the job definition or
-   the request did not set it - the pattern of Ingest-Documents.sas */
-%macro _sh_default(name, value);
-    %if not %symexist(&name.) %then %do;
-        %global &name.;
-        %let &name. = &value.;
-    %end;
-%mend _sh_default;
+`mdb check` runs it: the checks read SAS Viya with GET requests only (`get`, a function of a path and an
+Accept header that answers (status, bytes)), the compute server is probed in a compute session
+(viya/startpage.py), and the page is written into the job definition Start Here, which serves it as a
+form - nothing runs when somebody opens it. Until the first check the job definition holds the page the
+release ships (SAS-Viya-Integrations/Setup/Start-Here.html), which says to run `mdb check`.
 
-%_sh_default(contentRoot, /SAS Agentic AI Accelerator);
-%_sh_default(caslib, Public);
-%_sh_default(casServer, cas-shared-default);
-%_sh_default(credentialDomain, agentic-ai-keys);
-%_sh_default(repositoryName, LLM Repository);
-%_sh_default(llmProject, LLM Model Project);
-%_sh_default(embeddingProject, Embedding Model Project);
-%_sh_default(decisionProject, Decision Model Project);
-%_sh_default(computeContexts, SAS Studio compute context|SAS Job Execution compute context);
-%_sh_default(guideUrl, https://sassoftware.github.io/sas-agentic-ai-accelerator);
-%_sh_default(mdbReport, 0);
-%sysmacdelete _sh_default;
-
-/* Whose session this is. SAS Job Execution hands a job the user its session
-   was started for (SYS_COMPUTE_SESSION_OWNER) and the compute context it
-   runs in (_contextName); SYSUSERID is the user the session runs as. The
-   Python program reads the three as text - no statement here resolves one -
-   and asks only for what the session has: a program run in SAS Studio may
-   have neither of the first two. It compares the two users and writes
-   neither to the page. */
-%let _sh_hasOwner = %symexist(SYS_COMPUTE_SESSION_OWNER);
-%let _sh_hasContext = %symexist(_contextName);
-
-/* An error must not leave a batch session checking syntax only: the page is
-   written by a DATA step behind PROC PYTHON, and behind an error such a step
-   does not run. The option that decides it is switched off while the program
-   runs and put back to what it was. */
-%let _sh_syntaxcheck = %sysfunc(getoption(syntaxcheck));
-options nosyntaxcheck;
-
-%let _sh_viyaHost = %sysfunc(getoption(SERVICESBASEURL));
-%let _sh_work = %sysfunc(pathname(work));
-/* The Python program sets this to 0 as its last statement, behind the file of
-   the page: -1 means that there is no page to send */
-%let _sh_rc = -1;
-
-proc python restart;
-submit;
-import base64
+This module imports nothing of mdb and no HTTP library: what it reads it is handed.
+"""
 import html
-import importlib.util
 import json
-import os
 import re
-import zlib
 from urllib.parse import quote
-try:
-    import requests
-except ImportError:
-    requests = None
-try:
-    from importlib import metadata as package_metadata
-except ImportError:
-    package_metadata = None
 
-PAGE_FILE = 'start_here.html'
 OK = 'ok'
 MISSING = 'missing'
 NOT_CHECKED = 'not checked'
@@ -217,7 +55,7 @@ CHAIN_TABLES = (
 PACKAGES = (
     ('Logging and Monitoring', 'pandas', 'pandas', ('pandas',), '', 'the log parser and the link program'),
     ('Logging and Monitoring', 'swat', 'swat', ('swat',), '', 'the log parser and the link program'),
-    ('Logging and Monitoring', 'requests', 'requests', ('requests',), '', 'Get-All-Prompts.sas and this page'),
+    ('Logging and Monitoring', 'requests', 'requests', ('requests',), '', 'Get-All-Prompts.sas'),
     ('RAG', 'requests', 'requests', ('requests',), '', 'every step and job of the RAG runtime'),
     ('RAG', 'pandas', 'pandas', ('pandas',), '', 'every step of the RAG runtime'),
     ('RAG', 'swat', 'swat', ('swat',), '', 'every step of the RAG runtime'),
@@ -244,17 +82,13 @@ TEXT_LIMIT = 600
 # The two answers of a service that refuses the session: no sign-in it takes, and no right
 REFUSED = (401, 403)
 # The section of the one line that stands for every request, where SAS Viya refused them all
-SESSION = 'SAS session of this page'
+SESSION = 'Requests of mdb check'
 # What a file of the Files service is addressed by
 FILE_URI = re.compile(r'/files/files/[0-9A-Za-z-]+')
-ASK_ADMINISTRATOR = 'Ask an administrator to open this page, or for the right to read it.'
-# What to do where every request of a session that runs as the person who opened the page was refused
-SIGN_IN_REFUSED = 'Open this page again. If the line stays, ask an administrator why SAS Viya does not take the sign-in of your session.'
-ASK_RIGHTS = 'Ask an administrator for the rights to read what this page checks.'
-# How the page is opened under the identity of the person who opens it. The parameter is written
-# with the character it starts with in an address, which this block holds as a number only
-AS_YOURSELF = ('Open this page in a compute context that runs as you: add ' + chr(38) + '_contextName=<the name of that compute context> '
-               'to the address of this page, or set the context in the parameter _contextName of the job definition.')
+ASK_ADMINISTRATOR = 'Run mdb check as a user who may read it, or ask an administrator for the right to read it.'
+# What to do where every request of mdb check was refused
+SIGN_IN_REFUSED = 'Run mdb check again. If the line stays, ask an administrator why SAS Viya does not take your sign-in.'
+ASK_RIGHTS = 'Ask an administrator for the rights to read what mdb check checks, or run it as an administrator.'
 # What to do about a step that is not registered. A step is registered by the import and by mdb
 # content-deploy; its file, uploaded to the folder, is no step and stays beside the step
 STEP_MISSING = ('Import the package of the accelerator again, or run mdb content-deploy: both register the step. '
@@ -348,27 +182,17 @@ def ask_again(status):
         return ASK_ADMINISTRATOR
     if status == NOT_ONE:
         return 'Remove or rename all but one of the folders of that name.'
-    return 'Open this page again. If the line stays, look at the state of the service in SAS Environment Manager.'
+    return 'Run mdb check again. If the line stays, look at the state of the service in SAS Environment Manager.'
 
 
 # ---------------------------------------------------------------------------
-# The SAS session that builds the page
+# The requests of mdb check, and the compute server
 # ---------------------------------------------------------------------------
 
 def person_of(user):
     """A user id as the person it names: a system can write one person with a domain behind @ or
     in front of a backslash, and in upper or lower case."""
     return text_of(user).lower().split(chr(92))[-1].split('@')[0].strip()
-
-
-def session_of(session_user, opened_by, context):
-    """What is known of the SAS session: whether it runs as another user than the one it was
-    started for (other), whether it is known to run as that user (own) - neither is known where
-    one of the two ids is missing -, and its compute context. The two user ids are compared here
-    and go no further - neither is a text of the page."""
-    runs_as, started_for = person_of(session_user), person_of(opened_by)
-    known = bool(runs_as and started_for)
-    return {'other': known and runs_as != started_for, 'own': known and runs_as == started_for, 'context': text_of(context)}
 
 
 def recorded(get, statuses):
@@ -384,101 +208,94 @@ def recorded(get, statuses):
     return asked
 
 
-def one_line_for_a_refused_session(lines, statuses, session):
-    """Where SAS Viya refused every request of the session, the lines that would say so one by
-    one - and the ones that were not looked for because of them - are taken out, and one line
-    at the top stands for them: what it is and what to do. Measured on 2026-10-12 for a job in
-    the SAS Job Execution compute context of the test system: 15 lines that were not checked, 12
-    of them with the advice to ask an administrator - and on a later run that day in the same
-    context no request was refused and the line was not there. The line counts as the checks it
-    stands for. For a session that runs as the person who opened the page the refusal is about
-    that person: 403 is a right to ask for, 401 a sign-in that SAS Viya did not take."""
+def one_line_for_a_refused_session(lines, statuses):
+    """Where SAS Viya refused every request of mdb check, the lines that would say so one by one - and
+    the ones that were not looked for because of them - are taken out, and one line at the top stands
+    for them, as the checks it stands for: 403 is a right to ask for, 401 a sign-in SAS Viya did not take."""
     if not statuses or any(status not in REFUSED for status in statuses):
         return lines
     kept = [entry for entry in lines if entry['state'] != NOT_CHECKED]
     codes = ' and '.join(str(status) for status in sorted(set(statuses)))
-    where = ', in the compute context ' + session['context'] if session['context'] else ''
-    if session['other']:
-        found = (f'SAS Viya refused every request of this page (HTTP {codes}): its SAS session runs as another user than you{where}, '
-                 'and what such a session may read depends on how the system configures its compute context')
-        todo = AS_YOURSELF
-    elif session.get('own'):
-        found = f'SAS Viya refused every request of this page (HTTP {codes}), which ran as you' + where
-        todo = ' '.join(([SIGN_IN_REFUSED] if 401 in statuses else []) + ([ASK_RIGHTS] if 403 in statuses else []))
-    else:
-        found = f'SAS Viya refused every request of this page (HTTP {codes})' + (', which ran in the compute context ' + session['context']
-                                                                                 if session['context'] else '')
-        todo = 'Open this page again. If the line stays, ' + AS_YOURSELF[0].lower() + AS_YOURSELF[1:]
+    found = f'SAS Viya refused every request of mdb check (HTTP {codes})'
+    todo = ' '.join(([SIGN_IN_REFUSED] if 401 in statuses else []) + ([ASK_RIGHTS] if 403 in statuses else []))
     entry = line(SESSION, 'Requests to SAS Viya', NOT_CHECKED, found, todo)
     entry['count'] = max(len(lines) - len(kept), 1)
     return [entry] + kept
-
-
-def as_the_session_may_read(lines, session):
-    """In a session that runs as another user than the one who opened the page, the advice of a
-    line that was refused is to open the page as oneself: asking an administrator is no advice
-    for an administrator whose page a service account built."""
-    if not session['other']:
-        return lines
-    for entry in lines:
-        if entry['todo'] == ASK_ADMINISTRATOR:
-            entry['todo'] = AS_YOURSELF[:-1] + ' - or ask for the right the session lacks.'
-    return lines
-
-
-def failure_kind(error):
-    """What kept a request from its answer, by the class of the exception requests raised: tls (the
-    certificate of SAS Viya was not trusted), timeout, connect (the host could not be reached) or other.
-    Told by the names of the classes, so that it needs no import: the SSLError of requests is a
-    ConnectionError as well, and is asked for first."""
-    names = [klass.__name__ for klass in type(error).__mro__]
-    text = str(error)
-    if 'SSLError' in names or 'CERTIFICATE_VERIFY_FAILED' in text or 'certificate verify failed' in text.lower():
-        return 'tls'
-    if any(name in names for name in ('Timeout', 'ConnectTimeout', 'ReadTimeout', 'TimeoutError')):
-        return 'timeout'
-    if any(name in names for name in ('ConnectionError', 'ConnectionRefusedError', 'gaierror')):
-        return 'connect'
-    return 'other'
 
 
 def no_answer_said(kind, host, guide):
-    """(what was found, what to do) where no request of the page got an answer, for the kind of failure."""
-    where = host or 'SAS Viya'
+    """(what was found, what to do) where the compute server could not reach SAS Viya, for the kind of
+    failure: tls (the certificate of SAS Viya is not trusted there), connect, timeout, or other."""
+    # the page names no host: SAS Viya is the address the SAS option SERVICESBASEURL names
+    where = 'SAS Viya (the address the SAS option SERVICESBASEURL names)'
     if kind == 'tls':
-        return (f'No request of this page reached SAS Viya: the Python of this compute context does not trust the TLS certificate of {where}',
+        return (f'the Python of this compute context does not trust the TLS certificate of {where}',
                 'Point SAS_VIYA_CABUNDLE at a file with the CA certificates of your site in the SAS session of this compute context - '
-                'on a test system SAS_VIYA_VERIFY_SSL=false switches the check off - and open this page again. See ' + guide.rstrip('/')
+                'on a test system SAS_VIYA_VERIFY_SSL=false switches the check off -, then run mdb check again. See ' + guide.rstrip('/')
                 + '/' + TROUBLESHOOTING_TLS)
     if kind == 'connect':
-        return (f'No request of this page reached SAS Viya: this compute context could not connect to {where} - '
-                'the name does not resolve from inside the cluster, or the connection was refused',
+        return (f'this compute context could not connect to {where} - the name does not resolve from inside the cluster, '
+                'or the connection was refused',
                 'Have the administrator of the cluster check that the pods of the compute server reach the address the SAS option '
                 'SERVICESBASEURL names, through a proxy where the cluster needs one.')
     if kind == 'timeout':
-        return (f'No request of this page reached SAS Viya: {where} did not answer this compute context in time',
-                'Open this page again. If the line stays, have the administrator of the cluster check the way from the compute server '
+        return (f'{where} did not answer this compute context in time',
+                'Run mdb check again. If the line stays, have the administrator of the cluster check the way from the compute server '
                 'to the address the SAS option SERVICESBASEURL names.')
-    return ('No request of this page reached SAS Viya: every request ended without an answer',
-            'Hand the log of this job to an administrator: it names the error.')
+    return ('the request from this compute context ended without an answer', 'The log of the compute session names the error.')
 
 
-def one_line_for_an_unanswered_session(lines, statuses, failures, host, guide):
-    """Where no request of the session got an answer, the lines that would say "the service did not
-    answer" one by one are taken out, and one line at the top stands for them, with the kind of failure
-    that was seen most: for the page of a site whose compute context does not trust the certificate of its
-    SAS Viya that was a line per check with the advice to look at a service that was well. The line counts
-    as the checks it stands for."""
-    if not statuses or any(status != 0 for status in statuses):
-        return lines
-    kept = [entry for entry in lines if entry['state'] != NOT_CHECKED]
-    kinds = [kind for kind in failures if kind] or ['other']
-    kind = max(('tls', 'connect', 'timeout', 'other'), key=kinds.count)
-    found, todo = no_answer_said(kind, host, guide)
-    entry = line(SESSION, 'Requests to SAS Viya', NOT_CHECKED, found, todo)
-    entry['count'] = max(len(lines) - len(kept), 1)
-    entry['failure'] = kind
-    return [entry] + kept
+#: The compute context each part runs its jobs in: the option of the Prompt Builder that names it
+PART_CONTEXT = {RAG_PART: 'ragComputeContext', OPTIMIZATION: 'computeContext'}
+#: The parts whose jobs read and write as the person who starts them, so their compute context has to run as that person
+AS_THE_USER = (RAG_PART, OPTIMIZATION)
+COMPUTE = 'Compute server'
+PYTHON_TODO = ('Configure Python for this compute context (SAS Viya: Configuring Python Integration), or point the option that '
+               'names it at a context that has Python.')
+
+
+def compute_lines(probes, guide):
+    """The lines of the compute server, from one probe per compute context: whether a session could be
+    started, whether PROC PYTHON runs, whether the compute server reaches SAS Viya and trusts its
+    certificate, and - for the parts whose jobs run as the user - whether its sessions run as you. A
+    probe is {'context', 'parts', 'started', 'error', 'python', 'viya': {'status', 'failure', 'host'},
+    'sameUser'}; each line is of the first part that uses the context."""
+    lines = []
+    for probe in probes:
+        context, parts = text_of(probe.get('context')), list(probe.get('parts') or [CORE])
+        part = parts[0]
+        if not probe.get('started'):
+            lines.append(dict(line(COMPUTE, f'{context}: a compute session', NOT_CHECKED,
+                                   'no session could be started' + (': ' + text_of(probe['error']) if probe.get('error') else ''),
+                                   'Look at the compute context in SAS Environment Manager, and whether you may start sessions in it.'),
+                              part=part))
+            continue
+        if not probe.get('python'):
+            lines.append(dict(line(COMPUTE, f'{context}: PROC PYTHON', MISSING, 'does not run in this compute context', PYTHON_TODO),
+                              part=part))
+            continue
+        lines.append(dict(line(COMPUTE, f'{context}: PROC PYTHON', OK, 'runs'), part=part))
+        viya = probe.get('viya') or {}
+        if viya.get('failure'):
+            found, todo = no_answer_said(viya['failure'], viya.get('host', ''), guide)
+            lines.append(dict(line(COMPUTE, f'{context}: SAS Viya from the compute server', MISSING, found, todo), part=part,
+                              failure=viya['failure']))
+        else:
+            lines.append(dict(line(COMPUTE, f'{context}: SAS Viya from the compute server', OK,
+                                   f'answered HTTP {viya.get("status")}: the compute server reaches SAS Viya and trusts its certificate'),
+                              part=part))
+        same = probe.get('sameUser')
+        for user_part in parts:
+            if user_part not in AS_THE_USER:
+                continue
+            what = f'{context}: the user of its sessions ({user_part})'
+            if same is False:
+                lines.append(dict(line(COMPUTE, what, MISSING, 'its sessions run as another user than you',
+                                       f'Point the option {PART_CONTEXT[user_part]} of the Prompt Builder at a compute context that runs '
+                                       'as the person who starts the job, such as SAS Studio compute context.'), part=user_part))
+            elif same is True:
+                lines.append(dict(line(COMPUTE, what, OK, 'its sessions run as you'), part=user_part))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +446,7 @@ def release_of(get, listings):
     status, members = listings['']
     if status == 404:
         return None, [line(section, 'Content root', MISSING, 'the folder was not found',
-                           'Import the package of the accelerator, or set the parameter contentRoot of this job to the folder it was imported into.')]
+                           'Import the package of the accelerator, or run mdb check --content-root with the folder it was imported into.')]
     if status != 200:
         state, found = not_read(status, 'the content root')
         return None, [line(section, 'Content root', state, found, ask_again(status))]
@@ -757,7 +574,7 @@ def builder_options(get, listings):
     folder, _, name = BUILDER_REPORT.rpartition('/')
     status, members = listings.get(folder, (404, {}))
     kind, uri = member(members, name, ('report',)) if status == 200 else ('', '')
-    bring = 'Import the package of the accelerator, then open this page again.'
+    bring = 'Import the package of the accelerator, then run mdb check again.'
     if status not in (200, 404):
         return None, not_read(status, 'the folder of the report')[1], ask_again(status)
     if kind != 'report' or not uri.startswith('/reports/reports/'):
@@ -790,9 +607,9 @@ def table_lines(get, server, caslib):
     lines = []
     if server not in names:
         lines.append(line(TABLE_GROUPS[0][1], 'CAS server ' + server, MISSING, 'not among the CAS servers: ' + (', '.join(names[:10]) or 'none is listed'),
-                          'Set the parameter casServer of this job to the CAS server that holds the tables.'))
+                          'Set the parameter casServer of the job definition Start Here to the CAS server that holds the tables.'))
         return lines + [line(section, f'{caslib}.{table} ({report})', NOT_CHECKED, 'the CAS server was not found',
-                             'Set the parameter casServer of this job.') for tables, section in TABLE_GROUPS for table, report, _ in tables]
+                             'Set the parameter casServer of the job definition Start Here.') for tables, section in TABLE_GROUPS for table, report, _ in tables]
     for table, report, load, section in [(table, report, load, section) for tables, section in TABLE_GROUPS for table, report, load in tables]:
         what = f'{caslib}.{table} ({report})'
         status, info = read_json(get, f'/casManagement/servers/{segment(server)}/caslibs/{segment(caslib)}/tables/{segment(table)}')
@@ -829,7 +646,7 @@ def repository_lines(get, settings):
         lines.append(line(section, 'Repository ' + name, state, found, ask_again(status)))
     elif not repositories:
         lines.append(line(section, 'Repository ' + name, MISSING, 'no repository of that name',
-                          setup + ' With another name, set the parameter repositoryName of this job.'))
+                          setup + ' With another name, set the parameter repositoryName of the job definition Start Here.'))
     else:
         found_ids['repository'] = text_of(repositories[0].get('id'))
         lines.append(line(section, 'Repository ' + name, OK, 'found'))
@@ -848,7 +665,7 @@ def repository_lines(get, settings):
             continue
         if not projects:
             lines.append(line(section, what, MISSING, 'no project of that name in the repository',
-                              setup + f' With another name, set the parameter {key} of this job.'))
+                              setup + f' With another name, set the parameter {key} of the job definition Start Here.'))
             continue
         found_ids[key] = text_of(projects[0].get('id'))
         status, page = read_json(get, f"/modelRepository/projects/{segment(found_ids[key])}/models?" + chr(38).join(['start=0', 'limit=1']))
@@ -917,46 +734,55 @@ def at_least(version, least):
     return have + [0] * (width - len(have)) >= want + [0] * (width - len(want))
 
 
-def package_lines(is_installed, version_of):
-    """The Python packages of the compute context, for each part of the accelerator.
-    is_installed(module) says whether Python finds the module, version_of(names) gives the
-    version of the first of these names that is installed, '' when none says."""
+#: The part of the accelerator each group of packages is for
+PACKAGE_PART = {'Logging and Monitoring': LOGGING, 'RAG': RAG_PART, 'Prompt optimization': OPTIMIZATION}
+
+
+def probe_of(probes, part):
+    """The probe of the compute context a part runs its jobs in, or None."""
+    return next((probe for probe in probes if part in (probe.get('parts') or [])), None)
+
+
+def package_lines(probes):
+    """The Python packages each part needs, in the compute context it runs its jobs in: what the probe of
+    that context found - {module: version, '' for one that gives none} for the modules that are installed."""
     lines = []
-    for part, package, module, names, least, needed in PACKAGES:
-        section = 'Python packages: ' + part
+    for group, package, module, names, least, needed in PACKAGES:
+        section = 'Python packages: ' + group
         what = package + (' ' + least + ' or later' if least else '')
-        install = f'Have {what} installed into the Python of this compute context. It is needed for {needed}.'
-        try:
-            present = bool(is_installed(module))
-        except Exception:
-            present = False
-        if not present:
-            lines.append(line(section, what, MISSING, 'not installed', install))
+        probe = probe_of(probes, PACKAGE_PART[group])
+        if not probe or not probe.get('started') or not probe.get('python'):
+            where = f' in {probe["context"]}' if probe else ''
+            lines.append(line(section, what, NOT_CHECKED, f'not looked at: no Python ran{where}', 'See the lines of the compute server.'))
             continue
-        try:
-            version = text_of(version_of(names))
-        except Exception:
-            version = ''
+        context = text_of(probe.get('context'))
+        install = f'Have {what} installed into the Python of the compute context {context}. It is needed for {needed}.'
+        installed = probe.get('packages') or {}
+        if installed.get(module) is None:
+            lines.append(line(section, what, MISSING, f'not installed in {context}', install))
+            continue
+        version = text_of(next((installed.get(name) for name in names if installed.get(name)), '') or installed.get(module))
         if least and version and not at_least(version, least):
-            lines.append(line(section, what, MISSING, 'version ' + version, install))
+            lines.append(line(section, what, MISSING, f'version {version} in {context}', install))
         else:
-            lines.append(line(section, what, OK, 'version ' + version if version else 'installed, its version is not given'))
+            lines.append(line(section, what, OK, (f'version {version}' if version else 'installed, its version is not given')
+                              + f' in {context}'))
     return lines
 
 
-def is_installed(module):
-    return importlib.util.find_spec(module) is not None
-
-
-def version_of(names):
-    for name in names:
-        if package_metadata is None:
-            return ''
-        try:
-            return package_metadata.version(name)
-        except Exception:
+def contexts_to_probe(options, settings, given=None):
+    """[(compute context, [the parts that run their jobs in it])], one entry per context: prompt building and
+    logging in the one given (--compute-context), else the first the parameter computeContexts names; RAG and
+    prompt optimization in the one their option names, else that one - where the options do not switch them off."""
+    named = [part.strip() for part in text_of(settings.get('computeContexts')).split('|') if part.strip()]
+    first = text_of(given) or (named[0] if named else 'SAS Studio compute context')
+    plan = {first: [CORE, LOGGING]}
+    in_use = parts_in_use(options)
+    for part, label in PART_CONTEXT.items():
+        if in_use[part] is False:
             continue
-    return ''
+        plan.setdefault(text_of((options or {}).get(label)) or first, []).append(part)
+    return list(plan.items())
 
 
 def destination_lines(get):
@@ -974,7 +800,7 @@ def destination_lines(get):
 
 
 def context_lines(get, settings, options):
-    """The compute contexts the options of the Prompt Builder and this job name."""
+    """The compute contexts the options of the Prompt Builder and the parameter computeContexts of Start Here name."""
     section = 'Compute contexts'
     wanted = []
     for label, used_for in (('computeContext', 'the prompt optimization job'), ('ragComputeContext', 'the RAG ingestion job')):
@@ -983,7 +809,7 @@ def context_lines(get, settings, options):
             wanted.append((value, f'option {label} of the Prompt Builder, for {used_for}'))
     for name in [part.strip() for part in settings['computeContexts'].split('|') if part.strip()]:
         if name not in [known for known, _ in wanted]:
-            wanted.append((name, 'named by this job'))
+            wanted.append((name, 'named by Start Here'))
     status, items = list_all(get, '/compute/contexts')
     if status != 200:
         state, found = not_read(status, 'the compute contexts')
@@ -1002,8 +828,16 @@ def context_lines(get, settings, options):
     return lines
 
 
-def check_installation(get, settings, installed=is_installed, version=version_of):
-    """Every line of the installation check, and the uri of the two reports where they were found."""
+def read_options(get, settings):
+    """The options of the Prompt Builder report of the content root, or None where they cannot be read."""
+    listings = read_root(get, settings['contentRoot'].rstrip('/') or '/')
+    read_folders(get, listings, folders_of([path for _, path in REPORTS]))
+    return builder_options(get, listings)[0]
+
+
+def check_installation(get, settings, probes=()):
+    """Every line of the installation check, and the uri of the two reports where they were found. `probes`
+    are what the compute server said, one per compute context (compute_lines)."""
     root = settings['contentRoot'].rstrip('/') or '/'
     listings = read_root(get, root)
     release, lines = release_of(get, listings)
@@ -1022,9 +856,10 @@ def check_installation(get, settings, installed=is_installed, version=version_of
     lines += repository
     lines += option_lines(options, why, todo, found_ids)
     lines += credential_lines(get, settings, options)
-    lines += package_lines(installed, version)
     lines += destination_lines(get)
     lines += context_lines(get, settings, options)
+    lines += compute_lines(probes, settings['guideUrl'])
+    lines += package_lines(probes)
     return with_parts(lines, options), reports
 
 
@@ -1070,7 +905,7 @@ def with_parts(lines, options):
     not ok is not used: what it found does not matter on this site."""
     in_use = parts_in_use(options)
     for entry in lines:
-        entry['part'] = part_of(entry)
+        entry['part'] = entry.get('part') or part_of(entry)
         entry['used'] = in_use[entry['part']] is not False
         if entry['state'] == OK:
             continue
@@ -1106,32 +941,6 @@ def part_verdicts(lines):
         elif of_part:
             verdicts.append((part, 'ready', ''))
     return verdicts
-
-
-def report_of(settings, lines, verdicts, session, host):
-    """What mdb check reads: every line and the verdicts. No token, no user id - the two users of the
-    session are said as whether they are one."""
-    counts = counts_of(lines)
-    unanswered = next((entry.get('failure', '') for entry in lines if entry['section'] == SESSION and entry.get('failure')), '')
-    return {'kind': 'sas-agentic-ai-accelerator/start-here', 'version': 1, 'contentRoot': settings['contentRoot'], 'host': host,
-            'counts': counts, 'unanswered': unanswered,
-            'session': {'otherUser': bool(session['other']), 'ownUser': bool(session.get('own')), 'context': session['context']},
-            'parts': [{'part': part, 'verdict': verdict, 'first': first} for part, verdict, first in verdicts],
-            'lines': [dict({key: entry.get(key, '') for key in ('section', 'what', 'state', 'found', 'todo')},
-                           part=entry.get('part', part_of(entry)), count=entry.get('count', 1)) for entry in lines]}
-
-
-# A line of the report in the log: the marker, its number, the number of lines and 76 characters of base64. The
-# log of a job wraps a line at its width, measured at 128 characters on the test system: these stay below it
-REPORT_MARKER = 'Start Here report'
-REPORT_WIDTH = 76
-
-
-def report_chunks(report):
-    """The report as the lines of the log that carry it: compressed JSON, in base64."""
-    packed = base64.b64encode(zlib.compress(json.dumps(report, ensure_ascii=True, separators=(',', ':')).encode('utf-8'), 9)).decode('ascii')
-    parts = [packed[start:start + REPORT_WIDTH] for start in range(0, len(packed), REPORT_WIDTH)] or ['']
-    return [f'{REPORT_MARKER} {number}/{len(parts)} {part}' for number, part in enumerate(parts, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -1183,7 +992,7 @@ def shown(value, limit=TEXT_LIMIT):
     text = ' '.join(str(value).split())
     if len(text) > limit:
         text = text[:limit - 3].rstrip() + '...'
-    return html.escape(text, quote=True)
+    return go_template_safe(html.escape(text, quote=True))
 
 
 def link(label, address, here=False):
@@ -1240,37 +1049,26 @@ def verdict_rows(verdicts):
     return rows + ['</tbody>', '</table>']
 
 
-def render_page(settings, lines, reports, session=None, viya_host=''):
-    """The page as HTML text. Every text of it goes through shown()."""
+def go_template_safe(text):
+    """A page as SAS Job Execution can serve it as a form: the form is read as a Go template, and two braces
+    open or close one of its actions. Every brace of a text of the page is written as an entity; the style and
+    the markup of the page hold no two braces side by side."""
+    return text.replace('{', '&#123;').replace('}', '&#125;')
+
+
+def render_page(settings, lines, reports, checked=None, viya_host=''):
+    """The page as HTML text. Every text of it goes through shown(). `checked` says when and by what the check
+    ran: {'when': text, 'by': text}."""
     counts = counts_of(lines)
-    session = session or {'other': False, 'context': ''}
+    checked = checked or {}
     refused = next((entry for entry in lines if entry['section'] == SESSION), None)
     release = next((entry for entry in lines if entry['section'] == 'Release'), None)
     if refused:
         said = refused['found'] + '. ' + refused['todo']
     else:
         said = release['what'] + ': ' + release['found'] + '.' if release else ''
-    if refused:
-        # the line at the top has said whose session it is and what to do
-        whose = ''
-    elif session['other']:
-        whose = ('This page was built by a SAS session that does not run as you'
-                 + (', in the compute context ' + session['context'] if session['context'] else '')
-                 + ': it shows what that session may read, which depends on how the system configures its compute context. '
-                 + AS_YOURSELF + ' ')
-    else:
-        whose = ('This page lists what the identity of the SAS session that built it can read. In a compute context that runs as a '
-                 'service account, that identity is the service account and not the person who opened the page. ')
     guide = settings['guideUrl'].rstrip('/')
-    page = ['<!DOCTYPE html>', '<html lang="en">', '<head>', '<meta charset="utf-8">',
-            '<meta name="viewport" content="width=device-width, initial-scale=1">',
-            '<title>SAS Agentic AI Accelerator - Start Here</title>', '<style>' + STYLE + '</style>', '</head>', '<body>', '<main>',
-            '<h1>SAS Agentic AI Accelerator</h1>',
-            '<p>The accelerator brings large language models, embedding models and decision models into SAS Viya as models of '
-            'SAS Model Manager that are published like any other model. With the Prompt Builder you write prompt templates, '
-            'decision templates and RAG setups, test them against those models and register the result. The log of the containers '
-            'becomes tables that say which model answered which request, for which prompt, and what it cost.</p>',
-            '<h2>Where to go</h2>', '<ul>']
+    page = page_head()
     for label, _ in REPORTS:
         uri = reports.get(label, '')
         if uri:
@@ -1286,29 +1084,17 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
     if not re.match(r'https://([^/:?#@]+)', guide) or re.match(r'https://([^/:?#@]+)', guide).group(1).lower() not in hosts:
         page.append('<li>' + shown('The parameter guideUrl names an address that is neither the website of the accelerator nor this SAS Viya: '
                                    'the addresses of the guides are text, not links.') + '</li>')
+    when = text_of(checked.get('when'))
+    by = text_of(checked.get('by')) or 'mdb check'
     page += ['</ul>', '<h2>Installation check</h2>',
              '<p class="summary">' + shown(counts_said(counts) + '. ' + said, 2 * TEXT_LIMIT) + '</p>',
-             '<p class="note">' + shown('Content root ' + settings['contentRoot'] + '. ' + whose + 'It changed nothing: it only read.',
-                                        2 * TEXT_LIMIT) + '</p>']
+             '<p class="note">' + shown(('Last checked on ' + when + ' by ' + by if when else 'Checked by ' + by) + ', for the content root '
+                                        + settings['contentRoot'] + '. Run mdb check again to bring this page up to date: it shows what '
+                                        'the person who ran the check could read, and changes nothing.', 2 * TEXT_LIMIT) + '</p>']
     verdicts = part_verdicts(lines)
     if len(verdicts) > 1:
-        # one line of a session that was refused or not answered is all there is: the summary has said it
+        # one line of a session that was refused is all there is: the summary has said it
         page += ['<h3>' + shown('By part') + '</h3>'] + verdict_rows(verdicts)
-    # Where the page says to open it in another compute context, it links itself in each one it found
-    if session['other'] or (refused and not session.get('own')):
-        # the contexts the page found, or - where they could not be listed - the ones the parameter computeContexts names
-        listed = [entry for entry in lines if entry['section'] == 'Compute contexts' and entry['state'] != NOT_CHECKED]
-        named = ([entry.get('context', '') for entry in listed if entry['state'] == OK] if listed
-                 else [part.strip() for part in settings['computeContexts'].split('|')])
-        contexts = []
-        for name in named:
-            if name and name != session['context'] and name not in contexts:
-                contexts.append(name)
-        address = '/SASJobExecution/?_program=' + quote(settings['contentRoot'].rstrip('/') + '/Start Here', safe='/')
-        targets = [link(name, address + chr(38) + '_contextName=' + quote(name, safe=''), here=True) for name in contexts]
-        if targets:
-            page.append('<p class="note">' + shown('Open this page in the compute context: ') + shown(', ').join(targets)
-                        + shown('. Whether a context runs as you depends on how the system configures it.') + '</p>')
     sections = []
     for entry in lines:
         if entry['section'] not in sections:
@@ -1326,184 +1112,41 @@ def render_page(settings, lines, reports, session=None, viya_host=''):
             page += rows_of(absent)
         page += ['<details>', '<summary>' + shown(f'Every entry ({len(of_section)})') + '</summary>'] + rows_of(of_section) + ['</details>']
     page += ['</main>', '</body>', '</html>']
-    return '\n'.join(page) + '\n'
+    text = '\n'.join(page) + '\n'
+    assert '{{' not in text and '}}' not in text
+    return text
 
 
-# ---------------------------------------------------------------------------
-# Handing over to SAS
-# ---------------------------------------------------------------------------
-
-# SAS.logMessage and SAS.symput put their text into SAS statements. There a semicolon ends
-# the statement and the rest of the text runs as code, a percent sign or an ampersand starts
-# a macro call, a quote or the start of a comment swallows the code that follows. The two
-# marks of a comment are put together from their halves, so that this block holds neither.
-MESSAGE_LIMIT = 900
-NOT_FOR_SAS = (("'", '`'), ('"', '`'), ('%', 'pct '), ('&', '+'), (';', ','), ('/' + '*', '/ *'), ('*' + '/', '* /'))
+INTRODUCTION = ('The accelerator brings large language models, embedding models and decision models into SAS Viya as models of '
+                'SAS Model Manager that are published like any other model. With the Prompt Builder you write prompt templates, '
+                'decision templates and RAG setups, test them against those models and register the result. The log of the containers '
+                'becomes tables that say which model answered which request, for which prompt, and what it cost.')
 
 
-def sas_safe(value, limit=MESSAGE_LIMIT):
-    """A text that can stand in a SAS statement: on one line, without a character that is no
-    text, without a quote, a macro trigger, a semicolon or a comment mark, not longer than
-    the limit and with its parentheses as brackets when they do not pair up."""
-    cleaned = ' '.join(str(value).split())
-    cleaned = ''.join(character if character.isprintable() else ' ' for character in cleaned)
-    for bad, replacement in NOT_FOR_SAS:
-        cleaned = cleaned.replace(bad, replacement)
-    cleaned = ' '.join(cleaned.split())
-    if len(cleaned) > limit:
-        cleaned = cleaned[:limit - 3].rstrip() + '...'
-    depth = 0
-    for character in cleaned:
-        depth += 1 if character == '(' else -1 if character == ')' else 0
-        if depth < 0:
-            break
-    if depth != 0:
-        cleaned = cleaned.replace('(', '[').replace(')', ']')
-    return cleaned
+def page_head():
+    """The lines of the page up to its list of where to go, which is left open."""
+    return ['<!DOCTYPE html>', '<html lang="en">', '<head>', '<meta charset="utf-8">',
+            '<meta name="viewport" content="width=device-width, initial-scale=1">',
+            '<title>SAS Agentic AI Accelerator - Start Here</title>', '<style>' + STYLE + '</style>', '</head>', '<body>', '<main>',
+            '<h1>SAS Agentic AI Accelerator</h1>', '<p>' + shown(INTRODUCTION, 2 * TEXT_LIMIT) + '</p>', '<h2>Where to go</h2>', '<ul>']
 
 
-def say(message_type, message):
-    """Writes one line to the SAS log. Every message of this program takes this way."""
-    SAS.logMessage(sas_safe(message), messageType=message_type)
-
-
-def hand_over(name, value):
-    """Sets a macro variable. Everything the SAS code is handed takes this way."""
-    SAS.symput(sas_safe(name), sas_safe(value))
-
-
-def setting(name):
-    """A parameter of the job as text, the empty text when it is not set."""
-    try:
-        value = SAS.symget(name)
-    except Exception:
-        value = None
-    return '' if value is None else str(value).strip()
-
-
-def start_here():
-    """Reads SAS Viya, writes the page into the WORK folder and tells SAS that it is there."""
-    settings = {name: setting(name) for name in ('contentRoot', 'caslib', 'casServer', 'credentialDomain', 'repositoryName', 'llmProject',
-                                                 'embeddingProject', 'decisionProject', 'computeContexts', 'guideUrl',
-                                                 'mdbReport')}
-    base = setting('_sh_viyaHost').rstrip('/')
-    token = os.environ.get('SAS_SERVICES_TOKEN', '')
-    def _viya_tls_verify():
-        # TLS verification for calls from this SAS session to SAS Viya.
-        #
-        # SAS_VIYA_VERIFY_SSL=false (or no / 0) switches verification off, for a test system whose CA bundle cannot
-        # verify the certificate of its own ingress - the name mdb uses for the same thing. SAS_VIYA_CABUNDLE names a
-        # CA bundle to verify against instead. With neither set, the bundle of the session (SSLCALISTLOC, then
-        # CAS_CLIENT_SSL_CA_LIST), else the certificates Python trusts by default - as before.
-        if os.environ.get('SAS_VIYA_VERIFY_SSL', '').strip().lower() in ('false', 'no', '0'):
-            import warnings
-            warnings.filterwarnings('ignore', message='Unverified HTTPS request')
-            try:
-                SAS.logMessage('SAS_VIYA_VERIFY_SSL is false - the TLS certificate of SAS Viya is not verified in this step.', 'warning')
-            except Exception:
-                pass
-            return False
-        return (os.environ.get('SAS_VIYA_CABUNDLE') or os.environ.get('SSLCALISTLOC')
-                or os.environ.get('CAS_CLIENT_SSL_CA_LIST') or True)
-    verify = _viya_tls_verify()
-    # the user the session was started for and its compute context are asked for only where the session has them
-    session = session_of(setting('SYSUSERID'), setting('SYS_COMPUTE_SESSION_OWNER') if setting('_sh_hasOwner') == '1' else '',
-                         setting('_contextName') if setting('_sh_hasContext') == '1' else '')
-    statuses = []
-    # the kind of failure of every request that got no answer: a certificate, a host, a timeout
-    failures = []
-
-    def get(path, accept):
-        if requests is None:
-            return 0, b''
-        try:
-            response = requests.get(base + path, headers={'Authorization': 'Bearer ' + token, 'Accept': accept}, verify=verify, timeout=(5, 30))
-        except Exception as error:
-            failures.append(failure_kind(error))
-            raise
-        return response.status_code, response.content
-
-    try:
-        lines, reports = check_installation(recorded(get, statuses), settings)
-        lines = as_the_session_may_read(one_line_for_a_refused_session(lines, statuses, session), session)
-        if requests is not None:
-            lines = one_line_for_an_unanswered_session(lines, statuses, failures, base, settings['guideUrl'])
-    except Exception as error:
-        # A check that this program did not foresee is a line of the page as well
-        lines, reports = [line('Installation check', 'The checks', NOT_CHECKED, 'they ended early with ' + type(error).__name__,
-                               'Open this page again. If the line stays, hand the log of the job to an administrator.')], {}
-    if requests is None:
-        lines.insert(0, line('Installation check', 'Python package requests', MISSING, 'not installed, so SAS Viya could not be asked',
-                             'Have requests installed into the Python of this compute context.'))
-    with open(os.path.join(setting('_sh_work'), PAGE_FILE), 'w', encoding='utf-8', newline='\n') as file:
-        file.write(render_page(settings, lines, reports, session, setting('_sh_viyaHost')))
-    counts = counts_of(lines)
-    say('NOTE', f'Start Here: the page holds {sum(counts.values())} checks - {counts_said(counts)}.')
-    refused = [entry for entry in lines if entry['section'] == SESSION]
-    if refused:
-        # the log takes no ampersand, so the parameter is named and not written as in an address
-        todo = refused[0]['todo'] if chr(38) not in refused[0]['todo'] else (
-            'Open the page in a compute context that runs as you: the parameter _contextName, in the address of the page or in the '
-            'job definition, names the context.')
-        say('NOTE', 'Start Here: ' + refused[0]['found'] + '. ' + todo)
-    if settings['mdbReport'] == '1':
-        # for mdb check, which reads the log of the job: a job submitted through the API keeps no _webout
-        for chunk in report_chunks(report_of(settings, lines, part_verdicts(lines), session, base)):
-            say('NOTE', chunk)
-    hand_over('_sh_rc', '0')
-
-
-start_here()
-endsubmit;
-run; quit;
-proc python terminate;
-run; quit;
-
-/* ---- The page, sent to the browser -----------------------------------------
-   SAS Job Execution hands a job the fileref _webout, and with the parameter
-   _output_type = html it shows what the job writes there as a page. The page
-   is copied line by line; no line of it is longer than a record.
-   Where the Python program left no page - PROC PYTHON did not run in this
-   compute context - the lines below are the page.
-   A session without _webout, a program run in SAS Studio for one, has
-   nowhere to send the page to: the log names the file in WORK. */
-%macro _sh_send;
-    %if %sysfunc(fileref(_webout)) GT 0 %then %do;
-        %if &_sh_rc. EQ 0 %then
-            %put NOTE: Start Here: this SAS session has no fileref _webout, so the page was not sent to a browser. It is the file &_sh_work./start_here.html.;
-        %else
-            %put NOTE: Start Here: this SAS session has no fileref _webout, and the Python program left no page.;
-        %return;
-    %end;
-    %if &_sh_rc. EQ 0 %then %do;
-        data _null_;
-            infile "&_sh_work./start_here.html" lrecl=32767 truncover;
-            file _webout lrecl=32767;
-            input;
-            put _infile_;
-        run;
-    %end;
-    %else %do;
-        data _null_;
-            file _webout lrecl=32767;
-            put '<!DOCTYPE html>';
-            put '<html lang="en"><head><meta charset="utf-8"><title>SAS Agentic AI Accelerator - Start Here</title></head><body>';
-            put '<h1>SAS Agentic AI Accelerator</h1>';
-            put '<p>The installation check could not run: the Python program of this page did not finish in this compute context.</p>';
-            put '<p>The page needs PROC PYTHON. Open it in a compute context whose Python is configured and that runs as you: the parameter _contextName, in the address of this page or in the job definition, names the context. The log of this job has the reason.</p>';
-            put '<p>The guides: <a href="https://sassoftware.github.io/sas-agentic-ai-accelerator" rel="noopener noreferrer">https://sassoftware.github.io/sas-agentic-ai-accelerator</a></p>';
-            put '</body></html>';
-        run;
-        %put NOTE: Start Here: the Python program left no page, the page says so.;
-    %end;
-%mend _sh_send;
-%_sh_send;
-%sysmacdelete _sh_send;
-
-/* ---- A page, never a failed job ---------------------------------------------
-   What the session could not do is a line of the page, so the job ends as
-   completed: SAS Job Execution shows the page of such a job, and its own
-   error page for a job that failed. */
-options &_sh_syntaxcheck.;
-%let syscc = 0;
-%symdel _sh_viyaHost _sh_work _sh_rc _sh_syntaxcheck _sh_hasOwner _sh_hasContext / nowarn;
+def placeholder_page(guide_url=None):
+    """The page the release ships, before the first mdb check: the guides, and what to run. The job definition
+    holds it as its form; SAS-Viya-Integrations/Setup/Start-Here.html is this text."""
+    guide = (guide_url or 'https://sassoftware.github.io/sas-agentic-ai-accelerator').rstrip('/')
+    page = page_head()
+    for label, path in GUIDES:
+        page.append('<li>' + guide_link(label, guide + '/' + path, {GUIDE_HOST}) + '</li>')
+    page += ['</ul>', '<h2>Installation check</h2>',
+             '<p class="summary">' + shown('This installation has not been checked yet.') + '</p>',
+             '<p>' + shown('Run mdb check from the checkout of the accelerator, as the administrator who sets it up. It checks the '
+                           'content folder, the CAS tables, SAS Model Manager, the credential domain, the publishing destinations and '
+                           'the compute server, prints what to do, and writes the result into this page - with the links to the two '
+                           'reports of your site.') + '</p>',
+             '<pre>mdb check</pre>',
+             '<p class="note">' + shown('See ' + guide + '/Administration-Guide/Setup-Additional-UIs#mdb-check') + '</p>',
+             '</main>', '</body>', '</html>']
+    text = '\n'.join(page) + '\n'
+    assert '{{' not in text and '}}' not in text
+    return text
