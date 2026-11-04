@@ -280,9 +280,22 @@ def compute_lines(probes, guide):
             found, todo = no_answer_said(viya['failure'], viya.get('host', ''), guide)
             lines.append(dict(line(COMPUTE, f'{context}: SAS Viya from the compute server', MISSING, found, todo), part=part,
                               failure=viya['failure']))
-        else:
+        elif viya.get('switch') == 'mdb':
             lines.append(dict(line(COMPUTE, f'{context}: SAS Viya from the compute server', OK,
-                                   f'answered HTTP {viya.get("status")}: the compute server reaches SAS Viya and trusts its certificate'),
+                                   f'answered HTTP {viya.get("status")} with TLS verification off: SAS_VIYA_VERIFY_SSL=false, which '
+                                   'mdb took from its own environment (.env), was passed to this check only'), part=part))
+            lines.append(dict(line(COMPUTE, f'{context}: TLS verification of the jobs', MISSING,
+                                   'the Python of this compute context does not trust the TLS certificate of SAS Viya, and its sessions '
+                                   'do not switch verification off: the jobs of the accelerator that run in it fail on the certificate',
+                                   'In SAS Environment Manager add -set SAS_VIYA_VERIFY_SSL false to the SAS options of this compute '
+                                   'context (a test system), or point SAS_VIYA_CABUNDLE at a file with the CA certificates of your site; '
+                                   'then run mdb check again. See ' + guide.rstrip('/') + '/' + TROUBLESHOOTING_TLS),
+                              part=part, failure='tls'))
+        else:
+            off = ' (its sessions switch TLS verification off with SAS_VIYA_VERIFY_SSL)' if viya.get('switch') == 'context' else ''
+            trusts = 'reaches SAS Viya' if off else 'reaches SAS Viya and trusts its certificate'
+            lines.append(dict(line(COMPUTE, f'{context}: SAS Viya from the compute server', OK,
+                                   f'answered HTTP {viya.get("status")}: the compute server {trusts}{off}'),
                               part=part))
         same = probe.get('sameUser')
         for user_part in parts:

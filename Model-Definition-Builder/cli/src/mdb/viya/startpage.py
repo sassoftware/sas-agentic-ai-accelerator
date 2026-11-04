@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..core import start_here as check
+from ..core.netutil import tls_verify_off
 from .answer import answer, one_line
 from .content import DeployError, _members_named, find_folder, folder_members, get_job_definition, update_job_definition
 
@@ -45,6 +46,9 @@ JOB_ENDED = ("completed", "error", "warning", "canceled", "cancelled", "failed")
 #: with the CA bundle the programs of the accelerator take (SAS_VIYA_VERIFY_SSL, SAS_VIYA_CABUNDLE,
 #: SSLCALISTLOC, CAS_CLIENT_SSL_CA_LIST) - any answer is an answer, 401 included -, reads which of the
 #: modules are installed, and writes what it found into the log. It uses the standard library only.
+#: Where the session does not trust the certificate and mdb runs with SAS_VIYA_VERIFY_SSL=false (FORWARD),
+#: it asks once more with verification off and says so ('switch': 'mdb'); where the session switches
+#: verification off itself, it says that ('switch': 'context').
 PROBE_PYTHON = r'''
 import base64, json, os, socket, ssl, urllib.error, urllib.request, zlib
 import importlib.util
@@ -53,6 +57,7 @@ try:
 except ImportError:
     metadata = None
 MODULES = json.loads(base64.b64decode('@MODULES@').decode('utf-8'))
+FORWARD = @FORWARD@
 WORDS = 40
 found = {'user': str(SAS.symget('SYSUSERID') or ''), 'host': str(SAS.symget('_mc_viya') or '').rstrip('/'), 'packages': {}}
 for module, names in MODULES.items():
@@ -72,29 +77,43 @@ for module, names in MODULES.items():
     found['packages'][module] = version
 off = os.environ.get('SAS_VIYA_VERIFY_SSL', '').strip().lower() in ('false', 'no', '0')
 bundle = os.environ.get('SAS_VIYA_CABUNDLE') or os.environ.get('SSLCALISTLOC') or os.environ.get('CAS_CLIENT_SSL_CA_LIST')
-try:
-    if off:
-        context = ssl._create_unverified_context()
-    else:
-        context = ssl.create_default_context(cafile=bundle) if bundle else ssl.create_default_context()
+
+
+def ask(unverified):
     try:
-        with urllib.request.urlopen(urllib.request.Request(found['host'] + '/identities/', method='GET'), timeout=30, context=context) as answer:
-            found['status'] = answer.status
-    except urllib.error.HTTPError as error:
-        found['status'] = error.code
-except Exception as error:
-    reason = getattr(error, 'reason', error)
-    names = [klass.__name__ for klass in type(reason).__mro__] + [klass.__name__ for klass in type(error).__mro__]
-    text = str(reason)
-    if any('SSL' in name or 'Certificate' in name for name in names) or 'CERTIFICATE_VERIFY_FAILED' in text:
-        found['failure'] = 'tls'
-    elif any(name in names for name in ('timeout', 'TimeoutError')) or 'timed out' in text:
-        found['failure'] = 'timeout'
-    elif any(name in names for name in ('gaierror', 'ConnectionRefusedError', 'ConnectionError', 'OSError')):
-        found['failure'] = 'connect'
-    else:
-        found['failure'] = 'other'
-    found['error'] = type(reason).__name__ + ': ' + ' '.join(text.split()[:WORDS])
+        if unverified:
+            context = ssl._create_unverified_context()
+        else:
+            context = ssl.create_default_context(cafile=bundle) if bundle else ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(found['host'] + '/identities/', method='GET'), timeout=30, context=context) as answer:
+                return {'status': answer.status}
+        except urllib.error.HTTPError as error:
+            return {'status': error.code}
+    except Exception as error:
+        reason = getattr(error, 'reason', error)
+        names = [klass.__name__ for klass in type(reason).__mro__] + [klass.__name__ for klass in type(error).__mro__]
+        text = str(reason)
+        if any('SSL' in name or 'Certificate' in name for name in names) or 'CERTIFICATE_VERIFY_FAILED' in text:
+            failure = 'tls'
+        elif any(name in names for name in ('timeout', 'TimeoutError')) or 'timed out' in text:
+            failure = 'timeout'
+        elif any(name in names for name in ('gaierror', 'ConnectionRefusedError', 'ConnectionError', 'OSError')):
+            failure = 'connect'
+        else:
+            failure = 'other'
+        return {'failure': failure, 'error': type(reason).__name__ + ': ' + ' '.join(text.split()[:WORDS])}
+
+
+said = ask(off)
+if off:
+    found['switch'] = 'context'
+elif FORWARD and said.get('failure') == 'tls':
+    again = ask(True)
+    if 'status' in again:
+        said = again
+        found['switch'] = 'mdb'
+found.update(said)
 packed = base64.b64encode(zlib.compress(json.dumps(found).encode('utf-8'), 9)).decode('ascii')
 parts = [packed[start:start + 76] for start in range(0, len(packed), 76)] or ['']
 for number, part in enumerate(parts, 1):
@@ -178,14 +197,16 @@ def current_user(session) -> str:
         return ""
 
 
-def probe_program() -> list:
-    """The lines of the program of the probe: the address of SAS Viya for the Python, and the Python."""
+def probe_program(forward: bool = False) -> list:
+    """The lines of the program of the probe: the address of SAS Viya for the Python, and the Python. With
+    `forward` - mdb runs with SAS_VIYA_VERIFY_SSL=false - a session that does not trust the certificate of SAS
+    Viya asks once more with verification off, and says so."""
     modules = {}
     for _, _, module, names, _, _ in check.PACKAGES:
         modules.setdefault(module, list(names))
     packed = base64.b64encode(json.dumps(modules).encode("utf-8")).decode("ascii")
     return (["%let _mc_viya = %sysfunc(getoption(SERVICESBASEURL));", "proc python restart;", "submit;"]
-            + PROBE_PYTHON.replace("@MODULES@", packed).strip("\n").split("\n") + ["endsubmit;", "run;", "quit;"])
+            + PROBE_PYTHON.replace("@MODULES@", packed).replace("@FORWARD@", "True" if forward else "False").strip("\n").split("\n") + ["endsubmit;", "run;", "quit;"])
 
 
 def answer_in(lines: list) -> Optional[dict]:
@@ -207,9 +228,13 @@ def answer_in(lines: list) -> Optional[dict]:
 
 
 def probe(session, context: str, parts: list, user: str, timeout: float = 180.0,
-          sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> dict:
+          sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+          forward: Optional[bool] = None) -> dict:
     """What the compute server of one compute context says, as core.start_here.compute_lines reads it. The
-    compute session is deleted when it has answered."""
+    compute session is deleted when it has answered. `forward` (by default: whether mdb runs with
+    SAS_VIYA_VERIFY_SSL=false) lets the probe ask once more with verification off - marked, never silent."""
+    if forward is None:
+        forward = tls_verify_off("SAS_VIYA_VERIFY_SSL")
     found = {"context": context, "parts": list(parts), "started": False, "python": False}
     try:
         listed = session.get("/compute/contexts", params={"filter": f'eq(name,"{context}")', "limit": 10},
@@ -229,7 +254,7 @@ def probe(session, context: str, parts: list, user: str, timeout: float = 180.0,
     session_id = started.json().get("id")
     found["started"] = True
     try:
-        job = session.post(f"/compute/sessions/{session_id}/jobs", data=json.dumps({"code": probe_program()}),
+        job = session.post(f"/compute/sessions/{session_id}/jobs", data=json.dumps({"code": probe_program(forward)}),
                            headers={"Content-Type": "application/json", "Accept": "application/json"})
         if not job.ok:
             found["error"] = answer(job)
@@ -250,6 +275,8 @@ def probe(session, context: str, parts: list, user: str, timeout: float = 180.0,
         found["python"] = True
         found["packages"] = said.get("packages") or {}
         found["viya"] = {"status": said.get("status"), "failure": said.get("failure", ""), "host": said.get("host", "")}
+        if said.get("switch") in ("mdb", "context"):
+            found["viya"]["switch"] = said["switch"]
         if user and said.get("user"):
             found["sameUser"] = check.person_of(said["user"]) == check.person_of(user)
         return found
