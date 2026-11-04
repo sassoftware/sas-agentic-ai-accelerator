@@ -2,7 +2,16 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.4.4] - 2026-11-04
+
+`mdb check` passes `SAS_VIYA_VERIFY_SSL=false` from the environment of mdb on to its probe of the compute server, and says that the jobs need it in the compute context too.
+
+### Upgrading from 2.4.3
+
+Both steps are for every site.
+
+1. Update the checkout to 2.4.4, then `mdb builders-import` and reload the Prompt Builder report. The fix comes with the checkout; the import brings the release stamp of 2.4.4.
+2. Run `mdb check`. The import writes the page of the release back into *Start Here*.
 
 ### Fixed
 
