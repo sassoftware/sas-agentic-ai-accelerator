@@ -31,6 +31,15 @@ the move below is built on:
   connector mapping from the old address to the new one, rewrites EVERY
   version - locked ones included - and keeps the version ids. Published
   modules (MAS, SCR) hold compiled code and are not touched;
+* that mapping moves the steps at the TOP of a flow only. A step in a branch
+  case (`branchCases[i].onTrue.steps`), in the default case of a branch
+  (`defaultCase.steps`) or in a condition (`onTrue.steps`, `onFalse.steps`),
+  at any depth, kept the old address while the import job ended `completed`
+  (measured on viya4-s2, SAS Viya 2026.10, on 2026-11-03; reported from a
+  site on 2026.07). So the move writes the new address into every step of
+  every version of the exported decision itself (`readdress_steps`), and
+  exports the decision alone - its `dntStatic` connectors are in its own
+  object, and a dependency that cannot be exported cannot fail the move;
 * an import of a package whose node type the site has under that id
   overwrites it in place even where the site made its content (another
   content id than the package's - a node created by the Create program or
@@ -67,6 +76,8 @@ the module `transfer`, so the tests run this against fakes.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass, field
@@ -330,6 +341,44 @@ def missing_tasks(tasks: list, expected) -> list:
     return [(kind, name) for kind, name in expected if (kind, name) not in done]
 
 
+def _readdressed(value, old_uri: str, new_uri: str) -> tuple:
+    """(value, count): `value` with every text that is the address `old_uri` - or an address below it - written with
+    `new_uri`, and how many there were."""
+    if isinstance(value, dict):
+        count = 0
+        out = {}
+        for key, item in value.items():
+            out[key], found = _readdressed(item, old_uri, new_uri)
+            count += found
+        return out, count
+    if isinstance(value, list):
+        pairs = [_readdressed(item, old_uri, new_uri) for item in value]
+        return [item for item, _ in pairs], sum(found for _, found in pairs)
+    if isinstance(value, str) and (value == old_uri or value.startswith(old_uri + "/")):
+        return new_uri + value[len(old_uri):], 1
+    return value, 0
+
+
+def readdress_steps(obj: dict, old_uri: str, new_uri: str) -> int:
+    """Write `new_uri` for `old_uri` in every step of every version a packaged decision holds, and return how many
+    addresses were written. The `dntStatic` mapping of an import moves the steps at the top of a flow only: a step
+    in a branch case, in the default case of a branch, in a condition - at any depth - kept the old address (measured
+    on viya4-s2, SAS Viya 2026.10, on 2026-11-03; reported from a site on SAS Viya 2026.07). The content of a
+    packaged decision is base64 of its JSON: the current version (`decisionVersionRep`) and every version
+    (`revisions`)."""
+    try:
+        body = json.loads(base64.b64decode(obj.get("content") or ""))
+    except (binascii.Error, ValueError):
+        return 0
+    if not isinstance(body, dict):
+        return 0
+    body, count = _readdressed(body, old_uri, new_uri)
+    if count:
+        obj["content"] = base64.b64encode(json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+                                          .encode("utf-8")).decode("ascii")
+    return count
+
+
 def retarget(session, decision: DecisionUse, old_uri: str, new_uri: str, timeout: int = transfer.DEFAULT_TIMEOUT) -> tuple:
     """Move every version of a decision from one node type to another: export
     the decision, keep its own object, upload that and import it over the
@@ -343,8 +392,10 @@ def retarget(session, decision: DecisionUse, old_uri: str, new_uri: str, timeout
     name = f"mdb decision-node-migrate {decision.id}"
     export_job = package_uri = uploaded_uri = None
     try:
+        # the decision alone: the move keeps nothing else of the export, and a dependency that cannot be exported
+        # (a sub-decision, a code file or a model of another folder) would fail the export of the decision
         job = transfer.start_export(session, name, [decision.uri],
-                                    description=f"move from {old_uri} to {new_uri}")
+                                    description=f"move from {old_uri} to {new_uri}", options=transfer.OBJECTS_ONLY)
         export_job = transfer.job_uri(job).replace("/importJobs/", "/exportJobs/")
         job = transfer.wait_for_job(session, export_job, timeout=timeout)
         package_uri = job.get("packageUri")
@@ -362,6 +413,8 @@ def retarget(session, decision: DecisionUse, old_uri: str, new_uri: str, timeout
             return [f"the export of the decision names no dntStatic connector to {old_uri}, so no mapping can move "
                     "it"], leftovers
         _reduce(package, items, mine)
+        # the mapping below moves the steps at the top of the flow; a step in a branch or a condition is written here
+        readdress_steps(mine[0].obj, old_uri, new_uri)
         uploaded = transfer.upload_package_bytes(session, f"{decision.id}.json",
                                                  json.dumps(package, ensure_ascii=False).encode("utf-8"))
         uploaded_uri = f"/transfer/packages/{uploaded['id']}"
