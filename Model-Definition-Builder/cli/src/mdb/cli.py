@@ -2275,6 +2275,12 @@ def _check_hints(result) -> list:
         names = ", ".join(probe["context"] for probe in failed)
         hints.append(f"mdb reached SAS Viya from this machine, and the compute server of {names} did not: the cause lies between the "
                      "compute server and SAS Viya, not in the installation.")
+    switched = [probe for probe in result.probes if (probe.get("viya") or {}).get("switch") == "mdb"]
+    if switched:
+        names = ", ".join(probe["context"] for probe in switched)
+        hints.append(f"SAS_VIYA_VERIFY_SSL=false in the environment of mdb (.env) reaches mdb and this check, not the jobs: the "
+                     f"compute server of {names} answered only with verification off, so set it in the SAS options of the compute "
+                     "context as well.")
     return hints
 
 

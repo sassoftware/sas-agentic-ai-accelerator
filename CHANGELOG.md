@@ -2,6 +2,12 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Fixed
+
+- **`mdb check` passes `SAS_VIYA_VERIFY_SSL=false` on to its probe.** Where mdb runs with it (from `.env`) and the compute server does not trust the certificate of SAS Viya, the probe asks again with verification off. It says so, and adds a line to do: the jobs only get the setting from the SAS options of the compute context.
+
 ## [2.4.3] - 2026-11-03
 
 `mdb check` runs the installation check from the command line and writes it into *Start Here*, which no longer runs anything when it opens; `mdb decision-node-migrate` moves a Call LLM node inside a branch.
