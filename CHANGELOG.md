@@ -2,7 +2,17 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.4.3] - 2026-11-03
+
+`mdb check` runs the installation check from the command line and writes it into *Start Here*, which no longer runs anything when it opens; `mdb decision-node-migrate` moves a Call LLM node inside a branch.
+
+### Upgrading from 2.4.2
+
+Steps 1 and 2 are for every site; step 3 only where it applies.
+
+1. Update the checkout to 2.4.3, then `mdb builders-import` and reload the Prompt Builder report. The import brings the new *Start Here*; `mdb check` and the changed `mdb decision-node-migrate` come with the checkout.
+2. Run `mdb check`. It prints what to do and writes the check into *Start Here*; until then the page only says to run it.
+3. Only where `mdb decision-node-migrate --apply` reported a decision `FAILED` or `the export ended failed`: run it again.
 
 ### Added
 
