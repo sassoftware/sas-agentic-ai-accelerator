@@ -751,15 +751,16 @@ def test_the_gate_tells_content_that_is_behind_from_what_a_package_must_never_be
         f"{len(content.release_table_bytes(manifest))} bytes)",
         "file 'RAG/rag_core/__init__.py' differs from src/rag_core/__init__.py (9 vs 9 bytes)",
         f"step '{STEP_PATH}': 'ui' differs from src/{STEP_NAME}",
-        "job definition 'Prompt Builder/UI': 'parameters' differs from the parameters of its manifest entry"]
+        "job definition 'Prompt Builder/UI': 'parameters' differs from the parameters of its manifest entry",
+        # an entry the manifest gained since the export: the next export brings it
+        "jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in the package"]
     assert [line.text for line in found if not line.drift] == [
         f"report '{REPORT}' names the host viya4-example.internal.test (1 time(s), in plain text)",
         f"report '{REPORT}' carries 1 per-user report state(s)",
         f"report '{REPORT}': the report: judgeModel is 'gpt_5_mini', expected ''",
         f"report '{REPORT}' does not bind the table ACCELERATOR_RELEASES",
         "file 'RAG/notes.txt' is in the package but not in the manifest",
-        "the package carries the authorization share 'a share'",
-        "jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in the package"]
+        "the package carries the authorization share 'a share'"]
     # as sentences, in the order of the package: what a release asks to be empty
     assert package_differences(built.build(), manifest) == [line.text for line in found]
 
@@ -1573,16 +1574,17 @@ def test_the_check_prints_one_line_per_difference_and_fails(checking, manifest, 
     before = target.read_bytes()
     result, text, _ = checking()
     assert result.exit_code == 1
-    # a file with other content is drift; the three others are what a package must never be
+    # a file with other content and an entry the package does not hold yet are drift; the two others are what a
+    # package must never be
     assert text.splitlines()[:4] == [
         "drift: SAS-Agentic-AI-Accelerator.json: file 'RAG/rag_core/__init__.py' differs from "
         "src/rag_core/__init__.py (9 vs 9 bytes)",
         "SAS-Agentic-AI-Accelerator.json: report 'RAG/LIVE_DEMO' is in the package but not in the manifest",
         "SAS-Agentic-AI-Accelerator.json: the package carries the authorization rule '7cab3bd6'",
-        "SAS-Agentic-AI-Accelerator.json: jobDefinition 'Prompt Builder/Optimize' is in the manifest but not in "
-        "the package"]
-    assert "3 difference(s) between the package and the checkout." in text
-    assert "(1 more line(s) are drift and do not fail.)" in text
+        "drift: SAS-Agentic-AI-Accelerator.json: jobDefinition 'Prompt Builder/Optimize' is in the manifest but not "
+        "in the package"]
+    assert "2 difference(s) between the package and the checkout." in text
+    assert "(2 more line(s) are drift and do not fail.)" in text
     assert target.read_bytes() == before                                    # a check writes nothing
     # --allow-missing is no way around a difference
     assert checking("--allow-missing")[0].exit_code == 1
@@ -1626,15 +1628,21 @@ def test_between_releases_a_change_of_the_checkout_is_drift_and_does_not_fail(ch
     result, text, _ = checking("--release")
     assert result.exit_code == 1 and "drift" not in text
     assert "8 difference(s) between the package and the checkout." in text
-    # and structure fails between releases as it did: an entry added to the manifest is not in the package
+    # an entry added to the manifest - a file in a new folder - is not in the package until the next export:
+    # drift too, so a pull request can add a file without carrying the package
     path = repo / "SAS-Viya-Integrations" / "package-manifest.yaml"
     path.write_text(path.read_text(encoding="utf-8")
                     + "  - {path: RAG/jobs/New.sas, kind: file, source: src/optimize.sas}\n", encoding="utf-8")
     result, text, _ = checking()
-    assert result.exit_code == 1
-    assert "SAS-Agentic-AI-Accelerator.json: folder 'RAG/jobs' is in the manifest but not in the package" in text
+    assert result.exit_code == 0, text
+    lines = text.splitlines()
+    assert "drift: SAS-Agentic-AI-Accelerator.json: folder 'RAG/jobs' is in the manifest but not in the package" in lines
+    assert "drift: SAS-Agentic-AI-Accelerator.json: file 'RAG/jobs/New.sas' is in the manifest but not in the package" \
+        in lines
+    # the gate of a release refuses it
+    result, text, _ = checking("--release")
+    assert result.exit_code == 1 and "drift" not in text
     assert "SAS-Agentic-AI-Accelerator.json: file 'RAG/jobs/New.sas' is in the manifest but not in the package" in text
-    assert "2 difference(s) between the package and the checkout." in text
 
 
 def test_a_release_is_not_checked_against_a_package_that_is_missing(checking):
