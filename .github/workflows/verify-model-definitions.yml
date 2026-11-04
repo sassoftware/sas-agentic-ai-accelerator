@@ -194,10 +194,10 @@ jobs:
         # and the custom step no longer hold the same program.
         run: python -m pytest SAS-Viya-Integrations/Logging-Monitoring/tests -q -n auto
       - name: Setup programs test suite
-        # Start-Here.sas and Load-Accelerator-Tables.sas: the Python of the
-        # page runs against a SAS Viya system that is made up, and the columns
-        # of the release table are held against the ones mdb writes - hence
-        # the mdb installed above.
+        # Load-Accelerator-Tables.sas and the custom steps of the folder: the
+        # columns of the release table are held against the ones mdb writes -
+        # hence the mdb installed above. The check of Start Here is mdb's and
+        # runs with its tests.
         run: python -m pytest SAS-Viya-Integrations/Setup/tests -q -n auto
       - name: Prompt optimization job test suite
         # The Python program of Optimize-Prompt-DSPy.sas runs against stand-ins

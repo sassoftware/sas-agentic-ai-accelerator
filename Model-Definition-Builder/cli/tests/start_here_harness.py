@@ -1,24 +1,22 @@
-"""Runs the Python of Start-Here.sas outside of SAS, against a SAS Viya system that is made up.
+"""Runs the installation check of mdb check (mdb/core/start_here.py) against a SAS Viya system that is made up.
 
-The program is read from the code file: the block between the submit; and endsubmit; lines is
-its Python. The SAS object PROC PYTHON provides is replaced by a stand-in, and the requests
-package by a Site: a content folder, CAS tables, SAS Model Manager, a credential domain,
-publishing destinations and compute contexts that a test builds and then takes things out of.
-The Site answers GET requests and knows no other.
+The module is read from its file and run in a namespace of its own, so a test can replace a function of
+it without touching the module mdb imports. SAS Viya is a Site: a content folder, CAS tables, SAS Model
+Manager, a credential domain, publishing destinations and compute contexts that a test builds and then
+takes things out of. The Site answers GET requests and knows no other. The compute server is a probe -
+what viya/startpage.py hands the check for one compute context.
 """
 import json
-import sys
-import types
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-SETUP = Path(__file__).resolve().parents[1]
-PROGRAM = SETUP / "Start-Here.sas"
+MODULE = Path(__file__).resolve().parents[1] / "src" / "mdb" / "core" / "start_here.py"
+REPOSITORY = Path(__file__).resolve().parents[3]
 VIYA_HOST = "https://viya.example.com"
 ROOT = "/SAS Agentic AI Accelerator"
 TOKEN = "not-a-token"
 
-# The parameters of the job as the program sets them where the job definition gives none
+# The settings of the check where the job definition Start Here gives none
 DEFAULT_SETTINGS = {
     "contentRoot": ROOT, "caslib": "Public", "casServer": "cas-shared-default", "credentialDomain": "agentic-ai-keys",
     "repositoryName": "LLM Repository", "llmProject": "LLM Model Project", "embeddingProject": "Embedding Model Project",
@@ -50,59 +48,13 @@ TABLES = ("ACCELERATOR_RELEASES", "LLM_LOGS", "PROMPT_EXPERIMENTS", "LLM_FACT_SH
 CHAIN_TABLES = ("PROMPT_OPTIMIZATIONS", "MODEL_CATALOG")
 
 
-def program():
-    """The SAS program, with LF line endings."""
-    return PROGRAM.read_text(encoding="utf-8").replace("\r\n", "\n")
+def source():
+    """The module of the check, with LF line endings."""
+    return MODULE.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
-def python_block(sas_program=None):
-    """The Python between the submit; and endsubmit; lines of the program."""
-    lines = (sas_program if sas_program is not None else program()).split("\n")
-    start, end = lines.index("submit;"), lines.index("endsubmit;")
-    assert start < end
-    return "\n".join(lines[start + 1:end]) + "\n"
-
-
-def sas_code(sas_program=None):
-    """The program without its Python."""
-    text = sas_program if sas_program is not None else program()
-    return text[:text.index("submit;")] + text[text.index("endsubmit;"):]
-
-
-# The macro variables of a job that SAS Job Execution started for one user in a compute context that
-# runs under a service account - what was measured on 2026-10-12 without the parameter _contextName:
-# the session had SYS_COMPUTE_SESSION_OWNER (the user who opened the page) and _CONTEXTNAME. The two
-# flags are what the SAS code of the program sets with %symexist.
-SERVICE_ACCOUNT_SESSION = {"SYSUSERID": "svc4410", "SYS_COMPUTE_SESSION_OWNER": "uid7781", "_sh_hasOwner": "1",
-                           "_contextName": "SAS Job Execution compute context", "_sh_hasContext": "1"}
-# The same job in a compute context that runs as the user who opened the page
-OWN_SESSION = {"SYSUSERID": "uid7781", "SYS_COMPUTE_SESSION_OWNER": "uid7781", "_sh_hasOwner": "1",
-               "_contextName": "SAS Studio compute context", "_sh_hasContext": "1"}
-
-
-class FakeSAS:
-    """Stands in for the SAS object PROC PYTHON provides. It keeps the name of every macro
-    variable that is read: the program asks for the user a session was started for and for
-    its compute context only where the SAS code found them in the session."""
-
-    def __init__(self, work, settings=None):
-        self.macro_variables = dict(DEFAULT_SETTINGS, _sh_viyaHost=VIYA_HOST, _sh_work=str(work), _sh_rc="-1", SYSUSERID="uid7781",
-                                    _sh_hasOwner="0", _sh_hasContext="0")
-        self.macro_variables.update(settings or {})
-        self.messages = []
-        self.asked = []             # the name of every macro variable that was read, in their order
-
-    def symget(self, name):
-        self.asked.append(name)
-        if name not in self.macro_variables:
-            raise KeyError("a macro variable that is not set: " + name)
-        return self.macro_variables[name]
-
-    def symput(self, name, value):
-        self.macro_variables[name] = value
-
-    def logMessage(self, message, messageType="NOTE"):
-        self.messages.append((messageType, message))
+#: The text the tests read the rules of the check from: the module
+python_block = source
 
 
 class FakeResponse:
@@ -330,53 +282,58 @@ class Site:
 
 
 class PageRun:
-    """What one run of the program's Python left behind."""
+    """What one run of the check left behind: its lines, the uris of the reports and the page."""
 
-    def __init__(self, namespace, sas, work, site):
-        self.namespace, self.sas, self.work, self.site = namespace, sas, Path(work), site
-
-    @property
-    def rc(self):
-        return self.sas.macro_variables["_sh_rc"]
+    def __init__(self, namespace, work, site, probes):
+        self.namespace, self.work, self.site, self.probes = namespace, Path(work), site, probes
+        self.lines, self.reports, self.statuses = [], {}, []
 
     @property
     def page(self):
         return (self.work / "start_here.html").read_text(encoding="utf-8")
 
 
-def load(monkeypatch, work, site=None, settings=None, without_requests=False, packages=None):
-    """The functions of the program's Python, without running start_here(): the last statement of
-    the block is left out. `packages` maps a module to its version, None for one that is not installed."""
-    site = site if site is not None else Site()
-    if without_requests:
-        monkeypatch.setitem(sys.modules, "requests", None)
-    else:
-        fake_requests = types.ModuleType("requests")
-        fake_requests.get = site.get
-        monkeypatch.setitem(sys.modules, "requests", fake_requests)
-    monkeypatch.setenv("SAS_SERVICES_TOKEN", TOKEN)
-    monkeypatch.setenv("SSLCALISTLOC", "/certs/trustedcerts.pem")
-    sas = FakeSAS(work, settings)
-    namespace = {"SAS": sas, "__name__": "start_here"}
-    source = python_block()
-    assert source.rstrip().endswith("\nstart_here()")
-    exec(compile(source.rstrip()[:-len("start_here()")], "Start-Here.sas (python)", "exec"), namespace)
-    if packages is not None:
-        namespace["is_installed"] = lambda module: packages.get(module) is not None
-        namespace["version_of"] = lambda names: next((packages[name] for name in names if packages.get(name)), "")
-        namespace["check_installation"].__defaults__ = (namespace["is_installed"], namespace["version_of"])
-    return PageRun(namespace, sas, work, site)
-
-
-# Every package the page looks for, in a version that is new enough
+# Every package the check looks for, in a version that is new enough
 ALL_PACKAGES = {"pandas": "2.2.3", "swat": "1.18.1", "requests": "2.32.3", "psycopg2": "2.9.10", "psycopg2-binary": "2.9.10",
                 "singlestoredb": "1.17.0", "pypdfium2": "4.30.0", "markitdown": "0.1.3", "dspy": "3.2.1", "optuna": "4.1.0"}
+PARTS = ["Prompt building", "Logging and the LLM Usage Report", "RAG", "Prompt optimization", "Decision models"]
 
 
-def run(monkeypatch, work, site=None, settings=None, without_requests=False, packages=ALL_PACKAGES):
-    """Runs the program's Python to its end and returns the PageRun."""
-    loaded = load(monkeypatch, work, site, settings, without_requests, packages)
-    loaded.namespace["start_here"]()
+def probe(packages=ALL_PACKAGES, context="SAS Studio compute context", parts=None, **changes):
+    """What the compute server of a compute context said: a session, PROC PYTHON, these packages
+    ({module or name: version}, None for one that is not installed), SAS Viya answered 401, and sessions that
+    run as the user."""
+    found = {"context": context, "parts": list(parts or PARTS), "started": True, "python": True,
+             "packages": {name: version for name, version in (packages or {}).items() if version is not None},
+             "viya": {"status": 401, "failure": "", "host": VIYA_HOST}, "sameUser": True}
+    found.update(changes)
+    return found
+
+
+def load(monkeypatch, work, site=None, settings=None, packages=ALL_PACKAGES, probes=None):
+    """The functions of the check, in a namespace of their own. `probes` are what the compute server said,
+    by default one probe of a context that has `packages`."""
+    site = site if site is not None else Site()
+    namespace = {"__name__": "start_here"}
+    exec(compile(source(), str(MODULE), "exec"), namespace)
+    probes = probes if probes is not None else [probe(packages)]
+    loaded = PageRun(namespace, work, site, probes)
+    loaded.settings = dict(DEFAULT_SETTINGS, **(settings or {}))
+    return loaded
+
+
+def run(monkeypatch, work, site=None, settings=None, packages=ALL_PACKAGES, probes=None, checked=None):
+    """The check as mdb check runs it - every line, the one line for a refusal of everything, the page -,
+    with the page written to work/start_here.html."""
+    loaded = load(monkeypatch, work, site, settings, packages, probes)
+    functions = loaded.namespace
+    lines, reports = functions["check_installation"](functions["recorded"](get_of(loaded.site), loaded.statuses),
+                                                     loaded.settings, loaded.probes)
+    loaded.lines = functions["one_line_for_a_refused_session"](lines, loaded.statuses)
+    loaded.reports = reports
+    page = functions["render_page"](loaded.settings, loaded.lines, reports, checked or {"when": "2026-11-03 10:00 UTC", "by": "mdb check"},
+                                    VIYA_HOST)
+    (Path(work) / "start_here.html").write_text(page, encoding="utf-8")
     return loaded
 
 

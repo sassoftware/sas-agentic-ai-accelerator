@@ -143,6 +143,7 @@ mdb builders-import                  # import the content folder - the one trans
                                      # release table, host, data-source binding and the
                                      # options of the Prompt Builder report in one run
 mdb content-deploy                   # bring a SAS Content folder to the state of the checkout
+mdb check                            # run the installation check of Start Here and print it by part
 mdb package-export                   # maintainers: export the content folder to the one package
 mdb package-check                    # compare the package with the checkout
 mdb decision-node-migrate            # give the site's Call LLM node the id of the package and

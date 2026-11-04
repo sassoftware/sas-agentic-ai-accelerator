@@ -38,8 +38,8 @@
         as that account and writes to the prompt in SAS Model Manager as that
         account, which may not change it - the run then fails at its end,
         after every model call. The job compares the user its session runs
-        as with the user who started it, as Start-Here.sas and
-        Load-Accelerator-Tables.sas do, and ends before any model call when
+        as with the user who started it, as Load-Accelerator-Tables.sas
+        does, and ends before any model call when
         the two differ. It also adds a file to the prompt and removes it
         again before any model call, and ends when either is refused.
       - Provider API keys (for hosted models) are resolved from the SAS Viya
@@ -136,8 +136,8 @@
    missing one fails through the same path as every other error - with a clear
    milestone and a failed tracker entry - instead of a SAS-side ABORT. */
 
-/* Whose session this is - the method of Start-Here.sas and
-   Load-Accelerator-Tables.sas. SAS Job Execution names the user a session
+/* Whose session this is - the method of Load-Accelerator-Tables.sas
+   (and of the Start Here program of earlier releases). SAS Job Execution names the user a session
    was started for (SYS_COMPUTE_SESSION_OWNER); a session without that name -
    the program run in SAS Studio - is not asked. The two users are compared
    as the persons they name - a domain behind @ or in front of a backslash is
@@ -486,7 +486,7 @@ def viya_identity():
 def check_session_user():
     """End the run when this session does not run as the user who started
     the job. The SAS code above the Python program compared the two (the
-    method of Start-Here.sas and Load-Accelerator-Tables.sas) and named them
+    method of Load-Accelerator-Tables.sas) and named them
     in _opt_runsAs and _opt_startedBy. Measured on SAS Viya 2026.09 with the
     stock "SAS Job Execution compute context", which runs as a service
     account: a target with a provider key failed for want of the key, and a

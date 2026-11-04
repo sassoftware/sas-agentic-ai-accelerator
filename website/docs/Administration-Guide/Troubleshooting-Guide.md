@@ -210,11 +210,13 @@ The messages of `Log-Parser-Code.sas`, `Get-All-Prompts.sas` and `Link-Logs-To-M
 
 ### A program or custom step fails with CERTIFICATE_VERIFY_FAILED {#program-certificate-verify-failed}
 
-This error can be encountered in the log of a program or custom step that runs in SAS and calls the SAS Viya REST APIs from PROC PYTHON: *Get-All-Prompts*, *Start-Here*, *Ingest-Documents*, *Test-Retrieval*, *Optimize-Prompt-DSPy*, the custom step *LLM - Get All Prompts* and the nine *RAG* steps. The step ends with an ERROR line like this one:
+This error can be encountered in the log of a program or custom step that runs in SAS and calls the SAS Viya REST APIs from PROC PYTHON: *Get-All-Prompts*, *Ingest-Documents*, *Test-Retrieval*, *Optimize-Prompt-DSPy*, the custom step *LLM - Get All Prompts* and the nine *RAG* steps. The step ends with an ERROR line like this one:
 
 ```text
 ERROR: Python-Subprocess - SAS Model Manager could not be read: SSLError: HTTPSConnectionPool(host='<SAS Viya host>', port=443): Max retries exceeded with url: /modelRepository/projects?filter=eq(tags,'Prompt-Engineering')&start=0&limit=100 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)')))
 ```
+
+[`mdb check`](./Setup-Additional-UIs.md#mdb-check) says it in its line of the compute server: *the Python of this compute context does not trust the TLS certificate of SAS Viya*.
 
 The cause is that the CA bundle the SAS session trusts (*SSLCALISTLOC*, normally */security/trustedcerts.pem*) cannot verify the certificate the ingress presents. Often the ingress sends only its leaf certificate, and the bundle does not hold the CA that issued it, so OpenSSL cannot build a chain. To confirm it, list the certificates the ingress sends and then verify them against the bundle, copied from a pod:
 

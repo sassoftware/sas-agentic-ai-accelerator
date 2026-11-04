@@ -1390,17 +1390,20 @@ def _scr_endpoint() -> str:
     return endpoint.rstrip("/")
 
 
-def _viya_session():
+def _viya_session(out=None):
+    """The SAS Viya session of a command; `out` is where its lines go (the console, or stderr for a command
+    whose output is JSON)."""
     from .viya.session import ViyaConfigError, create_session
+    out = out or console
     try:
         session = create_session()
-        console.print(f"[dim]SAS Viya: {_plain(session.auth_summary)}[/dim]")
+        out.print("SAS Viya: " + str(session.auth_summary), style="dim", markup=False, highlight=False)
         return session
     except ViyaConfigError as exc:
         # printed as it is, and as one line whatever the width of the terminal: the sentence of a refused
         # sign-in holds what SAS Logon answered, and read as markup a `[/red]` in it ends the command with
         # a traceback - and `cli[viya]` loses its bracket
-        console.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+        out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(2)
 
 
@@ -1896,12 +1899,12 @@ def _package_objects(package: dict) -> list[tuple[str, str]]:
     return package_objects(package)
 
 
-def _emit_outcome(outcome, indent: str = "  ") -> None:
+def _emit_outcome(outcome, indent: str = "  ", out=None) -> None:
     """One line for one entry of a deploy or of an import: what happened,
     the kind, the path and what there is to say about it."""
     note = f"  ({outcome.note})" if outcome.note else ""
-    console.print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
-                  markup=False, highlight=False, soft_wrap=True)
+    (out or console).print(f"{indent}{outcome.status:<12} {outcome.entry.kind:<13} {outcome.entry.path}{note}",
+                           markup=False, highlight=False, soft_wrap=True)
 
 
 #: What content-deploy and builders-import say of a content root that is no folder below the root of SAS
@@ -2163,6 +2166,143 @@ def content_deploy(
         console.print("Nothing was written.")
     else:
         console.print("[green]Done.[/green]")
+
+
+@app.command("check")
+def check(
+    content_root: Optional[str] = typer.Option(
+        None, "--content-root",
+        help="SAS Content folder the package was imported into (default: the content root the manifest names, "
+             "/SAS Agentic AI Accelerator)."),
+    compute_context: Optional[str] = typer.Option(
+        None, "--compute-context",
+        help="Probe this compute context for prompt building and logging. Default: the first the parameter "
+             "computeContexts of Start Here names. RAG and prompt optimization are probed in the contexts their "
+             "options name."),
+    no_deploy: bool = typer.Option(
+        False, "--no-deploy",
+        help="Leave the job definition Start Here as it is on the site; do not bring it to this checkout first."),
+    no_page: bool = typer.Option(False, "--no-page", help="Print the check only; leave the page of Start Here as it is."),
+    show_all: bool = typer.Option(False, "--all", help="Print the lines that are ok as well."),
+    as_json: bool = typer.Option(False, "--json", help="Print the check as JSON (progress lines go to stderr)."),
+):
+    """Check the installation, write the result into the page Start Here, and say what to do.
+
+    The checks read the content folder and its release.json, the CAS tables
+    of the reports, SAS Model Manager, the options of the Prompt Builder
+    report, the credential domain by its name, the publishing destinations
+    and the compute contexts - as you, with GET requests only. What only the
+    compute server can say is asked in one short compute session per compute
+    context the parts run in: whether PROC PYTHON runs, which packages its
+    Python has, whether it reaches SAS Viya and trusts its certificate, and
+    whether its sessions run as you. The sessions are deleted afterwards.
+
+    The lines are printed by part - prompt building, logging and the LLM
+    Usage Report, RAG, prompt optimization, decision models - with one
+    verdict each, and for every line that is not ok what was found and what
+    to do. A part the options of the Prompt Builder report switch off is
+    "not used here".
+
+    THE PAGE. Start Here is a job definition that serves one page: until
+    the first check it says to run mdb check. The check writes its result
+    into it - the verdicts, every line, the links to the two reports and
+    when it ran -, in place; --no-page leaves it as it is. First the job
+    definition is brought to this checkout, as `mdb content-deploy --only
+    "Start Here"` does; --no-deploy leaves it. A deploy or an import writes
+    the page of the release back: run mdb check after one.
+
+    Exit code 0 when prompt building is ready, 1 when it is not, 2 when the
+    command could not start.
+    """
+    from datetime import datetime, timezone
+
+    from . import __version__
+    from .core.content import CheckoutSource
+    from .viya.content import DeployError, deploy
+    from .viya.startpage import CheckError, run_check
+    out = _Console(stderr=True, emoji=False) if as_json else console
+    ctx = Context()
+    manifest = _content_manifest(ctx)
+    content_root = _given_root(content_root)
+    root = (content_root or manifest.content_root).rstrip("/")
+    if not root.startswith("/"):
+        out.print(_ROOT_NOT_A_FOLDER, style="red", markup=False, highlight=False)
+        raise typer.Exit(2)
+    with _viya_session(out) as session:
+        if not no_deploy:
+            out.print(f"Bringing {START_HERE_ENTRY} in {root} to this checkout:", markup=False, highlight=False)
+            try:
+                result = deploy(session, manifest, root, False, lambda outcome: _emit_outcome(outcome, out=out),
+                                only=[START_HERE_ENTRY], source=CheckoutSource(manifest),
+                                settings=_deploy_settings(root, None), create_root=False)
+            except DeployError as exc:
+                out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+                out.print("Import the package of the accelerator first: `mdb builders-import`.", markup=False, highlight=False)
+                raise typer.Exit(1)
+            if result.failed:
+                out.print("Start Here could not be brought to this checkout - see the line above. Run `mdb check --no-deploy` to "
+                          "check with the job definition as it is.", style="red", markup=False, highlight=False, soft_wrap=True)
+                raise typer.Exit(1)
+        out.print("Checking" + (f" (compute server: {compute_context})" if compute_context else "") + " ...",
+                  markup=False, highlight=False)
+        when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            result = run_check(session, root, compute_context, {"when": when, "by": f"mdb check {__version__}"}, write=not no_page)
+        except CheckError as exc:
+            out.print(str(exc), style="red", markup=False, highlight=False, soft_wrap=True)
+            raise typer.Exit(1)
+    if as_json:
+        console.print_json(json.dumps({
+            "checked": when, "contentRoot": root, "counts": result.counts, "pageWritten": result.written,
+            "parts": [{"part": part, "verdict": verdict, "first": first} for part, verdict, first in result.verdicts],
+            "lines": [{key: entry.get(key, "") for key in ("part", "section", "what", "state", "found", "todo")}
+                      for entry in result.lines],
+            "hints": _check_hints(result)}))
+        raise typer.Exit(0 if result.core_ready else 1)
+    _print_check(result, root, show_all)
+    raise typer.Exit(0 if result.core_ready else 1)
+
+
+#: The entry of the manifest mdb check deploys and writes.
+START_HERE_ENTRY = "Start Here"
+
+
+def _check_hints(result) -> list:
+    """What mdb adds to the lines: what follows from where it ran and the compute server did."""
+    hints = []
+    failed = [probe for probe in result.probes if (probe.get("viya") or {}).get("failure")]
+    if failed:
+        names = ", ".join(probe["context"] for probe in failed)
+        hints.append(f"mdb reached SAS Viya from this machine, and the compute server of {names} did not: the cause lies between the "
+                     "compute server and SAS Viya, not in the installation.")
+    return hints
+
+
+def _print_check(result, root: str, show_all: bool) -> None:
+    """The check by part: the verdict, and every line that is not ok with what to do."""
+    from .core import start_here as page
+    counts = result.counts
+    console.print(f"{root}: {page.counts_said(counts)}.", markup=False, highlight=False, soft_wrap=True)
+    width = max((len(part) for part, _, _ in result.verdicts), default=0) + 2
+    for part, verdict, _ in result.verdicts:
+        style = "green" if verdict == "ready" else "dim" if verdict.startswith("not used") else "yellow" if "not checked" in verdict else "red"
+        console.print()
+        console.print(f"{part:<{width}}", end="", markup=False, highlight=False)
+        console.print(verdict, style=style, markup=False, highlight=False)
+        for entry in result.lines:
+            if entry.get("part", page.part_of(entry)) != part or (entry["state"] in (page.OK, page.NOT_USED) and not show_all):
+                continue
+            console.print(f"  {entry['state']:<12} {entry['what']}: {entry['found']}", markup=False, highlight=False, soft_wrap=True)
+            if entry.get("todo"):
+                console.print(f"  {'':<12} what to do: {entry['todo']}", markup=False, highlight=False, soft_wrap=True)
+    hints = _check_hints(result)
+    if hints:
+        console.print()
+        for hint in hints:
+            console.print(hint, style="yellow", markup=False, highlight=False, soft_wrap=True)
+    console.print()
+    console.print("The page Start Here holds this check now." if result.written else "The page Start Here was left as it is (--no-page).",
+                  markup=False, highlight=False)
 
 
 @app.command("package-export")

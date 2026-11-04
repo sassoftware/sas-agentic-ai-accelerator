@@ -8,7 +8,7 @@ its result with HTTP 403 - "{`version`:2,`httpStatusCode`:403,`message`:`Forbidd
 log. In the "SAS Studio compute context", which runs as the user, the same run completed.
 
 The job now ends before its first model call when its session does not run as the user who
-started it - compared as Start-Here.sas and Load-Accelerator-Tables.sas compare them - or when it
+started it - compared as Load-Accelerator-Tables.sas compares them - or when it
 may not add a file to the prompt and remove it again, and it writes an HTTP error as a sentence.
 The links of the model were no answer: the session of the service account got the same update
 and addContent links of the model as its owner (measured the same day).

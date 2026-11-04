@@ -328,7 +328,7 @@ def _arguments(command: str, tmp: Path, monkeypatch, repo_root: Path) -> list:
     return {
         "load-facts": [], "load-releases": [], "setup": ["--out", str(tmp / "setup")],
         "options-save": ["--file", str(tmp / "options.json")], "options-restore": ["--file", str(saved)],
-        "content-deploy": ["--dry-run"], "package-export": ["--out", str(tmp / "package.json")],
+        "content-deploy": ["--dry-run"], "check": ["--no-deploy"], "package-export": ["--out", str(tmp / "package.json")],
         "builders-import": [str(repo_root / "SAS-Viya-Integrations" / "SAS-Agentic-AI-Accelerator.json"), "--dry-run",
                             "--out", str(tmp / "import")],
         "register": ["smollm_135m"], "unregister": ["smollm_135m", "--yes"], "pull": ["smollm_135m"],
@@ -343,7 +343,7 @@ def test_the_commands_that_reach_sas_viya_are_known():
     assert set(_reaching_sas_viya()) == {
         "load-facts", "load-releases", "setup", "options-save", "options-restore", "content-deploy", "package-export",
         "builders-import", "register", "unregister", "pull", "list", "publish", "ship", "retire",
-        "credentials-apply", "credentials-report", "decision-node-migrate"}
+        "credentials-apply", "credentials-report", "decision-node-migrate", "check"}
 
 
 def _run(command, tmp_path, monkeypatch, repo_root, way, kind):

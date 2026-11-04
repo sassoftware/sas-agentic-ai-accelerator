@@ -90,20 +90,15 @@ TABLE = {
         r"^%_lfs_read\(", (INTEGRATIONS / LM / "Load-Fact-Sheets.sas").read_text(encoding="utf-8"), re.M)),
     # Build-RAG-Cost-View.sas, the program of that paragraph, is not one of the programs above it
     (LM, "programs above do."): lambda: len(syscc_1012(with_python(LM))),
-    (SETUP, "programs for two job"): lambda: len(programs(SETUP)),
     (SETUP, "job definitions of the"): lambda: len(re.findall(
-        r"code: SAS-Viya-Integrations/Setup/\S+\.sas", (INTEGRATIONS / "package-manifest.yaml").read_text(encoding="utf-8"))),
-    (SETUP, "file had been taken"): None,            # a file of a test folder
+        r"(?:code|form): SAS-Viya-Integrations/Setup/\S+\.(?:sas|html)", (INTEGRATIONS / "package-manifest.yaml").read_text(encoding="utf-8"))),
     (SETUP, "files of that name"): None,             # a state of a site
-    (SETUP, "file the program writes"): None,        # the page the program writes
     (SETUP, "program loads the sheets,"): lambda: len(re.findall(
         r"^%include _latlfs;", (INTEGRATIONS / SETUP / "Load-Accelerator-Tables.sas").read_text(encoding="utf-8"), re.M)),
     # the release table and the three fact sheets
     (SETUP, "files |"): lambda: 1 + len(re.findall(
         r"^%_lfs_read\(", (INTEGRATIONS / LM / "Load-Fact-Sheets.sas").read_text(encoding="utf-8"), re.M)),
-    (SETUP, "called a file `present`"): None,         # a date
-    # the two programs of the folder Setup: Start-Here.sas and Load-Accelerator-Tables.sas
-    (SETUP, "programs does not run"): lambda: len(programs(SETUP)),
+    # the one program of the folder Setup: Load-Accelerator-Tables.sas
     (SETUP, "steps - it reads"): lambda: len([path for path in STEPS.glob("*.step") if path.stem in (
         "LLM - Create LLM Call", "LLM - Get Options") and "*" + path.stem + "*" in text(SETUP)]),
     (SETUP, "steps with the macro"): lambda: len([path for path in STEPS.glob("*.step") if path.stem in (

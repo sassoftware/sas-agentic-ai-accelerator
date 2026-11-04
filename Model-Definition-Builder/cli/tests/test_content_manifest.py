@@ -681,14 +681,18 @@ def test_the_two_setup_jobs_are_listed_with_the_parameters_their_programs_read(s
     beside the files it loads. A parameter of the entry that the program does
     not read, or a setting of the program that is no parameter, is a typo
     nobody would see before the job runs."""
+    from mdb.viya.startpage import DEFAULT_SETTINGS
     start = shipped.find("Start Here", "jobDefinition")
     load = shipped.find("Data/Load-Accelerator-Tables", "jobDefinition")
-    assert start.code == "SAS-Viya-Integrations/Setup/Start-Here.sas" and start.form is None
-    assert load.code == "SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas" and load.form is None
+    # Start Here serves its page as a form and runs nothing; mdb check reads its parameters as its settings
+    assert start.code is None and start.form == "SAS-Viya-Integrations/Setup/Start-Here.html"
     defaults = {p["name"]: p["default"] for p in start.parameters}
+    assert defaults == dict(DEFAULT_SETTINGS, _action="form")
+    assert load.code == "SAS-Viya-Integrations/Setup/Load-Accelerator-Tables.sas" and load.form is None
+    defaults = {p["name"]: p["default"] for p in load.parameters}
     # without this SAS Job Execution opens ODS on _webout and the page is not the answer
     assert defaults["_action"] == "execute" and defaults["_output_type"] == "html"
-    for entry, macro in ((start, "_sh_default"), (load, "_lat_default")):
+    for entry, macro in ((load, "_lat_default"),):
         program = shipped.source_path(entry.code).read_text(encoding="utf-8")
         in_program = dict(re.findall(r"^%" + macro + r"\((\w+),\s*(.*?)\);\s*$", program, flags=re.M))
         assert in_program, f"{entry.path}: no %{macro}(name, value) line found"
@@ -715,15 +719,16 @@ def test_the_jobs_that_run_as_their_user_carry_a_compute_context_that_is_the_sit
     page = shipped.find("Prompt Builder/SAS-LLM-Prompt-Builder-UI", "jobDefinition")
     default = next(p for p in page.parameters if p["name"] == "_contextName")["default"]
     assert default == "SAS Studio compute context"
-    for path in ("Start Here", "Data/Load-Accelerator-Tables", page.path):
+    for path in ("Data/Load-Accelerator-Tables", page.path):
         entry = shipped.find(path, "jobDefinition")
         context = [p for p in entry.parameters if p["name"] == "_contextName"]
         assert len(context) == 1 and context[0]["default"] == default and context[0]["siteSetting"], path
     # integrate-18 open item: the CAS library, the credential domain, the names of the repository and the
     # projects, the compute contexts to look for and the release table were set back to the manifest by
     # every deploy and import. They are values of the site too; what belongs to the release is not.
+    # Start Here runs nothing, so it has no compute context; the rest are the settings mdb check reads
     assert content.site_settings(shipped.find("Start Here", "jobDefinition")) == (
-        "_contextName", "contentRoot", "caslib", "casServer", "credentialDomain", "repositoryName", "llmProject",
+        "contentRoot", "caslib", "casServer", "credentialDomain", "repositoryName", "llmProject",
         "embeddingProject", "decisionProject", "computeContexts")
     assert content.site_settings(shipped.find("Data/Load-Accelerator-Tables", "jobDefinition")) == (
         "_contextName", "contentRoot", "caslib", "releaseTable", "factSheets")

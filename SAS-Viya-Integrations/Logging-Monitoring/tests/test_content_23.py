@@ -739,8 +739,7 @@ def test_every_swat_action_whose_answer_a_program_reads_takes_any_severity_but_0
     # the programs whose Python the class was looked for in
     assert sorted(_python_blocks()) == ["Custom-Steps/LLM - Get All Prompts.step", "Custom-Steps/LLM - Log Parser.step",
                                         "Logging-Monitoring/Get-All-Prompts.sas", "Logging-Monitoring/Link-Logs-To-Models.sas",
-                                        "Logging-Monitoring/Log-Parser-Code.sas", "SAS-Code-LLM-Calls/Track-Prompt-Experiments.sas",
-                                        "Setup/Start-Here.sas"]
+                                        "Logging-Monitoring/Log-Parser-Code.sas", "SAS-Code-LLM-Calls/Track-Prompt-Experiments.sas"]
 
 
 class _Answer(dict):
