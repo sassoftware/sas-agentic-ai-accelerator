@@ -29,7 +29,7 @@
  *   collection       - REQUIRED. Vector-store collection (lowercase
  *                      identifier, e.g. rag_hr_policies_v1)
  *   backend          - vector store backend: pgvector, singlestore or
- *                      weaviate (storeDb is not used there - any value;
+ *                      weaviate (storeDb is not used there - leave it blank;
  *                      storeSslmode disable means plain HTTP, anything else
  *                      HTTPS; the port defaults to 8080)
  *   storeHost/storePort/storeDb/storeSslmode - vector store connection
@@ -613,7 +613,9 @@ def main():
                                     run_extract, run_list, run_load)
 
         # ---- parameter validation (fails through the standard path) --------
-        for required in ("sourcePath", "collection", "storeHost", "storeDb"):
+        # Weaviate has no database name: storeDb is required for the SQL backends only
+        sql_backend = P["backend"].strip().lower() != "weaviate"
+        for required in ("sourcePath", "collection", "storeHost") + (("storeDb",) if sql_backend else ()):
             if not P[required]:
                 raise RuntimeError(f"required parameter {required} is missing")
         registry = ExtractorRegistry()

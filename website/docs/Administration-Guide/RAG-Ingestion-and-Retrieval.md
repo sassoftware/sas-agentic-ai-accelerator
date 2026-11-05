@@ -1726,9 +1726,11 @@ round trip passed (it found that GraphQL takes a list under `valueText`, not
 Content folder through an EmbeddingGemma embedding container (768
 dimensions), skipped them unchanged on the next run, and retired and replaced
 them after a change; `Test-Retrieval.sas` returned the expected document at
-rank 1 for three questions and only the new version after the change. Not
-measured: the custom steps, the retrieval model and the RAG Builder (which
-does not offer Weaviate yet).
+rank 1 for three questions and only the new version after the change. The
+same runs passed again on 2026-11-05 on 2.4.5, with `storeDb` left blank.
+Not measured: the custom steps (they reconnect to CAS with `swat`, which has
+no build for that arm64 compute server), the retrieval model and the RAG
+Builder (which does not offer Weaviate yet).
 
 :::warning The SingleStore ANN index is opt-in for a reason
 Measured on a live cluster, an HNSW index there **loses rows**: the same query
