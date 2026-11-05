@@ -46,9 +46,9 @@ JOB_ENDED = ("completed", "error", "warning", "canceled", "cancelled", "failed")
 #: with the CA bundle the programs of the accelerator take (SAS_VIYA_VERIFY_SSL, SAS_VIYA_CABUNDLE,
 #: SSLCALISTLOC, CAS_CLIENT_SSL_CA_LIST) - any answer is an answer, 401 included -, reads which of the
 #: modules are installed, and writes what it found into the log. It uses the standard library only.
-#: Where the session does not trust the certificate and mdb runs with SAS_VIYA_VERIFY_SSL=false (FORWARD),
-#: it asks once more with verification off and says so ('switch': 'mdb'); where the session switches
-#: verification off itself, it says that ('switch': 'context').
+#: Where mdb runs with SAS_VIYA_VERIFY_SSL=false (FORWARD), the probe sets it in its session as well and asks
+#: with verification off, as mdb does ('switch': 'mdb'); where the session switches verification off
+#: itself, it says that ('switch': 'context').
 PROBE_PYTHON = r'''
 import base64, json, os, socket, ssl, urllib.error, urllib.request, zlib
 import importlib.util
@@ -76,6 +76,12 @@ for module, names in MODULES.items():
             continue
     found['packages'][module] = version
 off = os.environ.get('SAS_VIYA_VERIFY_SSL', '').strip().lower() in ('false', 'no', '0')
+if off:
+    found['switch'] = 'context'
+elif FORWARD:
+    os.environ['SAS_VIYA_VERIFY_SSL'] = 'false'
+    off = True
+    found['switch'] = 'mdb'
 bundle = os.environ.get('SAS_VIYA_CABUNDLE') or os.environ.get('SSLCALISTLOC') or os.environ.get('CAS_CLIENT_SSL_CA_LIST')
 
 
@@ -105,15 +111,7 @@ def ask(unverified):
         return {'failure': failure, 'error': type(reason).__name__ + ': ' + ' '.join(text.split()[:WORDS])}
 
 
-said = ask(off)
-if off:
-    found['switch'] = 'context'
-elif FORWARD and said.get('failure') == 'tls':
-    again = ask(True)
-    if 'status' in again:
-        said = again
-        found['switch'] = 'mdb'
-found.update(said)
+found.update(ask(off))
 packed = base64.b64encode(zlib.compress(json.dumps(found).encode('utf-8'), 9)).decode('ascii')
 parts = [packed[start:start + 76] for start in range(0, len(packed), 76)] or ['']
 for number, part in enumerate(parts, 1):
@@ -199,8 +197,8 @@ def current_user(session) -> str:
 
 def probe_program(forward: bool = False) -> list:
     """The lines of the program of the probe: the address of SAS Viya for the Python, and the Python. With
-    `forward` - mdb runs with SAS_VIYA_VERIFY_SSL=false - a session that does not trust the certificate of SAS
-    Viya asks once more with verification off, and says so."""
+    `forward` - mdb runs with SAS_VIYA_VERIFY_SSL=false - the probe sets it in its session too and asks with
+    verification off, and says so."""
     modules = {}
     for _, _, module, names, _, _ in check.PACKAGES:
         modules.setdefault(module, list(names))

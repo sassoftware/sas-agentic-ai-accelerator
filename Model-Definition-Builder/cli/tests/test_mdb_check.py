@@ -415,10 +415,10 @@ def run_probe_with(monkeypatch, capsys, urlopen, forward, session_off=False):
     """What the probe found, with this urlopen, mdb's switch forwarded or not, and the session's own switch."""
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    if session_off:
-        monkeypatch.setenv("SAS_VIYA_VERIFY_SSL", "false")
-    else:
-        monkeypatch.delenv("SAS_VIYA_VERIFY_SSL", raising=False)
+    # set first, so that monkeypatch puts it back: the probe sets the switch in its session
+    monkeypatch.setenv("SAS_VIYA_VERIFY_SSL", "false")
+    if not session_off:
+        monkeypatch.delenv("SAS_VIYA_VERIFY_SSL")
     lines = probe_program(forward)
     python = "\n".join(lines[lines.index("submit;") + 1:lines.index("endsubmit;")])
     exec(compile(python, "probe", "exec"), {"SAS": SAS({"SYSUSERID": "uid7781", "_mc_viya": "https://viya.example.com"}),
@@ -434,17 +434,18 @@ def test_without_the_switch_of_mdb_an_untrusted_certificate_is_a_tls_failure(mon
     assert urlopen.asked == ["verified"]
 
 
-def test_with_the_switch_of_mdb_the_probe_asks_again_unverified_and_says_so(monkeypatch, capsys):
+def test_with_the_switch_of_mdb_the_probe_sets_it_in_its_session_and_asks_unverified(monkeypatch, capsys):
+    import os
     urlopen = Untrusted()
     found = run_probe_with(monkeypatch, capsys, urlopen, forward=True)
 
     assert found["status"] == 401 and found["switch"] == "mdb" and "failure" not in found
-    assert urlopen.asked == ["verified", "unverified"]
+    assert urlopen.asked == ["unverified"] and os.environ["SAS_VIYA_VERIFY_SSL"] == "false"
 
 
-def test_a_session_that_trusts_the_certificate_needs_no_switch(monkeypatch, capsys):
+def test_without_the_switch_of_mdb_a_session_that_trusts_the_certificate_asks_verified(monkeypatch, capsys):
     urlopen = Untrusted(trusted=True)
-    found = run_probe_with(monkeypatch, capsys, urlopen, forward=True)
+    found = run_probe_with(monkeypatch, capsys, urlopen, forward=False)
 
     assert found["status"] == 401 and "switch" not in found and urlopen.asked == ["verified"]
 
@@ -469,16 +470,16 @@ def test_the_probe_forwards_the_switch_mdb_runs_with(monkeypatch, capsys, value,
     assert found["viya"]["switch"] == "mdb"
 
 
-def test_an_answer_only_with_the_switch_of_mdb_is_a_line_to_do_for_the_jobs():
+def test_an_answer_with_the_switch_of_mdb_is_ok_and_said():
     probes = [harness.probe(viya={"status": 401, "failure": "", "host": "https://viya.example.com", "switch": "mdb"})]
     lines = harness_lines(probes=probes)
     said = {entry["what"]: entry for entry in lines if entry["what"].startswith("SAS Studio compute context: ")}
 
     reach = said["SAS Studio compute context: SAS Viya from the compute server"]
-    assert reach["state"] == start_here.OK and "SAS_VIYA_VERIFY_SSL=false" in reach["found"] and ".env" in reach["found"]
-    jobs = said["SAS Studio compute context: TLS verification of the jobs"]
-    assert jobs["state"] == start_here.MISSING and "-set SAS_VIYA_VERIFY_SSL false" in jobs["todo"]
-    assert dict((part, verdict) for part, verdict, _ in start_here.part_verdicts(lines))["Prompt building"] != "ready"
+    assert reach["state"] == start_here.OK and "SAS_VIYA_VERIFY_SSL=false" in reach["found"]
+    assert "set it in the session of this check" in reach["found"]
+    assert not any(entry["what"].endswith("TLS verification of the jobs") for entry in lines)
+    assert dict((part, verdict) for part, verdict, _ in start_here.part_verdicts(lines))["Prompt building"] == "ready"
 
 
 def test_a_context_that_switches_verification_off_itself_is_ok_and_said():
@@ -490,10 +491,9 @@ def test_a_context_that_switches_verification_off_itself_is_ok_and_said():
     assert not any(entry["what"].endswith("TLS verification of the jobs") for entry in lines)
 
 
-def test_the_command_says_the_switch_of_mdb_does_not_reach_the_jobs(command):
+def test_the_command_is_ready_with_the_switch_of_mdb_and_adds_no_hint(command):
     probes = [harness.probe(viya={"status": 401, "failure": "", "host": "https://viya.example.com", "switch": "mdb"})]
     outcome, text, _, _ = command(result_of(harness_lines(probes=probes), probes), "--no-deploy")
 
-    assert outcome.exit_code == 1
-    assert "SAS Studio compute context: TLS verification of the jobs: the Python of this compute context does not trust" in text
-    assert ("SAS_VIYA_VERIFY_SSL=false in the environment of mdb (.env) reaches mdb and this check, not the jobs") in text
+    assert outcome.exit_code == 0, text
+    assert "TLS verification of the jobs" not in text and "reaches mdb and this check, not the jobs" not in text

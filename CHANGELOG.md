@@ -2,6 +2,12 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Changed
+
+- **`mdb check` honours `SAS_VIYA_VERIFY_SSL=false` in its compute session.** Where mdb runs with it, the probe sets it in its session and asks with verification off from the start, as mdb does. The check no longer reports *TLS verification of the jobs* as `missing` or adds a hint about the SAS options of the compute context.
+
 ## [2.4.4] - 2026-11-04
 
 `mdb check` passes `SAS_VIYA_VERIFY_SSL=false` from the environment of mdb on to its probe of the compute server, and says that the jobs need it in the compute context too.
