@@ -1010,11 +1010,15 @@ def test_the_about_page_documents_the_checkbox_and_its_changelog_entry():
     assert "in the log of the failing run as well, below its ERROR line" in documentation
     assert "the tag may then not say what the stored score code does" in documentation
     changelog = _control("textChangelog")["text"]
-    # the entry of version 1.3; version 1.4 (the messages that read the same in the log) stands above it
-    newest = "* Version: " + changelog.split("\n* Version: ")[1]
-    assert changelog.startswith("* Version: 1.4 (20OCT2026)\n      - ")
+    # the entry of version 1.3; version 1.5 (Weaviate) and 1.4 (the messages
+    # that read the same in the log) stand above it
+    entries = changelog.split("\n* Version: ")
+    newest = "* Version: " + entries[2]
+    assert changelog.startswith("* Version: 1.5 (27OCT2026)\n      - ")
+    assert "Weaviate" in entries[0] and "vector-store-ddl.json" in entries[0]
+    assert entries[1].startswith("1.4 (20OCT2026)\n      - ")
     assert newest.startswith("* Version: 1.3 (11OCT2026)\n      - ")
     assert LABEL in newest and TLS_TAG in newest
     assert "A run that fails after the score code was stored still says" in newest
     versions = re.findall(r"^\* Version: (\d+\.\d+) ", changelog, re.MULTILINE)
-    assert versions == sorted(versions, reverse=True) and versions[0] == "1.4"
+    assert versions == sorted(versions, reverse=True) and versions[0] == "1.5"

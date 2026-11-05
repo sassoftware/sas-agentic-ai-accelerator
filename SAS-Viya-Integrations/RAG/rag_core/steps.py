@@ -970,6 +970,21 @@ def _embedding_usage(rows: list, column: str = "embed_usage") -> dict:
     return {}
 
 
+def keeps_run_history(adapter) -> bool:
+    """Whether the store can hold the run-history tables (design §6).
+
+    They are SQL on the store's own connection, so a store without SQL -
+    Weaviate - says so in its capabilities, and the history is skipped
+    rather than failing on every run with a misleading "not recorded".
+    Chunk lineage (`history` in the capabilities) is a different thing and
+    does not depend on this.
+    """
+    try:
+        return bool(adapter.capabilities().get("run_history", True))
+    except Exception:
+        return True
+
+
 def record_history(adapter, inventory: list, previous_ledger: list,
                    run_id: str, collection: str, config_id: str = "",
                    settings=None, metrics=None, status: str = "completed",
@@ -993,6 +1008,11 @@ def record_history(adapter, inventory: list, previous_ledger: list,
     from .history import History, events_from_inventory, status_counts
 
     written = {"runs": 0, "events": 0}
+    if not keeps_run_history(adapter):
+        log(f"rag history: the {getattr(adapter, 'name', 'vector')} store keeps "
+            "no run history - the chunks keep their lineage, the load itself "
+            "is unaffected")
+        return written
     try:
         history = History(adapter.raw_connection(),
                           getattr(adapter, "HISTORY_DIALECT", "postgres"))

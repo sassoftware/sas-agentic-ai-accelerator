@@ -161,3 +161,68 @@ def test_a_backend_prefixed_setting_beats_the_shared_fallback(monkeypatch):
     monkeypatch.delenv("SINGLESTORE_HOST")
     config = retrieve_context._store_config({"user": "u", "password": "p"})
     assert config["host"] == "shared-host"
+
+
+def test_weaviate_default_port(monkeypatch):
+    monkeypatch.setattr(retrieve_context, "BACKEND", "weaviate")
+    monkeypatch.setattr(retrieve_context, "STORE_PORT", "")
+    for name in ("WEAVIATE_PORT", "RAGSTORE_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    config = retrieve_context._store_config({"user": "u", "password": "p"})
+    assert config["port"] == 8080
+
+
+def test_weaviate_query_is_graphql_on_the_live_slice(monkeypatch):
+    """No SQL connection, no driver: one GraphQL POST, the live filter and an
+    allow-listed equality, values escaped."""
+    sent = []
+
+    class Reply:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"Get": {"Rag_demo_v1": [{
+                "doc_id": "doc-1", "chunk_id": "chunk-1",
+                "source_uri": "/docs/a.txt", "ingested_at": "2026-07-30T12:00:00Z",
+                "content": "alpha text", "heading_path": "Intro",
+                "span": '{"page": 3, "start": 5, "end": 10}', "run_id": "run-7",
+                "_additional": {"distance": 0.25}}]}}}
+
+    import requests
+    monkeypatch.setattr(requests, "post",
+                        lambda url, **kw: sent.append((url, kw)) or Reply())
+    monkeypatch.setattr(retrieve_context, "BACKEND", "weaviate")
+    monkeypatch.setattr(retrieve_context, "COLLECTION", "rag_demo_v1")
+    monkeypatch.setattr(retrieve_context, "_connect", lambda store: pytest.fail(
+        "Weaviate needs no SQL connection"))
+    store = {"host": "wv", "port": 8080, "password": "k", "sslmode": "require"}
+    hits = retrieve_context._search([0.6, 0.8], 4, '{"doc_id": "a\\"b"}', store)
+    url, kw = sent[0]
+    assert url == "https://wv:8080/v1/graphql"
+    query = kw["json"]["query"]
+    assert query.startswith("{ Get { Rag_demo_v1(nearVector: {vector: [0.6, 0.8]}, limit: 4")
+    assert ('{path: ["valid_to"], operator: IsNull, valueBoolean: true}') in query
+    assert '{path: ["doc_id"], operator: Equal, valueText: "a\\"b"}' in query
+    assert kw["headers"]["Authorization"] == "Bearer k"
+    assert hits[0]["distance"] == 0.25 and hits[0]["score"] == 0.75
+    assert hits[0]["page"] == 3 and hits[0]["corpus_run_id"] == "run-7"
+
+
+def test_weaviate_errors_reach_retrieval_status(monkeypatch):
+    class Reply:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"errors": [{"message": "class Rag_demo_v1 not found"}]}
+
+    import requests
+    monkeypatch.setattr(requests, "post", lambda url, **kw: Reply())
+    monkeypatch.setattr(retrieve_context, "BACKEND", "weaviate")
+    with pytest.raises(RuntimeError, match="not found"):
+        retrieve_context._search([1.0], 1, None, {"host": "h", "port": 1})

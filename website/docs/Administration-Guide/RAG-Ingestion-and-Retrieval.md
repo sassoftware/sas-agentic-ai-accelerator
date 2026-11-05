@@ -1026,7 +1026,7 @@ Python trusts); none of them has a control or reads an environment
 variable that switches that off. A prompt that *RAG - Enrich Chunks* runs
 is a manifested model with the default it was manifested with. The
 connection to the vector store is a database connection: its TLS is the
-*SSL mode* (PostgreSQL) or *TLS* (SingleStore) control of the steps that
+*SSL mode* (PostgreSQL) or *TLS* (SingleStore, Weaviate) control of the steps that
 connect to it, and for the registered model the *SSL mode* of this step.
 
 The step and `rag_core` reach a site with the transfer package, or from a checkout with `deploy-rag-content`. The step
@@ -1176,7 +1176,7 @@ vector store from one of two places:
 
 | From | Names |
 | --- | --- |
-| Environment variables of the runtime the Python runs in | `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — `PGVECTOR_RAG_USER` and `PGVECTOR_RAG_PW` for pgvector, `SINGLESTORE_RAG_USER` and `SINGLESTORE_RAG_PW` for SingleStore |
+| Environment variables of the runtime the Python runs in | `<BACKEND>_RAG_USER` and `<BACKEND>_RAG_PW` — `PGVECTOR_RAG_USER` and `PGVECTOR_RAG_PW` for pgvector, `SINGLESTORE_RAG_USER` and `SINGLESTORE_RAG_PW` for SingleStore, `WEAVIATE_RAG_USER` and `WEAVIATE_RAG_PW` (the API key) for Weaviate |
 | The `options` input of the call, a JSON object | `user` and `password` — for a caller that manages its own secrets; a decision should not store them |
 
 Host, port, database and SSL mode of the store, the embedding endpoint and
@@ -1210,7 +1210,8 @@ manifests the deployment is applied from. Not measured: the same variables
 for the test of SAS Intelligent Decisioning, where it was not established
 where they have to be set, and for a SAS Container Runtime container. The
 Python packages the model imports have to be there too: `requests`, and
-`psycopg2` or `singlestoredb` for the store.
+`psycopg2` or `singlestoredb` for the store (nothing more for Weaviate, which
+the model queries over GraphQL with `requests`).
 
 **What was measured, on 2026-10-11 on SAS Viya 2026.09.** One decision with
 three model nodes, all manifested in the Prompt Builder — the retrieval
@@ -1652,6 +1653,7 @@ The compute context's Python needs:
 | `requests`, `pandas`, `swat` | Always |
 | `psycopg2-binary` | The pgvector backend |
 | `singlestoredb` | The SingleStore backend (already present on many builds) |
+| — | The Weaviate backend needs nothing more: it is reached over HTTP with `requests` |
 | `pypdfium2` | PDF text extraction |
 | `markitdown` | `.docx`, `.xlsx`, `.pptx`, `.epub`, `.rtf`, `.msg` |
 
@@ -1667,16 +1669,68 @@ are listed as skipped with the reason, never dropped silently.
 
 ## Choosing a vector store
 
-Both backends carry the same feature set: chunk history, as-of reads,
-rollback, the portable filter grammar and the governance DDL.
+All three backends carry the same chunk feature set: chunk history, as-of
+reads, rollback, the portable filter grammar and the governance DDL. Weaviate
+keeps no [run history](#run-history).
 
-| | pgvector | SingleStore |
-| --- | --- | --- |
-| Live-row marker | `valid_to IS NULL` | sentinel `9999-12-31` |
-| Cosine | native `<=>` | normalized vectors, dot product |
-| ANN index | HNSW, **on by default** | **opt-in** — see below |
-| Index covers only live rows | yes (partial index) | no |
-| Cutover | transactional rename | rename, not transactional |
+| | pgvector | SingleStore | Weaviate (1.33 or newer) |
+| --- | --- | --- | --- |
+| Live-row marker | `valid_to IS NULL` | sentinel `9999-12-31` | `valid_to` IsNull |
+| Cosine | native `<=>` | normalized vectors, dot product | native `cosine` distance |
+| ANN index | HNSW, **on by default** | **opt-in** — see below | HNSW, on |
+| Index covers only live rows | yes (partial index) | no | no |
+| Cutover | transactional rename | rename, not transactional | collection alias, atomic |
+| Retire | one `UPDATE` | one `UPDATE` | copy, then delete — not transactional |
+| Governance DDL | `vector-store-ddl.sql` | `vector-store-ddl.sql` | `vector-store-ddl.json` (create-collection request) |
+| Run history (`rag_runs`, …) | yes | yes | **no** |
+| Driver | `psycopg2-binary` | `singlestoredb` | none (`requests`) |
+
+### Weaviate
+
+The adapter talks to Weaviate's REST and GraphQL API and checks the server
+version when it connects: a server older than 1.33, where collection aliases
+became generally available, is refused with a message that says so.
+
+- **Connection.** *Database name* is not used — Weaviate has no databases —
+  but the steps still require a value; any value will do. The password of the
+  credential (`WEAVIATE_RAG_PW`) is the Weaviate API key, sent as a bearer
+  token; `WEAVIATE_RAG_USER` names the user the key belongs to. TLS follows the
+  *TLS* control (or *SSL mode* `disable`): disabled means plain HTTP, anything
+  else HTTPS, with certificates verified against `RAGSTORE_CABUNDLE` (default
+  `/security/trustedcerts.pem`). The port defaults to 8080.
+- **Names.** Weaviate capitalises a collection name: `rag_hr_policies_v1` is
+  stored as `Rag_hr_policies_v1`. Readers of the store see that name.
+- **Tags.** Each tag is also stored as a property of its own, `tag_<name>`,
+  because Weaviate cannot filter inside JSON text. An Enrich output may
+  therefore not be called `tag_…` on Weaviate. A filter on a tag that no chunk
+  carries matches nothing, as on the SQL stores.
+- **Retire is not transactional.** A live chunk sits at an id derived from its
+  `chunk_id`; retiring it writes a retired copy first and deletes the live
+  object second. A failure in between leaves a duplicate — never a lost chunk,
+  and retrieval never sees the copy. The next run (or the same call again)
+  completes it.
+- **Auto-schema.** The adapter declares every property before it writes it,
+  so it behaves the same whether the server's `AUTOSCHEMA_ENABLED` is on or
+  off; off is recommended for a store that only the accelerator writes.
+- **Hybrid search** is not available yet on any backend. The Weaviate
+  collections are created with `content` and `context_header` BM25-indexed,
+  so hybrid retrieval can be added later without re-ingesting.
+
+The adapter is tested against an in-memory stand-in of the API
+(`tests/test_weaviate.py`); the live round trip in the same file runs when
+`WEAVIATE_HOST` is set. Measured live on 2026-10-28 against Weaviate 1.39.12
+(single node, API key, auto-schema off) on SAS Viya Stable 2026.10: the live
+round trip passed (it found that GraphQL takes a list under `valueText`, not
+`valueTextArray`, now fixed), and `Ingest-Documents.sas` as a job in the
+*SAS Studio compute context* ingested three Markdown documents from a SAS
+Content folder through an EmbeddingGemma embedding container (768
+dimensions), skipped them unchanged on the next run, and retired and replaced
+them after a change; `Test-Retrieval.sas` returned the expected document at
+rank 1 for three questions and only the new version after the change. The
+same runs passed again on 2026-11-05 on 2.4.5, with `storeDb` left blank.
+Not measured: the custom steps (they reconnect to CAS with `swat`, which has
+no build for that arm64 compute server), the retrieval model and the RAG
+Builder (which does not offer Weaviate yet).
 
 :::warning The SingleStore ANN index is opt-in for a reason
 Measured on a live cluster, an HNSW index there **loses rows**: the same query
@@ -1710,8 +1764,9 @@ If a purged document still exists at its source, the next ingestion run adds
 it again. Erasure has to happen at the source as well.
 :::
 
-On SingleStore, retention matters more than on pgvector: a vector index there
-cannot be limited to live rows, so retained history is index the search walks.
+On SingleStore and Weaviate, retention matters more than on pgvector: a vector
+index there cannot be limited to live rows, so retained history is index the
+search walks.
 
 **A preview only reads.** *RAG - Purge Documents* in its default mode,
 *Preview*, says what a purge would remove and ends its summary with
@@ -1751,7 +1806,11 @@ later run brings it back, as a second `new` event.
 ## Run history
 
 Each run is recorded in three tables **in the vector store's own database**,
-beside the chunks they describe:
+beside the chunks they describe. A Weaviate store has no SQL and keeps none of
+them: *RAG - Load Vector Store* and the ingestion job log *rag history: the
+weaviate store keeps no run history - nothing recorded or published* and leave
+`<project>_RUNS` and `<project>_DOC_EVENTS` as they are. The chunks keep their
+lineage there all the same.
 
 | Table | Contents |
 | --- | --- |
@@ -1985,7 +2044,7 @@ caslib holding it.
 **What is not encrypted by the accelerator.** Chunk text and embeddings sit in
 your vector store in the clear. Encryption at rest is the database's
 responsibility. TLS to the store is configurable per backend (`sslmode` for
-PostgreSQL, on/off for SingleStore) and defaults to enabled.
+PostgreSQL, on/off for SingleStore and Weaviate) and defaults to enabled.
 
 ## Troubleshooting
 
@@ -1997,6 +2056,9 @@ PostgreSQL, on/off for SingleStore) and defaults to enabled.
 | A saved flow reports a missing step | A step was re-registered instead of updated, minting a new id |
 | Code generation returns HTTP 500 | The `.flw` was uploaded as a file, or a node declares an input port nothing is wired into |
 | Retrieval returns fewer chunks than exist | A SingleStore ANN index is enabled — see the warning above |
+| The connection fails with *Weaviate … is older than 1.33* | The Weaviate server predates collection aliases; upgrade it — see [Weaviate](#weaviate) |
+| *rag history: the weaviate store keeps no run history* in the log | Expected: Weaviate keeps no run history; the load itself is unaffected — see [run history](#run-history) |
+| An Enrich output is refused with *names starting with tag_ hold the chunk tags there* | On Weaviate the `tag_` prefix is reserved for the tags — rename the output — see [Weaviate](#weaviate) |
 | The run refuses to start | Another run holds the ledger lock; it expires after 30 minutes |
 | *RAG - List Documents* fails with *the run lock could not be written to … - refusing to ingest unguarded*, below `ERROR: The variable doc_id has been specified with incompatible data types` | The flow runs on a ledger the ingestion job wrote, with steps from before release 2.3.0 (or the job on a ledger a flow wrote) — see [one ledger for the job and the flow](#one-ledger-for-the-job-and-the-flow) |
 | *RAG - Register Setup* fails with `POST /modelRepository/projects returned 400` and *You must specify a value for the "folderId" parameter* | The SAS Model Manager project named in the step does not exist, and the `rag_core` on the site is from before release 2.3.0. Import the package of the release or run `deploy-rag-content`, or create the project in SAS Model Manager first — see [the checkbox of the custom step](#tls-register-setup-step) |

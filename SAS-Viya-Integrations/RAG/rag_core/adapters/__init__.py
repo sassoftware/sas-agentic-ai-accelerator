@@ -17,6 +17,8 @@ REGISTRY = {
                  "psycopg2-binary"),
     "singlestore": (".singlestore", "SingleStoreAdapter", "SingleStore",
                     "singlestoredb"),
+    # REST and GraphQL over requests, which the compute Python already has
+    "weaviate": (".weaviate", "WeaviateAdapter", "Weaviate", "requests"),
 }
 
 
