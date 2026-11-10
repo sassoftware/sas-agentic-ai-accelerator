@@ -17,7 +17,7 @@ Weaviate (1.33 or newer) is a third vector store for RAG.
 
 ### Fixed
 
-- **mdb runs with typer 0.29.** typer 0.29.0 (2026-11-09) gives a parameter an annotation instead of click's type, and every mdb command ended with `AttributeError: 'TyperArgument' object has no attribute 'type'`. mdb now reads either.
+- **mdb runs with typer 0.29.** typer 0.29.0 (2026-11-09) gives a parameter an annotation instead of click's type, and every mdb command ended with `AttributeError: 'TyperArgument' object has no attribute 'type'`. mdb now reads either, and requires `typer<0.30`: a newer typer comes in when the tests pass on it. A maintainer checks for one once a month.
 
 ## [2.4.5] - 2026-11-05
 
