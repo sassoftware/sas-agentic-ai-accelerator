@@ -642,6 +642,7 @@ The report stores a switch as the word `true` or `false`. Up to release 2.2 **En
 | RAG: save the chunk table to disk | `persistChunks` | `1` | The same for `<prefix>_CHUNKS`; in the generated flow it reaches the enrichment step only so far. The ledger and the embedded chunks are always saved. |
 | RAG: offer pgvector (PostgreSQL) | `enable_pgvector` | on | A checkbox per vector database: whether users may choose it for a new setup. A setup that already uses a withheld database keeps it and says so. |
 | RAG: offer SingleStore | `enable_singlestore` | on | As above. |
+| RAG: offer Weaviate | `enable_weaviate` | on | As above. |
 
 :::note Two compute contexts, two options
 `computeContext` is the context of the **optimization** job and `ragComputeContext` the context of the **RAG ingestion**; neither is ever read for the other. Both have to run as the requesting user: the stock *SAS Job Execution compute context* runs its servers as a service account, where an ingestion cannot reuse its CAS session (see [the two prerequisites](./RAG-Ingestion-and-Retrieval.md#two-prerequisites-that-are-not-optional)) and the optimization job ends before its first model call (see [Enabling Prompt Optimization](./Enabling-Prompt-Optimization.md#1-prepare-the-compute-context)). They are two options because a site may give each job a context of its own, with the Python packages that job needs. Before release 2.3.0 the RAG Builder's own report called its context `computeContext` too; `mdb options-save` renames it when it carries that report's options over.

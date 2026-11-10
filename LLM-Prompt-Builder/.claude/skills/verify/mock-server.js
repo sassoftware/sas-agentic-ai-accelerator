@@ -1346,10 +1346,12 @@ http
         });
       }
       // A second domain with a key for every provider of the fixtures and the
-      // entries of both vector stores, so a suite that needs all three LLMs
-      // selectable, or SingleStore reachable, opens the app with
-      // credentialDomain=all-keys. SingleStore carries no port: the store's
-      // default applies.
+      // entries of every vector store, so a suite that needs all three LLMs
+      // selectable, or SingleStore or Weaviate reachable, opens the app with
+      // credentialDomain=all-keys. SingleStore and Weaviate carry no port: the
+      // store's default applies. Weaviate has no database and no WEAVIATE_DB;
+      // RAGSTORE_DB is the unprefixed fallback a lookup would land on, and a
+      // Weaviate setup must not take it.
       if (p === '/credentials/domains/all-keys/secrets') {
         return json(res, 200, {
           domainId: 'all-keys',
@@ -1359,6 +1361,9 @@ http
             ...pgvectorEntries,
             SINGLESTORE_RAG_USER: 'rag_ingest', SINGLESTORE_RAG_PW: 'mock-s2-pw',
             SINGLESTORE_HOST: 's2.mock.local', SINGLESTORE_DB: 'ragdb_legacy',
+            WEAVIATE_RAG_USER: 'rag', WEAVIATE_RAG_PW: 'mock-weaviate-key',
+            WEAVIATE_HOST: 'weaviate.mock.local',
+            RAGSTORE_DB: 'not_a_weaviate_database',
           }),
         });
       }

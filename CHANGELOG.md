@@ -4,6 +4,10 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
+### Added
+
+- **The RAG Builder offers Weaviate.** A Weaviate setup takes `WEAVIATE_RAG_USER`/`_PW`, `WEAVIATE_HOST` and `WEAVIATE_PORT` from the credential domain and needs no database. The ingestion job, the Studio flow and the retrieval model it manifests are set up for Weaviate. The new option *RAG: offer Weaviate* (`enable_weaviate`) withholds it.
+
 ## [2.5.0] - 2026-11-10
 
 Weaviate (1.33 or newer) is a third vector store for RAG, and mdb runs again with typer 0.29, with which every mdb command failed.
