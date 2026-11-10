@@ -108,6 +108,19 @@ Analytics' own load of the object) - the header of the file has the details.
 What no stand-in shows is the Options pane itself: a change to the options
 group still needs a look in a real report.
 
+### A slow suite in parts
+
+`VERIFY_SHARD=i/n` runs part `i` (0-based) of `n` of `verify-new-item`,
+`verify-outcomes` or `verify-reads`, so the parts can run side by side, each
+against a mock of its own (`MOCK_PORT`, `VERIFY_BASE`). `run-all.cjs` does not
+split; a runner that does starts one mock per part. `outsideShard` in
+`page-waits.js` decides: `verify-outcomes` and `verify-reads` take every
+`n`-th road; `verify-new-item` takes whole blocks (templates, RAG setups,
+optimizations), because its roads read what earlier roads of their block left,
+and every part also runs the three references. The parts hold every check of
+the whole suite. `verify-round-trip` is not split: its last check adds up
+what all of its roads wrote.
+
 ## By hand
 
 1. Copy `mock-server.js`, the suites, `source-census.js`, `page-waits.js`,

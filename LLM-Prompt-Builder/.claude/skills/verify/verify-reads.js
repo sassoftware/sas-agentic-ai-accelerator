@@ -78,7 +78,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, outsideShard } = require('./page-waits.cjs');
 const fs = require('fs');
 const path = require('path');
 const { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson } = require('./source-census.cjs');
@@ -880,6 +880,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
     return page;
   };
   const road = async (name, run) => {
+    if (outsideShard(name)) return;
     console.log(`---- ${name}`);
     pageErrors = [];
     const page = await newPage();
