@@ -74,7 +74,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate, outsideShard } = require('./page-waits.cjs');
 const { parse, walk, callsInSource, sourceFiles } = require('./source-census.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
@@ -404,6 +404,7 @@ function writesCensus() {
     return page;
   };
   const road = async (name, run, options) => {
+    if (outsideShard(name)) return;
     console.log(`---- ${name}`);
     pageErrors = [];
     const page = await newPage(options);

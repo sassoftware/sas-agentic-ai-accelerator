@@ -78,7 +78,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet, dialogShown, dialogsGone, gate, chooseFolder } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, dialogShown, dialogsGone, gate, chooseFolder, outsideShard } = require('./page-waits.cjs');
 
 const BASE = (process.env.VERIFY_BASE || 'http://localhost:4173').replace(/\/+$/, '');
 const results = [];
@@ -345,7 +345,12 @@ function same(got, wanted, label, fieldsOnly = false) {
     return page;
   };
   // Each road starts on a page of its own, as a person who opens the report.
+  // VERIFY_SHARD splits this suite by block, not by road: the roads of a block read what earlier roads of the same
+  // block left (the fields left alone, the existing items), and the reference of a kind is what the later roads
+  // of that kind compare with, so every part takes the references.
+  let block = 0;
   const road = async (name, run) => {
+    if (outsideShard(name, { always: name.includes(': the reference - '), block })) return;
     console.log(`---- ${name}`);
     const page = await newPage();
     try {
@@ -1015,6 +1020,7 @@ function same(got, wanted, label, fieldsOnly = false) {
   // ============================================================================
   // RAG setups (the RAG Builder, RGB)
   // ============================================================================
+  block = 1;
   const rgb = (suffix) => `#app-obj-RGB-${suffix}`;
   const ragState = async () => (await fetch(BASE + '/__ragstate')).json();
   const openRagBuilder = async (page) => {
@@ -1550,6 +1556,7 @@ function same(got, wanted, label, fieldsOnly = false) {
   // optimization tracker then stands, and every later job is found finished
   // on its first poll.
   // ============================================================================
+  block = 2;
   // What the Optimize step says about a job.
   const optimizeRun = async (page) => ({
     log: await page.isVisible(lpb('optimize-log')),

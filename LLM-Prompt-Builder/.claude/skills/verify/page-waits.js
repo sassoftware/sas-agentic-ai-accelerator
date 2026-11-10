@@ -178,4 +178,21 @@ async function chooseFolder(page, folder, prefix = '#app-obj-RGB-source', timeou
   await page.waitForSelector(dialog, { state: 'detached', timeout });
 }
 
-module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate, chooseFolder };
+/**
+ * VERIFY_SHARD=i/n runs every n-th road of a suite, starting at road i (0-based), so the parts of a slow suite can
+ * run side by side, each with a mock of its own (MOCK_PORT, VERIFY_BASE). Round-robin rather than in blocks: the
+ * slow roads of a suite sit together, and every part gets some of them. Unset, every road runs. A road that later
+ * roads read from (`always`, such as the reference of verify-new-item) runs in every part and is not counted. A
+ * suite whose roads read what earlier roads of the same block left passes `block`: whole blocks go to the parts.
+ */
+const SHARD = /^(\d+)\/(\d+)$/.exec(process.env.VERIFY_SHARD || '');
+let roadsSeen = 0;
+function outsideShard(name, { always = false, block } = {}) {
+  if (always) return false;
+  const index = block === undefined ? roadsSeen++ : block;
+  if (!SHARD || index % Number(SHARD[2]) === Number(SHARD[1])) return false;
+  console.log(`---- ${name}: in another part (VERIFY_SHARD ${SHARD[0]})`);
+  return true;
+}
+
+module.exports = { trackRequests, trackPagesOf, quiet, dialogShown, clickInDialog, dialogsGone, gate, chooseFolder, outsideShard };

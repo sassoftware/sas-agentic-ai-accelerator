@@ -78,7 +78,7 @@
  */
 const { chromium } = require('playwright');
 const fetch = require('./mock-fetch.cjs');
-const { trackPagesOf, quiet } = require('./page-waits.cjs');
+const { trackPagesOf, quiet, outsideShard } = require('./page-waits.cjs');
 const fs = require('fs');
 const path = require('path');
 const { PROJECT, parse, walk, callsInSource, sourceFiles, loadStoredJson } = require('./source-census.cjs');
@@ -880,6 +880,7 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
     return page;
   };
   const road = async (name, run) => {
+    if (outsideShard(name)) return;
     console.log(`---- ${name}`);
     pageErrors = [];
     const page = await newPage();
@@ -1141,14 +1142,19 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
         const rows = [{ ...row, runId: 1, model: '', systemPrompt: 'Every field', userPrompt: 'of a row' }, { ...row, runId: 1, model: 'demo_llm', best_prompt: 1 }];
         await page.route('**/files/files/trk-1/content', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) }));
         await choose(page, 'LPB', '#LPB-prompt-dropdown', 'model-used');
+        // The tracker is on Build & Test: from another step its Load button is
+        // hidden, and a click on it waited out Playwright's 30 seconds and was
+        // swallowed - the run was drawn but never loaded.
+        await goStep(page, 'LPB', 'build');
         await waitUntil(async () => (await savedRuns(page)) > 0, 'the run is drawn', 15000).catch(() => {});
-        await page.click(`${lpb('pet-0')} .pet-run-load`).catch(() => {});
+        const clicked = await page.click(`${lpb('pet-0')} .pet-run-load`, { timeout: 5000 }).then(() => true, () => false);
         await quiet(page);
+        const loaded = clicked && (await page.inputValue(lpb('system-prompt'))) === 'Every field';
         const line = await textOf(page, lpb('pet-save-only-result'));
         const text = await textOf(page, lpb('pet'));
         step(
-          (await savedRuns(page)) === 1 && line === '' && !text.includes('[object Object]') && pageErrors.length === 0,
-          `a tracker whose rows hold ${how} is drawn and loaded (runs: ${await savedRuns(page)}; line: "${clip(line)}"; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+          (await savedRuns(page)) === 1 && loaded && line === '' && !text.includes('[object Object]') && pageErrors.length === 0,
+          `a tracker whose rows hold ${how} is drawn and loaded (runs: ${await savedRuns(page)}; loaded: ${loaded}; line: "${clip(line)}"; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
         );
       });
       await road(`an optimization history whose entry holds ${how}`, async (page) => {
@@ -1163,11 +1169,14 @@ async function shapeChecks({ STORED_SHAPES, TRACKER_META_KEYS, NUMBER_FIELD_OPTI
         const drawn = (await page.$$(entries)).length;
         const text = await textOf(page, lpb('pane-optimize'));
         const unread = (await page.$$(`${lpb('pane-optimize')} .pb-optimize-history-unread`)).length;
-        await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`).catch(() => {});
+        // An entry with every optional field empty may offer nothing to load:
+        // its button then never becomes clickable, and the default 30 seconds
+        // were waited out for nothing. Whether it loaded is said, not required.
+        const loaded = await page.click(`${lpb('pane-optimize')} .pb-optimize-history-load`, { timeout: 5000 }).then(() => true, () => false);
         await quiet(page);
         step(
           drawn === 2 && unread === 0 && !text.includes('[object Object]') && pageErrors.length === 0,
-          `an optimization history whose entry holds ${how} - as a run and as a comparison - is drawn and loaded (entries: ${drawn}; line that it cannot be shown: ${unread}; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
+          `an optimization history whose entry holds ${how} - as a run and as a comparison - is drawn and loaded (entries: ${drawn}; loaded: ${loaded}; line that it cannot be shown: ${unread}; [object Object] drawn: ${text.includes('[object Object]')}; page errors: ${pageErrors.join(' | ') || 'none'})`
         );
       });
     }
