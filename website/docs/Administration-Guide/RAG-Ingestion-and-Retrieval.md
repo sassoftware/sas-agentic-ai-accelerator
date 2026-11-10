@@ -1744,7 +1744,9 @@ Weaviate property and the context header; Retrieve Context returned the
 expected document first; Purge Documents removed a document's chunks; Register
 Setup registered the retrieval model and generated the scheduled job from a
 SAS Studio flow, and that job ingested a change. The registered retrieval
-model answered in a compute session in 0.2 to 0.5 seconds per question.
+model answered in a compute session in 0.2 to 0.5 seconds per question, and
+in SAS Micro Analytic Service in 0.06 to 0.12 seconds, with the credentials
+passed in its `options`.
 
 :::warning The SingleStore ANN index is opt-in for a reason
 Measured on a live cluster, an HNSW index there **loses rows**: the same query
