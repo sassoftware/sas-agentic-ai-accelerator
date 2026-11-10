@@ -4,7 +4,17 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
-Weaviate (1.33 or newer) is a third vector store for RAG.
+## [2.5.0] - 2026-11-10
+
+Weaviate (1.33 or newer) is a third vector store for RAG, and mdb runs again with typer 0.29, with which every mdb command failed.
+
+### Upgrading from 2.4.5
+
+Steps 1 and 2 are for every site; step 3 only where it applies.
+
+1. Update the checkout to 2.5.0 and reinstall the CLI: `pip install -e "Model-Definition-Builder/cli[viya]"`. The fix comes with the checkout; the reinstall brings the bound `typer<0.30`.
+2. `mdb builders-import` and reload the Prompt Builder report, then run `mdb check`. The import brings the RAG steps, `rag_core` and the ingestion job with Weaviate, and the release stamp of 2.5.0; `mdb check` writes the page of the release back into *Start Here*.
+3. Only where RAG should store its chunks in Weaviate: add `WEAVIATE_RAG_USER` and `WEAVIATE_RAG_PW` (the API key) to the credentials, as for the other stores ([Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials)), and choose Weaviate under *Runtime* in the RAG steps ([Weaviate](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/RAG-Ingestion-and-Retrieval#weaviate)).
 
 ### Added
 
