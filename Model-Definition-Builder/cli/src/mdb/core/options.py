@@ -144,7 +144,7 @@ MERGED_REPORT_LABELS = (
     RAG_SWITCH, "embeddingProjectID", "contentRoot", "casServer", "ragComputeContext",
     "ragServerFolder", "ragServerBrowseAbove", "ragContentFolder", "ragContentBrowseAbove",
     "storeSslmode", "deletedPolicy", "retainDays", "recordHistory", "embedReplicas",
-    "persistElements", "persistChunks", "enable_pgvector", "enable_singlestore",
+    "persistElements", "persistChunks", "enable_pgvector", "enable_singlestore", "enable_weaviate",
 )
 
 #: Options that are never carried between deployments. A report id or a

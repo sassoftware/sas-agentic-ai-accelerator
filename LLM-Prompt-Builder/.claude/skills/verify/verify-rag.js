@@ -513,7 +513,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
     await goRagStep(page, 'store');
     assert((await value(page, 'backend')) === '', 'a new setup preselects no vector database');
     const backends = await page.$$eval(`${rgb('backend')} option`, (els) => els.map((o) => `${o.value}${o.disabled ? '(disabled)' : ''}`).join(','));
-    assert(backends === ',pgvector,singlestore(disabled)', `the offered stores are listed, one this user holds no credential for disabled (got: ${backends})`);
+    assert(backends === ',pgvector,singlestore(disabled),weaviate(disabled)', `the offered stores are listed, those this user holds no credential for disabled (got: ${backends})`);
     assert((await optionValues(page, 'tables-caslib')).join(',') === ',Public', 'the caslib picker leaves the personal caslib out');
     await resetLog();
     await page.click(rgb('save'));
@@ -1270,16 +1270,16 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
   await section('withheld', async (page) => {
     const backendOptions = () =>
       page.$$eval(`${rgb('backend')} option`, (els) => els.map((o) => `${o.value}${o.dataset.unlisted ? '(kept)' : ''}${o.disabled ? '(disabled)' : ''}`).join(','));
-    // all-keys holds the entries of both stores; SingleStore is switched off.
+    // all-keys holds the entries of every store; SingleStore is switched off.
     await openRag(page, `${APP_URL}&credentialDomain=all-keys&enable_singlestore=0`);
     await selectRagProject(page, 'rag-proj');
     await openSetup(page, 'rag-setup-2', async () => (await page.inputValue(rgb('setup-doc-modelPurpose'))) !== '', 'a setup that was never saved opens with its documentation');
-    assert((await backendOptions()) === ',pgvector', `a withheld vector database is not offered (got: ${await backendOptions()})`);
+    assert((await backendOptions()) === ',pgvector,weaviate', `a withheld vector database is not offered (got: ${await backendOptions()})`);
     assert((await value(page, 'backend')) === '', 'a setup that was never saved selects no vector database');
 
     await openSetup(page, 'rag-setup-ss', async () => (await value(page, 'collection')) === 'legacy_manuals', 'the setup on the withheld database opens');
     assert((await value(page, 'backend')) === 'singlestore', 'it keeps naming its vector database');
-    assert((await backendOptions()) === ',singlestore(kept),pgvector', `the database is listed for this setup, marked, below the placeholder (got: ${await backendOptions()})`);
+    assert((await backendOptions()) === ',singlestore(kept),pgvector,weaviate', `the database is listed for this setup, marked, below the placeholder (got: ${await backendOptions()})`);
     const keptLabel = await page.$eval(`${rgb('backend')} option[data-unlisted]`, (option) => option.textContent);
     assert(keptLabel.startsWith('SingleStore — ') && keptLabel.length > 'SingleStore — '.length, `the option says by name that the database is no longer offered (got: ${keptLabel})`);
     await goRagStep(page, 'run');
@@ -1312,7 +1312,7 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
 
     await goRagStep(page, 'setup');
     await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'another setup opens');
-    assert((await value(page, 'backend')) === 'pgvector' && (await backendOptions()) === ',pgvector', `the kept database is gone from the list again (got: ${await backendOptions()})`);
+    assert((await value(page, 'backend')) === 'pgvector' && (await backendOptions()) === ',pgvector,weaviate', `the kept database is gone from the list again (got: ${await backendOptions()})`);
     assert((await page.$$('#app-obj-RGB option[data-unlisted]')).length === 0, 'no picker carries a leftover of the setup shown before');
 
     // The same setup for a user whose credential domain does not hold that store.
@@ -2191,6 +2191,54 @@ const EDITOR = `${rgb('pane-setup')} .pb-doc-section`;
       endpointOf.model === `${BASE}/llm` && endpointOf.job === endpointOf.model && endpointOf.flow === endpointOf.model,
       `without the SCR endpoint option the job, the Studio flow and the retrieval model are all given <SAS Viya host>/llm (model: ${endpointOf.model}, job: ${endpointOf.job || 'blank'}, flow: ${endpointOf.flow || 'blank'})`
     );
+  });
+
+  // ---- weaviate: a store without databases ----------------------------------------
+  // Last, because it moves rag-setup-1 to another store. all-keys holds
+  // WEAVIATE_RAG_USER/_PW and WEAVIATE_HOST, no WEAVIATE_PORT and no
+  // WEAVIATE_DB - and a RAGSTORE_DB a lookup would fall back to.
+  await section('weaviate', async (page) => {
+    await serveTemplate({});
+    await openRag(page, `${APP_URL}&credentialDomain=all-keys`);
+    await selectRagProject(page, 'rag-proj');
+    await openSetup(page, 'rag-setup-1', async () => (await value(page, 'collection')) === 'policy_handbook', 'a saved setup opens');
+    await goRagStep(page, 'store');
+    await page.selectOption(rgb('backend'), 'weaviate');
+    const warnings = await page.$$eval(`${rgb('pane-store')} p.text-danger`, (els) => els.map((e) => e.textContent.trim()).filter(Boolean));
+    assert(warnings.length === 0, `Weaviate counts as configured without a database entry (got: ${warnings.join(' | ') || 'no warning'})`);
+    await resetLog();
+    await page.click(rgb('save'));
+    await page.waitForSelector(`${rgb('save-result')} .alert-success`);
+    let log = await getLog();
+    const saved = JSON.parse(multipartFile(lastUpload(log, 'rag-setup-1', 'rag-setup.json').body));
+    assert(
+      saved.store.backend === 'weaviate' && saved.store.host === 'weaviate.mock.local' && saved.store.port === 8080 && saved.store.database === 'weaviate',
+      `the setup is saved on Weaviate: its host, its default port 8080, and its name where a database goes - not RAGSTORE_DB (got: ${JSON.stringify(saved.store)})`
+    );
+    const tags = log.filter((e) => e.method === 'PUT' && e.url === '/modelRepository/models/rag-setup-1').map((e) => JSON.parse(e.body).tags).pop() || [];
+    assert(tags.includes('weaviate') && !tags.includes('pgvector'), `the setup is tagged with its store (got: ${tags.join(', ')})`);
+
+    await resetLog();
+    await page.click(rgb('manifest'));
+    await waitUntil(async () => (await getLog()).some((e) => e.method === 'POST' && e.url === '/modelRepository/models/rag-setup-1/modelVersions'), 'the manifest records a model version', 30000);
+    await waitUntil(async () => !(await page.isDisabled(rgb('manifest'))) && (await page.textContent(rgb('manifest'))).trim() === 'Manifest setup', 'the manifest has ended', 30000);
+    log = await getLog();
+    const definitionBody = log.filter((e) => ['POST', 'PUT'].includes(e.method) && e.url.startsWith('/jobDefinitions/definitions')).map((e) => JSON.parse(e.body)).pop();
+    const parameter = (name) => ((definitionBody?.parameters || []).find((entry) => entry.name === name) || {}).defaultValue;
+    assert(
+      parameter('backend') === 'weaviate' && parameter('storeHost') === 'weaviate.mock.local' && parameter('storePort') === '8080' && parameter('storeDb') === 'weaviate',
+      `the ingestion job is generated for Weaviate (got: backend=${parameter('backend')}, storeHost=${parameter('storeHost')}, storePort=${parameter('storePort')}, storeDb=${parameter('storeDb')})`
+    );
+    const flowPost = log.filter((e) => e.method === 'POST' && e.url.startsWith('/dataFlows/dataFlows?')).pop();
+    const load = flowPost ? Object.values(JSON.parse(flowPost.body).nodes).find((node) => node.name === 'RAG - Load Vector Store').arguments : {};
+    assert(
+      load._rgld_backend === 'weaviate' && load._rgld_storeHost === 'weaviate.mock.local' && load._rgld_storePort === '8080' && load._rgld_storeDb === 'weaviate' && load._rgld_storeSsl === 'require',
+      `the Load step of the Studio flow gets Weaviate, its port, the database value the step requires and TLS (got: ${JSON.stringify(load)})`
+    );
+    const scoreUpload = lastUpload(log, 'rag-setup-1', 'retrieve_context.py');
+    const codeLines = scoreUpload ? multipartFile(scoreUpload.body).split(/\r?\n/) : [];
+    const missing = ['BACKEND = "weaviate"', 'STORE_HOST = "weaviate.mock.local"', 'STORE_PORT = "8080"', 'STORE_DB = "weaviate"'].filter((line) => !codeLines.includes(line));
+    assert(missing.length === 0, `the retrieval model is manifested for Weaviate (missing: ${missing.join(' ; ') || 'none'})`);
   });
 
   // ---- every request to SAS Viya went through the HTTP client of the app -------

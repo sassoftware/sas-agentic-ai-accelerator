@@ -157,7 +157,7 @@ Example for a second instance: `MOCK_PORT=4174 node mock-server.cjs <dist>` and
 - `credentialDomain=all-keys` makes every LLM selectable and holds the entries
   of both vector stores; `credentialDomain=none` switches the lookup off for
   the prompt side and leaves the RAG card disabled with its reason.
-- `enable_pgvector=0` / `enable_singlestore=0` withhold a vector database.
+- `enable_pgvector=0` / `enable_singlestore=0` / `enable_weaviate=0` withhold a vector database.
 - `sslVerify=false` unticks "Verify TLS certificates in manifested models":
   the page behaves as before, and what it manifests from then on (a prompt
   template with the LLM call included, a decision template, a retrieval

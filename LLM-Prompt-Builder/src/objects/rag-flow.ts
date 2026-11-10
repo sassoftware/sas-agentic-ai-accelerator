@@ -18,6 +18,7 @@
 import type { RagEnrichStep, RagSetup } from '../types/rag';
 import type { StepPorts } from '../api/dataflows-api';
 import { renderMapping } from './rag-enrich';
+import { storeDatabase } from './rag-backends';
 
 /**
  * The enrichment chain of a setup, tolerant of the shape saved before it
@@ -140,10 +141,12 @@ export function ingestionChain(setup: RagSetup, corePath: string, scrEndpoint = 
       _rgld_collection: setup.store.collection,
       _rgld_storeHost: setup.store.host,
       _rgld_storePort: String(setup.store.port ?? ''),
-      _rgld_storeDb: setup.store.database,
+      // required by the step even where the store has no databases (Weaviate)
+      _rgld_storeDb: storeDatabase(setup.store.backend, setup.store.database),
       _rgld_storeSslmode: setup.store.sslmode,
       // The Load step reads a different control per backend: PostgreSQL has
-      // six sslmode values, the MySQL-protocol stores only encrypted-or-not.
+      // six sslmode values, the MySQL-protocol stores and Weaviate (HTTP or
+      // HTTPS) only encrypted-or-not.
       // Setting only the pgvector spelling left a SingleStore flow connecting
       // with TLS on however the deployment had chosen, and failing against a
       // store with no TLS listener with an error that named nothing about it.

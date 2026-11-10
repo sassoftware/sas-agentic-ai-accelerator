@@ -656,7 +656,7 @@
     "ragBuilderDocLimitationsInfo": "Known gaps: coverage, freshness, languages, document quality, anything the extractor or the chunker handles badly. Consumers inherit these whether or not they are written down.",
     "ragBuilderDocIntendedUse": "Intended use",
     "ragBuilderDocLimitations": "Limitations",
-    "ragBuilderBackendInfo": "Where the chunks and their vectors are stored. Both backends carry the same features, but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.",
+    "ragBuilderBackendInfo": "Where the chunks and their vectors are stored. The backends carry the same chunk features (Weaviate keeps no run history), but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.",
     "ragBuilderBackendPlaceholder": "Select a vector database…",
     "ragBuilderCaslibPlaceholder": "Select a caslib…",
     "ragBuilderChunkerInfo": "How a document is cut into retrievable pieces. Recursive splits on the largest natural boundary that fits the window (sections, then paragraphs, then sentences); paragraph keeps paragraphs whole and is better for short, well-structured documents.",

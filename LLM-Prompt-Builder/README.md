@@ -244,7 +244,7 @@ their labels prefixed with its name:
 | `recordHistory` | RAG: record run history | Checkbox, on by default. |
 | `embedReplicas` | RAG: embedding container replicas | What the ingestion sizes its parallel calls from (default `1`). |
 | `persistElements`, `persistChunks` | RAG: save the element table to disk, RAG: save the chunk table to disk | `1` (default) or `0`. |
-| `enable_pgvector`, `enable_singlestore` | RAG: offer pgvector (PostgreSQL), RAG: offer SingleStore | Checkboxes, on by default: which vector databases a new setup may choose. A stored setup on a database that is no longer offered still opens and keeps it. |
+| `enable_pgvector`, `enable_singlestore`, `enable_weaviate` | RAG: offer pgvector (PostgreSQL), RAG: offer SingleStore, RAG: offer Weaviate | Checkboxes, on by default: which vector databases a new setup may choose. A stored setup on a database that is no longer offered still opens and keeps it. |
 
 ### Everything-but-the-key: the VA properties panel
 

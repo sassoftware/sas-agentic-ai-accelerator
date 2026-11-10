@@ -653,7 +653,7 @@
     "ragBuilderDocLimitationsInfo": "Bekannte Lücken: Abdeckung, Aktualität, Sprachen, Dokumentqualität, alles, was Extraktor oder Chunker schlecht verarbeiten. Konsumenten erben diese, ob dokumentiert oder nicht.",
     "ragBuilderDocIntendedUse": "Vorgesehene Verwendung",
     "ragBuilderDocLimitations": "Einschränkungen",
-    "ragBuilderBackendInfo": "Wo die Chunks und ihre Vektoren gespeichert werden. Beide Backends bieten denselben Funktionsumfang, sind aber nach dem Aufbau nicht austauschbar — ein Wechsel bedeutet eine erneute Ingestion. Eine Datenbank, für die Sie keine Zugangsdaten besitzen, wird deaktiviert statt ausgeblendet, damit Sie sehen, dass es sie gibt, und Zugriff anfragen können.",
+    "ragBuilderBackendInfo": "Wo die Chunks und ihre Vektoren gespeichert werden. Die Backends bieten dieselben Chunk-Funktionen (Weaviate führt keine Laufhistorie), sind aber nach dem Aufbau nicht austauschbar — ein Wechsel bedeutet eine erneute Ingestion. Eine Datenbank, für die Sie keine Zugangsdaten besitzen, wird deaktiviert statt ausgeblendet, damit Sie sehen, dass es sie gibt, und Zugriff anfragen können.",
     "ragBuilderBackendPlaceholder": "Vektordatenbank auswählen …",
     "ragBuilderCaslibPlaceholder": "Caslib auswählen …",
     "ragBuilderChunkerInfo": "Wie ein Dokument in abrufbare Teile zerlegt wird. „Recursive“ trennt an der größten natürlichen Grenze, die in das Fenster passt (Abschnitte, dann Absätze, dann Sätze); „Paragraph“ hält Absätze zusammen und eignet sich besser für kurze, klar strukturierte Dokumente.",

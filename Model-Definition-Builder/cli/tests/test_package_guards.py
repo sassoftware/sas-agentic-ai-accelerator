@@ -1415,8 +1415,9 @@ def test_an_export_of_a_report_that_was_not_saved_with_the_current_ui_is_not_wri
     built.report(REPORT, unsaved)
     result, text, target, _ = exporting(built)
     assert result.exit_code == 1 and not target.exists()
-    assert f"  report '{REPORT}': the report lacks 8 option label(s): enableRag, ragComputeContext, ragServerFolder, " \
-           "ragServerBrowseAbove, ragContentFolder, ragContentBrowseAbove, enable_pgvector, enable_singlestore\n" in text
+    assert f"  report '{REPORT}': the report lacks 9 option label(s): enableRag, ragComputeContext, ragServerFolder, " \
+           "ragServerBrowseAbove, ragContentFolder, ragContentBrowseAbove, enable_pgvector, enable_singlestore, " \
+           "enable_weaviate\n" in text
     assert "is '" not in text                           # the defaults it holds were reset, and are no finding
     assert "Nothing was written: there is no SAS-Agentic-AI-Accelerator.json." in text
 

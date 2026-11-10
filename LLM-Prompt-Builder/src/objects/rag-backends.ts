@@ -11,8 +11,9 @@ import { optionFlag } from './rag-options';
  * rag_core.adapters.REGISTRY — a backend the runtime cannot load must never
  * be offered here.
  *
- * Adding a backend is adding a row: its Option field, its config default and
- * its place in the dropdown all follow.
+ * Adding a backend is adding a row: its Option field, its config default,
+ * its place in the dropdown, its default port and whether the setup needs a
+ * database all follow.
  */
 
 export interface RagBackend {
@@ -22,6 +23,13 @@ export interface RagBackend {
   label: string;
   /** Credential-domain entries a user needs to reach this store. */
   entries: string[];
+  /** The port when the credential domain names none (rag_core's default for the backend). */
+  defaultPort: number;
+  /**
+   * Whether the store has databases, so a setup needs a `<BACKEND>_DB` entry.
+   * Weaviate has none: its collections live in the server itself.
+   */
+  usesDatabase: boolean;
 }
 
 export const RAG_BACKENDS: ReadonlyArray<RagBackend> = [
@@ -29,13 +37,43 @@ export const RAG_BACKENDS: ReadonlyArray<RagBackend> = [
     key: 'pgvector',
     label: 'pgvector (PostgreSQL)',
     entries: ['PGVECTOR_RAG_USER', 'PGVECTOR_RAG_PW'],
+    defaultPort: 5432,
+    usesDatabase: true,
   },
   {
     key: 'singlestore',
     label: 'SingleStore',
     entries: ['SINGLESTORE_RAG_USER', 'SINGLESTORE_RAG_PW'],
+    defaultPort: 3306,
+    usesDatabase: true,
+  },
+  {
+    key: 'weaviate',
+    label: 'Weaviate',
+    // the password is the Weaviate API key; the user names its owner
+    entries: ['WEAVIATE_RAG_USER', 'WEAVIATE_RAG_PW'],
+    defaultPort: 8080,
+    usesDatabase: false,
   },
 ];
+
+/** The backend of this key, if the Builder knows it. */
+export function backendByKey(key: string): RagBackend | undefined {
+  return RAG_BACKENDS.find((backend) => backend.key === key);
+}
+
+/**
+ * What a setup records as the database of its store. The RAG steps require the
+ * field whatever the backend, and a flow with a required field left empty does
+ * not run in SAS Studio, so a store without databases gets its backend's name -
+ * a value nothing reads (rag_core's Weaviate adapter ignores it). Never the
+ * looked-up setting there: without a `WEAVIATE_DB` entry the lookup falls back
+ * to `RAGSTORE_DB`, the database of another store.
+ */
+export function storeDatabase(backendKey: string, database: string): string {
+  const backend = backendByKey(backendKey);
+  return backend && !backend.usesDatabase ? backend.key : database;
+}
 
 /** Config key carrying whether the deployment offers this backend. */
 export function backendOptionKey(backend: RagBackend): string {

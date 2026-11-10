@@ -51,7 +51,7 @@ import { UnansweredWrite, ViyaRefused } from '../api/http-client';
 import { getModelDependentDecisions } from '../api/relationships-api';
 import type { DependentDecision } from '../types/relationships';
 import { resolveDomainSecrets } from '../api/credentials-api';
-import { RAG_BACKENDS, backendEnabled, type RagBackend } from './rag-backends';
+import { RAG_BACKENDS, backendByKey, backendEnabled, storeDatabase, type RagBackend } from './rag-backends';
 import { optionFlag } from './rag-options';
 import { embeddingDimensions, embeddingTokenLimit } from './embedding-models';
 import { ensureFolderPath, getFolderByPath, getFolderMembers, listContentFolders } from '../api/folders-api';
@@ -1924,7 +1924,7 @@ export async function buildRagBuilder(
   // for new setups", "no credential"), and the closed dropdown has to show
   // the chosen one in full - in German too, in a narrow report object.
   labeled(storeRow, idOf('backend'), str('ragBuilderBackendLabel', 'Vector database:'), backendField, 'col-md-8',
-    str('ragBuilderBackendInfo', 'Where the chunks and their vectors are stored. Both backends carry the same features, but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.'), true);
+    str('ragBuilderBackendInfo', 'Where the chunks and their vectors are stored. The backends carry the same chunk features (Weaviate keeps no run history), but they are not interchangeable once built — moving a collection means re-ingesting it. A database you hold no credentials for is shown disabled rather than hidden, so you can see it exists and ask for access.'), true);
   if (!usable.length) {
     const warning = document.createElement('div');
     warning.className = 'alert alert-warning py-2 px-3 mt-2 mb-0';
@@ -1942,7 +1942,6 @@ export async function buildRagBuilder(
   // Builder resolves it instead of asking. Shown read-only so the setup is
   // still legible: a form that silently targets an unnamed database is worse
   // than one that asks.
-  const DEFAULT_PORTS: Record<string, number> = { pgvector: 5432, singlestore: 3306 };
   const storeSetting = (backend: string, setting: string): string => {
     const prefix = backend.toUpperCase();
     return String(heldEntries[`${prefix}_${setting}`] ?? heldEntries[`RAGSTORE_${setting}`] ?? '').trim();
@@ -1951,8 +1950,9 @@ export async function buildRagBuilder(
     const backend = backendField.value;
     return {
       host: storeSetting(backend, 'HOST'),
-      port: Number(storeSetting(backend, 'PORT')) || DEFAULT_PORTS[backend] || 5432,
-      database: storeSetting(backend, 'DB'),
+      port: Number(storeSetting(backend, 'PORT')) || backendByKey(backend)?.defaultPort || 5432,
+      // Weaviate has no databases: its name stands in (see storeDatabase)
+      database: storeDatabase(backend, storeSetting(backend, 'DB')),
     };
   };
   // The resolved connection is deliberately NOT shown. Hostnames and ports
