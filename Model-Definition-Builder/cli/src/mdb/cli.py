@@ -60,6 +60,19 @@ _NAMES_NO = {
 }
 
 
+def _takes_text(param) -> bool:
+    """Whether a parameter takes a text or a path: by click's type up to typer
+    0.28, by the annotation from typer 0.29 on, whose parameters have no
+    `type` - str, Path or a list of either."""
+    kind = getattr(param, "type", None)
+    if kind is not None:
+        return kind.name in ("text", "str", "path")
+    annotation = getattr(getattr(param, "type_descriptor", None), "annotation", None)
+    if getattr(annotation, "__origin__", None) is list:
+        annotation = annotation.__args__[0]
+    return annotation in (str, Path)
+
+
 def _refuse_empty_values(command, name: str) -> None:
     """Every parameter of a command - and of the commands of a group - that
     takes a text or a path, an option or an argument, refuses an empty value
@@ -75,7 +88,7 @@ def _refuse_empty_values(command, name: str) -> None:
     for param in getattr(command, "params", ()):
         option = " / ".join(word for word in param.opts if word.startswith("--")) or (
             param.metavar or param.name.upper())
-        if getattr(param, "is_flag", False) or param.type.name not in ("text", "str", "path") \
+        if getattr(param, "is_flag", False) or not _takes_text(param) \
                 or (name, option) in _TEXT_ITSELF or getattr(param, "_mdb_refuses_empty", False):
             continue
 

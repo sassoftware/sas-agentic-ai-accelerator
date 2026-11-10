@@ -15,6 +15,10 @@ Weaviate (1.33 or newer) is a third vector store for RAG.
 
 - **`mdb package-check`: a new manifest entry is drift.** A folder, file, step or job definition the manifest gains is a `drift:` line until the next export, so a pull request can add one without the package; `--release` still refuses it.
 
+### Fixed
+
+- **mdb runs with typer 0.29.** typer 0.29.0 (2026-11-09) gives a parameter an annotation instead of click's type, and every mdb command ended with `AttributeError: 'TyperArgument' object has no attribute 'type'`. mdb now reads either.
+
 ## [2.4.5] - 2026-11-05
 
 `mdb check` honours `SAS_VIYA_VERIFY_SSL=false` from the environment of mdb in its compute session, and no longer reports the jobs' TLS verification as missing.
