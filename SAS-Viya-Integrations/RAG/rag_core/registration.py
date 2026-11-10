@@ -575,6 +575,14 @@ def scheduled_job_code(flow_code: str) -> str:
     return JOB_PROLOGUE + flow_code.rstrip("\r\n") + "\n" + JOB_EPILOGUE
 
 
+def ddl_artifact_name(backend: str) -> str:
+    """The file the collection's DDL is stored as: SQL for the SQL stores,
+    the create-collection JSON for Weaviate, which has no SQL."""
+    if str(backend or "").strip().lower() == "weaviate":
+        return "vector-store-ddl.json"
+    return "vector-store-ddl.sql"
+
+
 def register_setup(client: ViyaClient, settings: dict, template: str,
                    ledger_rows: list, content_root: str, setup_name: str,
                    mm_project: str = "RAG Engineering", ddl: str = "",
@@ -639,8 +647,9 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
         "collection-manifest.json": collection_manifest(
             dict(settings, setup=setup_name), ddl),
     }
+    ddl_name = ddl_artifact_name(settings.get("BACKEND"))
     if ddl:
-        artifacts["vector-store-ddl.sql"] = ddl
+        artifacts[ddl_name] = ddl
 
     folder = f"{content_root.rstrip('/')}/generated/{setup_name}"
     folder_id = client.folder_id(folder, create=True)
@@ -723,7 +732,7 @@ def register_setup(client: ViyaClient, settings: dict, template: str,
         log("TLS certificate verification in the stored score code: "
             + ("on" if ssl_verify else "OFF"))
         for name in ("pipeline.yaml", "ingestion-manifest.json",
-                     "collection-manifest.json", "vector-store-ddl.sql"):
+                     "collection-manifest.json", ddl_name):
             if name in artifacts:
                 client.put_model_content(model_id, name, artifacts[name])
         log(f"model {model_name} registered in {mm_project} ({model_id})")

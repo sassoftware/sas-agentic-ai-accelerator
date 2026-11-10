@@ -29,6 +29,7 @@
  *   topK             How many chunks to return (default 5)
  *   collection       REQUIRED. The collection to search
  *   backend / storeHost / storePort / storeDb / storeSslmode
+ *                    (storeDb is not used by weaviate - leave it blank)
  *   credentialDomain / scrEndpoint / embedModel / deploymentType
  *   ragCorePath      SAS Content folder holding rag_core
  *
@@ -175,7 +176,9 @@ def main():
         from rag_core.scr import EmbeddingClient
         from rag_core.steps import run_retrieve
 
-        for required in ("question", "collection", "storeHost", "storeDb"):
+        # Weaviate has no database name: storeDb is required for the SQL backends only
+        sql_backend = P["backend"].strip().lower() != "weaviate"
+        for required in ("question", "collection", "storeHost") + (("storeDb",) if sql_backend else ()):
             if not P[required]:
                 raise RuntimeError(f"required parameter {required} is missing")
 

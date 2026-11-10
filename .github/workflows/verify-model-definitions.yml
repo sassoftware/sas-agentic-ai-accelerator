@@ -40,8 +40,9 @@ name: Verify generated model definitions
 # starting with "drift:" and does not fail - a contributor has no access to
 # the system the package is exported from. What a package must never be still
 # fails there: an object outside the manifest, a rule, a share, a host, a
-# per-user state, a report default that is not neutral, a missing entry, a
-# user id. A release is tagged with its version, and on a tag the gate is
+# per-user state, a report default that is not neutral, a missing report or
+# decision, a user id (a folder, file, step or job definition added to the
+# manifest since the export is drift). A release is tagged with its version, and on a tag the gate is
 # `mdb package-check --release`: every difference is an error, drift included,
 # and the commit release.json names has to be in the history of the tag. The
 # tag itself has to name a commit of main, which a step of its own asks git.

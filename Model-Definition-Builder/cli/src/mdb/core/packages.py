@@ -1489,13 +1489,19 @@ def _report_differences(item: Located, entry, in_package: set, package_name: str
     return problems
 
 
+#: Kinds of manifest entry whose absence from the package is drift: the package predates the entry. A report
+#: or a decision is not: the package gets one only from a site, where it is saved.
+NEW_ENTRY_DRIFT = ("folder", "file", "step", "jobDefinition")
+
+
 @dataclass
 class Difference:
     """One sentence of the content gate.
 
     `drift` is True for a difference in CONTENT against the checkout - a
     file, a custom step, a job definition, one of the two generated files, an
-    option label the page posts that the packaged report does not hold yet:
+    option label the page posts that the packaged report does not hold yet, a
+    folder, file, step or job definition the manifest has gained since the export:
     the package is the content of an earlier commit. Everything else is the
     package being something it must never be, whatever the checkout holds."""
 
@@ -1904,7 +1910,9 @@ def package_findings(package: dict, manifest, package_name: str = "") -> list:
                 problems.append(Difference(f"{item.shown}: cannot be compared with the checkout ({exc})"))
     for entry in manifest.all_entries():
         if (entry.kind, entry.path) not in seen:
-            problems.append(Difference(f"{entry.kind} '{entry.path}' is in the manifest but not in the package"))
+            # a folder, file, step or job definition added since the export is content the next export brings
+            problems.append(Difference(f"{entry.kind} '{entry.path}' is in the manifest but not in the package",
+                                       drift=entry.kind in NEW_ENTRY_DRIFT))
     return problems
 
 

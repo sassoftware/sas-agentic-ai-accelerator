@@ -96,10 +96,14 @@ so step 3 cannot resolve anything there. Pass it as API_KEY in the options
 input, or set RAGEMBED_API_KEY on the destination. A locally-served embedding
 model needs none.
 
-Two backends are supported, and BACKEND above decides which SQL dialect and
+Three backends are supported, and BACKEND above decides which SQL dialect and
 driver this copy uses. SingleStore has no cosine metric, so vectors are stored
 and queried L2-normalized and ranked by dot product; `distance` therefore
-means the same number on both backends.
+means the same number on all three backends. Weaviate has no SQL and needs no
+driver: the query goes to its GraphQL endpoint with requests, STORE_DB is not
+used, the password is the Weaviate API key, and TLS is off only for an
+sslmode of disable (certificates verified as for the credentials service,
+prefix RAGSTORE).
 """
 import json
 import math
@@ -129,7 +133,7 @@ _SSLMODE_BOOLEANS = {"false": "disable", "off": "disable", "no": "disable",
 
 # SingleStore has no NULL tombstone: a live row carries this valid_to instead
 _SENTINEL = "9999-12-31 00:00:00"
-_DEFAULT_PORTS = {"pgvector": 5432, "singlestore": 3306}
+_DEFAULT_PORTS = {"pgvector": 5432, "singlestore": 3306, "weaviate": 8080}
 
 # Datagrid v2: a cited chunk must be openable at the right place and
 # attributable to the corpus state that produced it, so the grid carries the
@@ -312,20 +316,26 @@ def _quote(identifier):
     return '"' + identifier + '"'
 
 
-def _compile_filter(filter_json):
-    """Equality-only allow-listed filter -> (condition, params); always bound."""
-    condition, params = "TRUE", []
+def _filter_pairs(filter_json):
+    """The (column, value) pairs of an equality-only allow-listed filter."""
     # blanks only is an input a decision left empty and padded, not a filter
     if not filter_json or (isinstance(filter_json, str)
                            and not filter_json.strip()):
-        return condition, params
+        return []
     parsed = json.loads(filter_json) if isinstance(filter_json, str) else filter_json
     if not isinstance(parsed, dict):
         raise ValueError("filter_json must be a JSON object of column: value")
-    for column, value in parsed.items():
+    for column in parsed:
         if column not in _FILTER_COLUMNS:
             raise ValueError("unsupported filter column " + str(column)
                              + " (allowed: " + ", ".join(sorted(_FILTER_COLUMNS)) + ")")
+    return list(parsed.items())
+
+
+def _compile_filter(filter_json):
+    """Equality-only allow-listed filter -> (condition, params); always bound."""
+    condition, params = "TRUE", []
+    for column, value in _filter_pairs(filter_json):
         condition += " AND " + _quote(column) + " = %s"
         params.append(value)
     return condition, params
@@ -373,8 +383,71 @@ def _rank(vector):
     return "(embedding <=> %s::vector)", "ASC", literal, lambda distance: distance
 
 
+def _gql(value):
+    """A value as GraphQL input: JSON-escaped strings (GraphQL's escapes are
+    JSON's), bare keys, and the operator as the enum it is."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            key + ": " + (str(item) if key == "operator" else _gql(item))
+            for key, item in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_gql(item) for item in value) + "]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(str(value))
+
+
+def _search_weaviate(vector, k, filter_json, store):
+    """KNN against the live slice of a Weaviate collection, over GraphQL.
+
+    The same contract as the SQL path: allow-listed equality filters, live
+    objects only (valid_to IsNull - Weaviate collections carry lineage from
+    the start, so there is nothing to probe), and the cosine distance, which
+    is the number pgvector's `<=>` returns.
+    """
+    import requests
+
+    operands = [{"path": ["valid_to"], "operator": "IsNull", "valueBoolean": True}]
+    for column, value in _filter_pairs(filter_json):
+        operands.append({"path": [column], "operator": "Equal",
+                         "valueText": str(value)})
+    where = operands[0] if len(operands) == 1 else {"operator": "And",
+                                                    "operands": operands}
+    collection = COLLECTION[:1].upper() + COLLECTION[1:]
+    query = ("{ Get { " + collection + "(nearVector: "
+             + _gql({"vector": [float(v) for v in vector]})
+             + ", limit: " + str(int(k)) + ", where: " + _gql(where) + ") { "
+             "doc_id chunk_id source_uri ingested_at content heading_path span "
+             "run_id _additional { distance } } } }")
+    sslmode = str(store.get("sslmode") or "").lower()
+    scheme = "http" if sslmode in ("disable", "false", "off", "no", "0") else "https"
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if store.get("password"):
+        headers["Authorization"] = "Bearer " + str(store["password"])
+    response = requests.post(
+        scheme + "://" + str(store["host"]) + ":" + str(store["port"])
+        + "/v1/graphql", json={"query": query}, headers=headers,
+        verify=_ssl_verify("RAGSTORE"), timeout=30)
+    response.raise_for_status()
+    answer = response.json()
+    if answer.get("errors"):
+        raise RuntimeError("Weaviate refused the query: " + "; ".join(
+            str(error.get("message", error)) for error in answer["errors"])[:300])
+    rows = ((answer.get("data") or {}).get("Get") or {}).get(collection) or []
+    return [(row.get("doc_id"), row.get("chunk_id"), row.get("source_uri"),
+             row.get("ingested_at"), row.get("content"), row.get("heading_path"),
+             row.get("span"), row.get("run_id"),
+             (row.get("_additional") or {}).get("distance") or 0.0)
+            for row in rows]
+
+
 def _search(vector, k, filter_json, store):
     """KNN against the live slice of the collection; higher score = better."""
+    if BACKEND == "weaviate":
+        return _hits(_search_weaviate(vector, k, filter_json, store),
+                     lambda distance: distance)
     condition, params = _compile_filter(filter_json)
     expression, ordering, literal, to_distance = _rank(vector)
     connection = _connect(store)
@@ -391,6 +464,12 @@ def _search(vector, k, filter_json, store):
         connection.commit()
     finally:
         connection.close()
+    return _hits(rows, to_distance)
+
+
+def _hits(rows, to_distance):
+    """The hit dicts of (doc_id, chunk_id, source_uri, ingested_at, content,
+    heading_path, span, run_id, ranked) rows, whichever store answered."""
     hits = []
     for (doc_id, chunk_id, source_uri, ingested_at, content, heading_path,
          span, run_id, ranked) in rows:

@@ -14,7 +14,9 @@
  * or run in SAS Studio. The compute context's Python needs the packages from
  * the Administration Guide (requests, pandas, pypdfium2, markitdown, plus the
  * driver of the backend in use: psycopg2-binary for pgvector, singlestoredb
- * for SingleStore); rag_core itself is downloaded from SAS Content at run time.
+ * for SingleStore, nothing more for Weaviate 1.33+, which is reached over
+ * HTTP with requests); rag_core itself is downloaded from SAS Content at run
+ * time.
  * If you %include this program, do it at TOP LEVEL - a %include nested
  * inside a macro prevents the proc python submit block from executing
  * (verified live).
@@ -26,7 +28,10 @@
  *                      context) whose documents are ingested
  *   collection       - REQUIRED. Vector-store collection (lowercase
  *                      identifier, e.g. rag_hr_policies_v1)
- *   backend          - vector store backend: pgvector or singlestore
+ *   backend          - vector store backend: pgvector, singlestore or
+ *                      weaviate (storeDb is not used there - leave it blank;
+ *                      storeSslmode disable means plain HTTP, anything else
+ *                      HTTPS; the port defaults to 8080)
  *   storeHost/storePort/storeDb/storeSslmode - vector store connection
  *                      CONFIGURATION (not secrets; secrets come from the
  *                      credential domain)
@@ -85,7 +90,9 @@
  *                      promoted and saved - the tables RAG - Load Vector
  *                      Store publishes. <prefix> is ledgerTable without its
  *                      ending _LEDGER. 0 records nothing and leaves the two
- *                      tables as they are
+ *                      tables as they are. A Weaviate store keeps no run
+ *                      history (those tables are SQL): nothing is recorded
+ *                      and the log says so
  *   ragCorePath      - SAS Content folder holding rag_core
  *
  * Contract: the program ALWAYS runs to its last statement. A raised SAS
@@ -602,11 +609,13 @@ def main():
         from rag_core.pricing import log_cost, log_enrich_cost
         from rag_core.sources import make_source
         from rag_core.steps import (record_history, LEDGER_COLUMNS, config_hash, merge_ledger,
-                                    run_chunk, run_embed, run_extract, run_list,
-                                    run_load)
+                                    keeps_run_history, run_chunk, run_embed,
+                                    run_extract, run_list, run_load)
 
         # ---- parameter validation (fails through the standard path) --------
-        for required in ("sourcePath", "collection", "storeHost", "storeDb"):
+        # Weaviate has no database name: storeDb is required for the SQL backends only
+        sql_backend = P["backend"].strip().lower() != "weaviate"
+        for required in ("sourcePath", "collection", "storeHost") + (("storeDb",) if sql_backend else ()):
             if not P[required]:
                 raise RuntimeError(f"required parameter {required} is missing")
         registry = ExtractorRegistry()
@@ -849,7 +858,13 @@ def main():
         for row in new_ledger:
             row["config_hash"] = cfg_hash
         total = adapter.count(P["collection"])
-        if P["recordHistory"] != "0":
+        if P["recordHistory"] != "0" and not keeps_run_history(adapter):
+            # the history tables are SQL on the store's connection; a store
+            # without SQL (Weaviate) keeps the chunk lineage only, and the two
+            # CAS tables are left as they are (_rag_histState stays off)
+            M(f"rag history: the {P['backend']} store keeps no run history - "
+              "nothing recorded or published")
+        elif P["recordHistory"] != "0":
             record_history(
                 adapter, inventory, real_rows, run_id, P["collection"],
                 config_id=cfg_hash, discovery=discovered,

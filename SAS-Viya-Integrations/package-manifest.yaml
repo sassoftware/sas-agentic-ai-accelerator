@@ -197,6 +197,9 @@ entries:
   - path: RAG/rag_core/adapters/singlestore.py
     kind: file
     source: SAS-Viya-Integrations/RAG/rag_core/adapters/singlestore.py
+  - path: RAG/rag_core/adapters/weaviate.py
+    kind: file
+    source: SAS-Viya-Integrations/RAG/rag_core/adapters/weaviate.py
   - path: RAG/rag_core/extractors/__init__.py
     kind: file
     source: SAS-Viya-Integrations/RAG/rag_core/extractors/__init__.py
