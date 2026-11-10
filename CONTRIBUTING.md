@@ -26,6 +26,11 @@ python -m pytest Model-Definition-Builder/cli/tests -n auto
 
 The other suites are `SAS-Viya-Integrations/RAG/tests`, `Logging-Monitoring/tests`, `Setup/tests` and `Prompt-Optimization/tests` (those need `pandas`, `requests` and `pypdfium2` as well). Without `-n auto` the same tests run one after another.
 
+## The typer Bound
+`mdb` requires `typer>=0.12,<0.30` (`Model-Definition-Builder/cli/pyproject.toml`). typer is still on 0.x, and a minor release has broken every `mdb` command: 0.29.0 took click's type away from the parameters.
+So the bound stops below the next minor release, and **a maintainer checks once a month** whether a newer typer is out (`pip index versions typer`).
+If one is, raise the bound to the minor release after it on a branch, run the suites of *Running the Tests* in a fresh environment, and open a pull request once they pass; if they fail, fix `mdb` in that pull request first.
+
 ## The Transfer Package and Your Change
 `SAS-Viya-Integrations/SAS-Agentic-AI-Accelerator.json` is the content folder of the accelerator as one SAS Viya transfer package.
 Almost all of it is a second copy of files of this repository: the custom steps, the programs, `rag_core`, the built Prompt Builder page, the fact sheets, and the release table that is made from `CHANGELOG.md`.

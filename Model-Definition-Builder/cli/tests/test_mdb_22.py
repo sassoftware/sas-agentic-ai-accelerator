@@ -333,7 +333,7 @@ def _parameters():
         for sub_name, sub in sorted(getattr(command, "commands", {}).items()):
             walk(sub, f"{name} {sub_name}".strip())
         for param in getattr(command, "params", ()):
-            if not getattr(param, "is_flag", False) and param.type.name in ("text", "str", "path"):
+            if not getattr(param, "is_flag", False) and cli._takes_text(param):
                 found.append((name, param))
     walk(typer.main.get_command(cli.app), "")
     return found
@@ -365,6 +365,9 @@ def test_the_parameters_are_found_from_the_app():
     assert {("builders-import", "--options"), ("builders-import", "--caslib"), ("load-facts", "--caslib"),
             ("load-releases", "--caslib"), ("content-deploy", "--compute-context"), ("package-export", "--name"),
             ("credentials-apply", "--identity-type"), ("provider check", "ADAPTER_ID")} <= names
+    # a list of texts or of paths too; typer 0.29 gives a parameter an annotation instead of click's type
+    assert {("generate", "IDS"), ("builders-import", "PACKAGES"), ("load-releases", "--changelog")} <= names
+    assert not {("package-export", "--timeout"), ("add", "--params-billions")} & names
 
 
 @pytest.mark.parametrize("value", ["", " ", "\t"])
