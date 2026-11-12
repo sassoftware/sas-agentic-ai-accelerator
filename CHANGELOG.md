@@ -12,7 +12,7 @@ This changelog documents all the different updates that occur for this framework
 ### Fixed
 
 - **A decision model's `answer` and `confidence` answer the first question.** They took the first answer in the provider's order, and Gemini Decision 1 returns the answers in another order than the questions were asked. Re-register and republish a decision model to bring its scorer up to date.
-- **API models start on the current SCR base image.** Their image pinned `numpy==1.26.4`, which breaks the base image's pandas 3.1 (Python 3.11): the container exited at start with "C extension: None not built". They now keep the base image's numpy. Republish an API model only after `mdb register --update`.
+- **Models start on the current SCR base image.** Their images pinned `numpy==1.26.4`, which breaks the base image's pandas 3.1 (Python 3.11): the container exited at start with "C extension: None not built". API models no longer install numpy; open-weight models, and the hand-kept requirements of Llama 3.2, Mistral Nemo and Phi-3/3.5, keep the base image's numpy. Run `mdb register --update` before you republish one.
 
 ## [2.5.0] - 2026-11-10
 

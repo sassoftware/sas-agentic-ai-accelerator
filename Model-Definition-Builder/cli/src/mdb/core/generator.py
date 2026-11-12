@@ -755,6 +755,17 @@ def _hf_weight_steps(
     }]
 
 
+# The numpy of the SCR base image, kept as the requirement of an install that
+# would otherwise be free to move it: SCR's own server imports the base image's
+# pandas at start, and that pandas is built for that numpy. A pin of our own
+# breaks the base images it was not made for - numpy==1.26.4 broke the base
+# image of 2026-11 (pandas 3.1.1 for Python 3.11, built for numpy 2), and the
+# container exited with "C extension: None not built" before it loaded the
+# scorer. An install that needs another numpy now fails at publish time
+# instead of in the running container.
+KEEP_BASE_NUMPY = "\"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
+
+
 def _render_requirements(manifest: ModelManifest) -> str:
     profile = manifest.runtime.requirements_profile
     upgrade_step = {
@@ -771,11 +782,8 @@ def _render_requirements(manifest: ModelManifest) -> str:
         "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch",
     }
     if profile == "api-wrapper":
-        # numpy stays as the SCR base image ships it: the scorers do not use
-        # it, and SCR's own server imports the base image's pandas at start.
-        # The former numpy==1.26.4 pin broke the base image of 2026-11 (pandas
-        # 3.1.1 for Python 3.11 needs numpy 2): the container exited with
-        # "C extension: None not built" before it loaded the scorer.
+        # requests does not touch numpy, so the base image's numpy stays
+        # without KEEP_BASE_NUMPY; the scorers do not use it.
         steps = [
             upgrade_step,
             {"step": "install common packages", "command": "pip3 -q install requests"},
@@ -790,7 +798,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             torch_cpu_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate numpy==1.26.4",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
@@ -802,7 +810,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' numpy onnxruntime-genai",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' onnxruntime-genai {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
@@ -845,7 +853,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
                 "step": "install huggingface CLI and other packages",
                 # Floor matches the 5.x APIs the generated scorer calls (preprocess,
                 # encode_query, encode_document).
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' numpy==1.26.4",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))

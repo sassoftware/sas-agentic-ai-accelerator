@@ -9,7 +9,7 @@
     },
     {
         "step": "install huggingface CLI and other packages",
-        "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate numpy==1.26.4"
+        "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
     },
     {
         "step": "download model",
