@@ -7,6 +7,12 @@ This changelog documents all the different updates that occur for this framework
 ### Added
 
 - **The RAG Builder offers Weaviate.** A Weaviate setup takes `WEAVIATE_RAG_USER`/`_PW`, `WEAVIATE_HOST` and `WEAVIATE_PORT` from the credential domain and needs no database. The ingestion job, the Studio flow and the retrieval model it manifests are set up for Weaviate. The new option *RAG: offer Weaviate* (`enable_weaviate`) withholds it.
+- **Gemini Decision 1 as a decision model.** `gemini_decision_1` calls Google's Decisions API with the `Google` key entry. The new `dec_gemini` score template translates inside the SCR container (state as `input`, key in `x-goog-api-key`, Google's token counts), so its callers keep the System One contract. `mdb add google gemini-decision-1 --kind decision` finds it in Google's model list; OpenRouter's snapshot lists `google/gemini-decision-1` too.
+
+### Fixed
+
+- **A decision model's `answer` and `confidence` answer the first question.** They took the first answer in the provider's order, and Gemini Decision 1 returns the answers in another order than the questions were asked. Re-register and republish a decision model to bring its scorer up to date.
+- **Models start on the current SCR base image.** Their images pinned `numpy==1.26.4`, which breaks the base image's pandas 3.1 (Python 3.11): the container exited at start with "C extension: None not built". API models no longer install numpy; open-weight models, and the hand-kept requirements of Llama 3.2, Mistral Nemo and Phi-3/3.5, keep the base image's numpy. Run `mdb register --update` before you republish one.
 
 ## [2.5.0] - 2026-11-10
 

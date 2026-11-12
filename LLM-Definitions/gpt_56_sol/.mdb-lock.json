@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.3.1",
+    "generator": "mdb 2.5.0",
     "manifest_sha256": "4025daf9bf4a63262a45efef07cfacb731e50836e0d02eaa1b4f79b52ab3b11a",
     "files": {
         "Model-Card.md": "8abe5d2929d97dd80ef1f6f95f2b883aec17f945773d90d89603c90b59baf862",
@@ -9,6 +9,6 @@
         "modelConfiguration.json": "cd3e36c66a0d27bedbfbdf7fe33cbef2b930cf406212e9ad7c8e3caa9847d685",
         "options.json": "6639ad2aae14d2e61d510bc44ce0a106fd1bfe277052ceb2e7f3cd62e627fc9e",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
-        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+        "requirements.json": "9a33900057c3c903a9be658218e8b3f5e51d84055153fd81a6548705f1e3a988"
     }
 }

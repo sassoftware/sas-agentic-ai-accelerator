@@ -61,6 +61,8 @@ CASES = {
                         {"resource": "res"}),
     "dec_systemone_api": ("openrouter", CatalogModel(ref="typesafe/jev-x", display_name="Jev X", kind="decision"),
                           {}),
+    "dec_gemini": ("google", CatalogModel(ref="gemini-decision-x", display_name="Gemini Decision X", kind="decision"),
+                   {}),
     "emb_openai": ("openai", CatalogModel(ref="text-embedding-x", display_name="Emb X", kind="embedding",
                                           embedding_length=8), {}),
     "emb_voyage": ("voyage", CatalogModel(ref="voyage-x", display_name="Voyage X", kind="embedding",
@@ -77,6 +79,7 @@ CASES = {
 #: The header each provider takes the key in.
 HEADER = {
     "anthropic_messages": "x-api-key", "gemini_generate": "x-goog-api-key", "emb_gemini": "x-goog-api-key",
+    "dec_gemini": "x-goog-api-key",
     "azure_openai_v1": "api-key", "emb_azure_openai_v1": "api-key",
 }
 

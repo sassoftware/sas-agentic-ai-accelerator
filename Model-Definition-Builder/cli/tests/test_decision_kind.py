@@ -3,9 +3,12 @@
 """The decision kind: a third scoring contract (state + typed questions ->
 calibrated answers) with its own folder, fact sheet, Model Manager project
 and score templates - one for the System One API (TypeSafe, OpenRouter, any
-server that copies the wire format) and one for Von baked into the image."""
+server that copies the wire format), one for Google's Decisions API (Gemini
+Decision 1), translated inside the container, and one for Von baked into the
+image."""
 import json
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +20,8 @@ from mdb.core.paths import definitions_dir, fact_sheet_path, kind_of_folder
 from mdb.core.validator import validate_folder
 from mdb.providers import load_adapters
 from mdb.providers.base import CatalogModel
+
+from test_env_api_keys import _load_scorer
 from mdb.viya.registry import KIND_PROJECT, PROJECT_META, build_model_attributes, project_variables
 
 
@@ -88,7 +93,7 @@ def test_von_bakes_its_checkpoint(core):
 
 def test_shipped_decision_definitions_are_consistent(repo_root, core):
     sheet = fact_sheet_path(repo_root, "decision")
-    for model_id in ("jev_1_13", "von_1_2", "clef_flash", "liquid_d1", "pplx_decider_27b"):
+    for model_id in ("jev_1_13", "von_1_2", "clef_flash", "liquid_d1", "pplx_decider_27b", "gemini_decision_1"):
         folder = repo_root / "Decision-Definitions" / model_id
         issues = validate_folder(folder, core, sheet)
         assert not [i for i in issues if i.severity == "error"], [i.format() for i in issues]
@@ -179,6 +184,148 @@ def test_sas_fact_sheet_loader_knows_the_decision_sheet(repo_root):
      ("decision", "dec_systemone_api", "openrouter")),
     ("modelEndpoint = 'https://api.typesafe.ai/v1/systemone'\ndef scoreModel(state, questions, options):",
      ("decision", "dec_systemone_api", "typesafe")),
+    ("modelEndpoint = 'https://generativelanguage.googleapis.com/v1beta/decisions'\n"
+     "def scoreModel(state, questions, options):", ("decision", "dec_gemini", "google")),
 ])
 def test_importer_recognises_decision_scorers(score, expected):
     assert _detect_family(score) == expected
+
+
+# -- Gemini Decision 1: Google's Decisions API -----------------------------------
+
+#: What Google answered on 2026-11-12, trimmed: the answers in another order than the questions were asked, and
+#: Google's own names for the usage.
+GOOGLE_ANSWER = {
+    "answers": {
+        "tone": {"type": "score", "score": 1.12, "confidence": 0.76, "probabilities": {"0": 0.06, "1": 0.76, "2": 0.18},
+                 "legend": {"0": "Calm", "1": "Frustrated", "2": "Angry"}},
+        "escalate": {"type": "noul", "noul": 0.71, "confidence": 0.71},
+        "team": {"type": "choice", "choice": "billing", "confidence": 0.99,
+                 "probabilities": {"billing": 0.99, "technical": 0.01}},
+    },
+    "usage": {"total_tokens": 256, "total_input_tokens": 256, "total_output_tokens": 0,
+              "input_tokens_by_modality": [{"modality": "text", "tokens": 256}]},
+}
+QUESTIONS = {
+    "team": {"type": "choice", "instructions": "Which team?", "criteria": {"billing": "Payments", "technical": "Bugs"}},
+    "escalate": {"type": "noul", "instructions": "The customer threatens to leave"},
+    "tone": {"type": "score", "instructions": "How frustrated?", "criteria": ["Calm", "Frustrated", "Angry"]},
+}
+
+
+def _gemini_manifest(core):
+    google = load_adapters()["google"]
+    gemini = {m.ref: m for m in google.static_catalog(core.core_dir)}["gemini-decision-1"]
+    return google.build_manifest(gemini, "gemini_test", {}, "tester")
+
+
+def test_google_serves_gemini_decision_directly(core):
+    """`mdb add google gemini-decision-1 --kind decision`: Google's own endpoint and key, the dec_gemini template."""
+    manifest = _gemini_manifest(core)
+    assert manifest.kind == "decision" and manifest.runtime.template == "dec_gemini"
+    assert manifest.provider.endpoint == "https://generativelanguage.googleapis.com/v1beta/decisions"
+    assert manifest.provider.auth.key_name == "Google"
+    assert manifest.metadata.context_length == 262144
+    assert manifest.metadata.pricing.input_token_price == pytest.approx(1e-07)
+    assert manifest.options == {}
+    rendered = render_assets(manifest, core)
+    assert json.loads(rendered["options.json"].decode())["API_KEY"]["default"] == "Google"
+    readme = rendered["README.md"].decode()
+    assert "translates it for Google's Decisions API" in readme and "generativelanguage.googleapis.com" in readme
+    # OpenRouter hosts it too, on its System One endpoint - the template that needs no translation.
+    openrouter = load_adapters()["openrouter"]
+    hosted = {m.ref: m for m in openrouter.static_catalog(core.core_dir)}["google/gemini-decision-1"]
+    assert hosted.kind == "decision"
+    assert openrouter.build_manifest(hosted, "gemini_or", {}, "tester").runtime.template == "dec_systemone_api"
+
+
+def test_google_live_catalog_lists_decision_models(monkeypatch):
+    """models.list names a decision model by its method, createDecision; its output token limit (1) means nothing."""
+    from mdb.providers import google as google_module
+    listing = {"models": [
+        {"name": "models/gemini-x", "inputTokenLimit": 1000, "outputTokenLimit": 100,
+         "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-decision-1", "displayName": "Gemini Decision 1", "inputTokenLimit": 262144,
+         "outputTokenLimit": 1, "supportedGenerationMethods": ["createDecision"]},
+        {"name": "models/aqa", "supportedGenerationMethods": ["generateAnswer"]},
+    ]}
+    monkeypatch.setattr(google_module, "get_json", lambda session, url, headers=None: listing)
+    models = {m.ref: m for m in load_adapters()["google"].live_catalog(None, "key")}
+    assert set(models) == {"gemini-x", "gemini-decision-1"}
+    decision = models["gemini-decision-1"]
+    assert decision.kind == "decision" and decision.context_length == 262144 and decision.max_output_tokens is None
+
+
+def test_gemini_scorer_translates_the_contract(tmp_path, monkeypatch, core):
+    """The container keeps the System One contract for its callers: the state goes to Google as the input text (a
+    JSON state too - Google takes an object there for a content block and refuses it), the key in x-goog-api-key;
+    the headline answers the FIRST question asked, though Google returns the answers in another order."""
+    module = _load_scorer(tmp_path, _gemini_manifest(core), core)
+    sent = []
+
+    def post(url, headers=None, json=None, timeout=None):
+        sent.append((url, headers, json))
+        return SimpleNamespace(status_code=200, json=lambda: GOOGLE_ANSWER, text="")
+
+    monkeypatch.setattr(module.requests, "post", post)
+    state = json.dumps({"customer": "Acme", "message": "Charged twice"})
+    answers, answer, confidence, _, prompt_length, output_length = module.scoreModel(
+        [state], [json.dumps(QUESTIONS)], [json.dumps({"API_KEY": "the-key"})])
+    url, headers, body = sent[-1]
+    assert url == "https://generativelanguage.googleapis.com/v1beta/decisions"
+    assert headers["x-goog-api-key"] == "the-key" and "Authorization" not in headers
+    assert body == {"model": "gemini-decision-1", "input": state, "questions": QUESTIONS}
+    assert (answer, confidence) == ("billing", 0.99)
+    assert json.loads(answers) == GOOGLE_ANSWER["answers"]
+    assert (prompt_length, output_length) == (256, 0)
+    # The MAS REST API passes plain strings.
+    assert module.scoreModel(state, json.dumps(QUESTIONS), "{API_KEY:the-key}")[1] == "billing"
+    # A noul first: yes/no with the probability of the side it chose.
+    first_noul = {"escalate": QUESTIONS["escalate"], "team": QUESTIONS["team"]}
+    assert module.scoreModel(["x"], [json.dumps(first_noul)], [json.dumps({"API_KEY": "k"})])[1:3] == ("yes", 0.71)
+
+
+def test_system_one_scorers_head_with_the_first_question(tmp_path, monkeypatch, core):
+    """The same order fix for the System One template (OpenRouter serves Gemini Decision 1 there, in Google's
+    order); Von's scorer takes the same helper."""
+    openrouter = load_adapters()["openrouter"]
+    hosted = {m.ref: m for m in openrouter.static_catalog(core.core_dir)}["google/gemini-decision-1"]
+    module = _load_scorer(tmp_path, openrouter.build_manifest(hosted, "gemini_or", {}, "tester"), core)
+    answer = {**GOOGLE_ANSWER, "usage": {"input_tokens": 256, "output_tokens": 0}}
+    monkeypatch.setattr(module.requests, "post",
+                        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: answer, text=""))
+    out = module.scoreModel(["state"], [json.dumps(QUESTIONS)], [json.dumps({"API_KEY": "k"})])
+    assert out[1:3] == ("billing", 0.99) and out[4] == 256
+    von = load_adapters()["von"]
+    manifest = von.build_manifest(CatalogModel(ref="von", display_name="von", source="manual entry"), "von_o", {}, "t")
+    score = render_assets(manifest, core)[effective_score_file(manifest)].decode()
+    assert "answer, confidence = _headline(_first_answer(answersObject, questionsObject))" in score
+
+
+def test_google_smoke_test_asks_a_decision():
+    google = load_adapters()["google"]
+    manifest = SimpleNamespace(kind="decision", provider=SimpleNamespace(
+        model_version="gemini-decision-1", endpoint="https://generativelanguage.googleapis.com/v1beta/decisions"))
+    sent = []
+
+    class Session:
+        def post(self, url, headers=None, json=None, timeout=None):
+            sent.append((url, headers, json))
+            return SimpleNamespace(status_code=200, json=lambda: {
+                "answers": {"team": {"type": "choice", "choice": "billing", "confidence": 0.99}},
+                "usage": {"total_input_tokens": 150}})
+
+    result = google.smoke_test(manifest, "the-key", Session())
+    assert result.ok and "150 input tokens" in result.detail and "team='billing'" in result.detail
+    url, headers, body = sent[0]
+    assert url.endswith("/v1beta/decisions") and headers["x-goog-api-key"] == "the-key"
+    assert set(body) == {"model", "input", "questions"}
+
+
+def test_api_images_keep_the_base_image_numpy(core):
+    """The SCR base image of 2026-11 ships pandas 3.1.1 for Python 3.11, built for numpy 2; the former
+    numpy==1.26.4 pin of the api-wrapper profile broke it, and SCR's server, which imports pandas at start, exited
+    before it loaded the scorer (gemini_decision_1 on zeus, 2026-11-12). An API model installs requests only."""
+    steps = json.loads(render_assets(_gemini_manifest(core), core)["requirements.json"].decode())
+    commands = " ".join(step["command"] for step in steps)
+    assert "numpy" not in commands and "pip3 -q install requests" in commands

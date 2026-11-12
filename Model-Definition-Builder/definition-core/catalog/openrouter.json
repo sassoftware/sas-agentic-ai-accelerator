@@ -81,6 +81,16 @@
             "input_price_per_m": 0.05,
             "output_price_per_m": 0.0,
             "max_options": 26
+        },
+        {
+            "ref": "google/gemini-decision-1",
+            "display_name": "Gemini Decision 1",
+            "kind": "decision",
+            "context_length": 262144,
+            "input_price_per_m": 0.1,
+            "output_price_per_m": 0.0,
+            "release_date": "2026-11-11",
+            "snapshot_date": "2026-11-12"
         }
     ]
 }

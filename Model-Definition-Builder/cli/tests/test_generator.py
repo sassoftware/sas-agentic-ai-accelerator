@@ -246,3 +246,33 @@ def test_fleet_fidelity_gpt4o_mini_options_json(core, repo_root, fact_sheet):
     rendered = render_assets(result.manifest, core)
     legacy = (folder / "options.json").read_bytes().replace(b"\r\n", b"\n")
     assert rendered["options.json"] == legacy
+
+
+# -- the numpy of the SCR base image ----------------------------------------------
+
+@pytest.mark.parametrize("profile", ["hf-transformers", "hf-sentence-transformers", "hf-onnx"])
+def test_open_weight_images_keep_the_base_image_numpy(profile):
+    """SCR's server imports the base image's pandas at start, built for the base image's numpy: an install that
+    could move numpy requires the numpy the image already has (KEEP_BASE_NUMPY). numpy==1.26.4 broke the base image
+    of 2026-11 (pandas 3.1.1, numpy 2); with the requirement, images of Qwen 2.5 0.5B and all-MiniLM-L6-v2 built on
+    zeus kept numpy 2.4.6 and answered (2026-11-12)."""
+    from mdb.core.generator import KEEP_BASE_NUMPY, _render_requirements
+    manifest = _manifest(provider=ProviderBlock(adapter="hf-selfhosted", model_version="org/model",
+                                                params={"hf": {"repo": "org/model"}}, auth=AuthBlock(mode="none")),
+                         runtime=RuntimeBlock(template="hf_transformers", requirements_profile=profile))
+    commands = [step["command"] for step in json.loads(_render_requirements(manifest))]
+    installs = [command for command in commands if "numpy" in command]
+    assert installs and all(KEEP_BASE_NUMPY in command for command in installs)
+    assert "numpy==1.26.4" not in " ".join(commands)
+
+
+def test_no_committed_image_pins_a_numpy_of_its_own(repo_root):
+    """Generated and hand-kept requirements alike (the overrides of llama_32_*, mistral_nemo, phi_3*, and the
+    _Base_Definition to copy from): a step that names numpy names the base image's."""
+    from mdb.core.generator import KEEP_BASE_NUMPY
+    files = sorted(repo_root.glob("*-Definitions/*/requirements.json"))
+    assert len(files) > 50
+    for path in files:
+        for step in json.loads(path.read_text(encoding="utf-8")):
+            if "numpy" in step["command"]:
+                assert KEEP_BASE_NUMPY in step["command"], f"{path.parent.name}: {step['command']}"

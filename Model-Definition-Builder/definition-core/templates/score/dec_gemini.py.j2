@@ -1,0 +1,80 @@
+{{ generated_header }}import time
+import json
+import logging
+import sys
+import requests
+
+modelVersion = '{{ model_version }}'
+modelEndpoint = '{{ endpoint }}'
+
+# Initiate the logger to write output information to the log
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format='%(levelname)s - %(message)s'
+)
+logger = logging.getLogger("scoreModel")
+
+{% include "partials/_options_parser.py.j2" %}
+{% if key_env_var %}{% include "partials/_env_api_key.py.j2" %}{% else %}{% include "partials/_option_api_key.py.j2" %}{% endif %}
+
+{% include "partials/_decision_answers.py.j2" %}
+
+
+def scoreModel(state, questions, options):
+    "Output: answers, answer, confidence, run_time, prompt_length, output_length"
+    started_timestamp = time.time()
+    # One value per input, whatever the caller's convention: CAS/SCR pass
+    # one-element lists, the MAS REST API passes plain strings - and a str
+    # indexed with [0] silently becomes its first character.
+    state, questions = _scalar(state), _scalar(questions)
+    optionsDefaults = {
+{{ options_defaults_block }}
+    }
+    options = {**optionsDefaults, **_parse_options(options)}
+    options["API_KEY"] = _api_key(options)
+    # Google's Decisions API takes the System One questions unchanged; this
+    # container keeps the System One contract for its callers and translates
+    # the rest. The state goes in as the input text - a JSON state stays text
+    # (Google reads an object there as a content block and refuses it), and
+    # the model still reads its field names.
+    questionsObject = json.loads(questions)
+    payload = {
+        "model": modelVersion,
+        "input": state,
+        "questions": questionsObject,
+    }
+    responseObject = requests.post(
+        modelEndpoint,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": options['API_KEY'],
+        },
+        json=payload,
+        timeout={{ timeout_s }},
+    )
+    try:
+        responseJson = responseObject.json()
+    except Exception:
+        logger.error(f"Non-JSON response: {responseObject.status_code} - {responseObject.text}")
+        raise
+    if responseObject.status_code < 200 or responseObject.status_code >= 300:
+        logger.error(f"HTTP {responseObject.status_code}: {json.dumps(responseJson)}")
+        raise RuntimeError(f"Request failed: {responseObject.status_code}")
+    # The answers have the System One shape; only their order may differ.
+    answersObject = responseJson.get('answers') or {}
+    answer, confidence = _headline(_first_answer(answersObject, questionsObject))
+    answers = json.dumps(answersObject)
+    usage = responseJson.get('usage') or {}
+    # Google bills the shared input once per request, every question included.
+    prompt_length = usage.get('total_input_tokens', 0)
+    # A decision model generates no text; the field stays for the shared usage report.
+    output_length = usage.get('total_output_tokens', 0)
+    run_time = time.time() - started_timestamp
+    # Logging the response
+    logger.info(f"prompt_length: {prompt_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"run_time: {run_time}")
+    logger.info(f"answer: {answer} ({confidence:.3f})")
+    logger.info(f"answers: {answers}")
+    return answers, answer, confidence, run_time, prompt_length, output_length

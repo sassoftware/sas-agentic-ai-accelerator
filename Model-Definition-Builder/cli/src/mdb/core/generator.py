@@ -44,7 +44,7 @@ SELFHOSTED_TEMPLATES = ("openai_compat_selfhosted", "emb_openai_compat_selfhoste
 # (azure_openai_env).
 KEY_OPTION_TEMPLATES = (
     "openai_chat", "anthropic_messages", "gemini_generate", "bedrock_converse", "azure_openai_v1",
-    "dec_systemone_api", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
+    "dec_systemone_api", "dec_gemini", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
     "emb_bedrock_cohere", "emb_azure_openai_v1",
 )
 
@@ -755,6 +755,17 @@ def _hf_weight_steps(
     }]
 
 
+# The numpy of the SCR base image, kept as the requirement of an install that
+# would otherwise be free to move it: SCR's own server imports the base image's
+# pandas at start, and that pandas is built for that numpy. A pin of our own
+# breaks the base images it was not made for - numpy==1.26.4 broke the base
+# image of 2026-11 (pandas 3.1.1 for Python 3.11, built for numpy 2), and the
+# container exited with "C extension: None not built" before it loaded the
+# scorer. An install that needs another numpy now fails at publish time
+# instead of in the running container.
+KEEP_BASE_NUMPY = "\"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
+
+
 def _render_requirements(manifest: ModelManifest) -> str:
     profile = manifest.runtime.requirements_profile
     upgrade_step = {
@@ -771,9 +782,11 @@ def _render_requirements(manifest: ModelManifest) -> str:
         "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch",
     }
     if profile == "api-wrapper":
+        # requests does not touch numpy, so the base image's numpy stays
+        # without KEEP_BASE_NUMPY; the scorers do not use it.
         steps = [
             upgrade_step,
-            {"step": "install common packages", "command": "pip3 -q install requests numpy==1.26.4"},
+            {"step": "install common packages", "command": "pip3 -q install requests"},
         ]
     elif profile == "hf-transformers":
         hf = manifest.provider.params.get("hf", {})
@@ -785,7 +798,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             torch_cpu_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate numpy==1.26.4",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' transformers accelerate {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
@@ -797,7 +810,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' numpy onnxruntime-genai",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' onnxruntime-genai {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
@@ -840,7 +853,7 @@ def _render_requirements(manifest: ModelManifest) -> str:
                 "step": "install huggingface CLI and other packages",
                 # Floor matches the 5.x APIs the generated scorer calls (preprocess,
                 # encode_query, encode_document).
-                "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' numpy==1.26.4",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' 'sentence-transformers>=5.1' {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))
@@ -966,6 +979,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
         lines.append("- The key arrives per call in the `API_KEY` option; the container posts the state and "
                      "the questions to the provider's System One endpoint and needs no environment "
                      "configuration beyond network access to it.")
+    elif template == "dec_gemini":
+        lines.append(f"- {from_env}." if env_var else "- The key arrives per call in the `API_KEY` option.")
+        lines.append("- The container keeps the System One contract for its callers and translates it for "
+                     "Google's Decisions API: the state is sent as the `input` text, the questions unchanged, "
+                     "the key in the `x-goog-api-key` header. It needs network access to "
+                     "`generativelanguage.googleapis.com`.")
     elif env_var:
         lines.append(f"- {from_env}. Beyond that the container needs network access to the provider.")
     else:

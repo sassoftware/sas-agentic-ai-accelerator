@@ -1,11 +1,11 @@
 [
     {
        "step":"install huggingface CLI",
-       "command":"pip3 -q install huggingface-hub[cli] numpy==1.26.4"
+       "command":"pip3 -q install huggingface-hub[cli] \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
     },
     {
       "step":"install onnxruntime",
-      "command":"pip3 -q install onnxruntime-genai==0.5.2"
+      "command":"pip3 -q install onnxruntime-genai==0.5.2 \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
     },
     {
        "step":"download model",

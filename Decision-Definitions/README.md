@@ -12,7 +12,7 @@ A decision model (a *System One* model, after TypeSafe's Jev) does not generate 
 | `noul` | Does this condition hold? | the probability that it does |
 | `score` | Where on this ordered scale? | the probability-weighted position, a probability per level, a confidence |
 
-That is the shape a SAS Intelligent Decisioning branch node wants: a value to branch on and a confidence to gate it with. Every provider in this family speaks the same wire format (`POST .../v1/systemone`), so one score template covers TypeSafe's own API, OpenRouter (which hosts Jev) and self-hosted reimplementations; Von additionally runs inside the container with its checkpoint baked into the image.
+That is the shape a SAS Intelligent Decisioning branch node wants: a value to branch on and a confidence to gate it with. Every provider in this family speaks the same wire format (`POST .../v1/systemone`), so one score template covers TypeSafe's own API, OpenRouter (which hosts Jev) and self-hosted reimplementations; Google's Decisions API (Gemini Decision 1) asks the same questions in a slightly different request, which its own template translates inside the container; Von additionally runs inside the container with its checkpoint baked into the image.
 
 Each subfolder here contains the definition for one decision model - the name of the folder is the model id. A folder is generated from its `definition.yaml` by the [Model Definition Builder](../Model-Definition-Builder/README.md); the other files are derived from it and are not edited by hand.
 
@@ -38,6 +38,7 @@ A call through the SCR endpoint, the same envelope every other container of the 
 mdb add openrouter typesafe/jev-1.13 --kind decision --id jev_1_13 --yes   # Jev through OpenRouter
 mdb add openrouter cloudflare/clef-flash --kind decision --id clef_flash --yes   # any other decision model OpenRouter hosts
 mdb add typesafe jev-latest --id jev_latest --yes                           # Jev through TypeSafe's own API
+mdb add google gemini-decision-1 --kind decision --id gemini_decision_1 --yes   # Gemini Decision 1 through Google's API
 mdb add von --id von_1_2 --yes                                              # Von, self-hosted in the container
 ```
 
@@ -51,6 +52,7 @@ OpenRouter's public model listing omits its decision models, so they come from t
 | `clef_flash` | Clef-flash by Cloudflare (Apache-2.0) - the most accurate measured on many-option intent sets | OpenRouter | the `OpenRouter` entry |
 | `liquid_d1` | Liquid D1 by Liquid AI - the cheapest hosted decision model measured | OpenRouter | the `OpenRouter` entry |
 | `pplx_decider_27b` | Perplexity Decider 27B - a 256k context | OpenRouter | the `OpenRouter` entry |
+| `gemini_decision_1` | Gemini Decision 1 by Google - not measured yet | Google | the `Google` entry |
 | `mercury_decide` | Mercury Decide by Inception - not measured yet | OpenRouter | the `OpenRouter` entry |
 | `von_1_2` | Von 1.2 (Apache-2.0, ModernBERT-large) | inside the container | none |
 

@@ -1,0 +1,39 @@
+schema: 1
+kind: decision
+model_id: gemini_decision_1
+display_name: Gemini Decision 1
+provider:
+  adapter: google
+  model_version: gemini-decision-1
+  endpoint: https://generativelanguage.googleapis.com/v1beta/decisions
+  params: {}
+  auth:
+    mode: api_key
+    key_name: Google
+runtime:
+  template: dec_gemini
+  requirements_profile: api-wrapper
+  timeout_s: 60
+  weights_source: baked
+options: {}
+tags:
+  size_class: Decision
+  license_class: Proprietary
+  provider_tag: Google
+  scr_sizing: small
+  extra: []
+metadata:
+  description: Gemini Decision 1 by Google - a decision (System One) model that answers typed questions
+    about a state with calibrated probabilities instead of text, served directly through Google's Decisions
+    API.
+  release_date: '2026-11-11'
+  context_length: 262144
+  deployment_type: API
+  pricing:
+    cost_type: Tokens
+    input_token_price: 1.0e-07
+    output_token_price: 0.0
+modeler: SAS Agentic AI Accelerator
+generation:
+  overrides: []
+  catalog_provenance: google (live, enriched from static snapshot 2026-11-12)
