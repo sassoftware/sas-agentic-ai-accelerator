@@ -2,7 +2,18 @@
 
 This changelog documents all the different updates that occur for this framework.
 
-## [Unreleased]
+## [2.6.0] - 2026-11-12
+
+The RAG Builder offers Weaviate, Gemini Decision 1 joins the decision models, and models published on a current SAS Viya start again: their images no longer pin numpy.
+
+### Upgrading from 2.5.0
+
+Steps 1 to 3 are for every site; step 4 only where it applies.
+
+1. Update the checkout to 2.6.0. An editable install of the CLI needs no reinstall.
+2. `mdb builders-import` and reload the Prompt Builder report, then run `mdb check`. The import brings the RAG Builder with Weaviate and its option *RAG: offer Weaviate*, and the release stamp of 2.6.0; `mdb check` writes the page of the release back into *Start Here*.
+3. Before you publish a model again, update it with `mdb register --update <id>`: an image built from the requirements of 2.5.0 or earlier does not start on a current SCR base image. Containers that already run are not affected. A decision model republished this way also gets the fixed `answer` and `confidence`.
+4. Only for Gemini Decision 1: the key goes in the `Google` entry of the credentials, as for the Gemini LLMs ([Managing Credentials](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Managing-Credentials)); then `mdb register gemini_decision_1`, `mdb publish gemini_decision_1` and `mdb deploy gemini_decision_1` ([Decision Definitions](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Decision-Definitions)).
 
 ### Added
 
