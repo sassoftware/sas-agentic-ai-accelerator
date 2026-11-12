@@ -771,9 +771,14 @@ def _render_requirements(manifest: ModelManifest) -> str:
         "command": "pip3 -q install --extra-index-url https://download.pytorch.org/whl/cpu torch",
     }
     if profile == "api-wrapper":
+        # numpy stays as the SCR base image ships it: the scorers do not use
+        # it, and SCR's own server imports the base image's pandas at start.
+        # The former numpy==1.26.4 pin broke the base image of 2026-11 (pandas
+        # 3.1.1 for Python 3.11 needs numpy 2): the container exited with
+        # "C extension: None not built" before it loaded the scorer.
         steps = [
             upgrade_step,
-            {"step": "install common packages", "command": "pip3 -q install requests numpy==1.26.4"},
+            {"step": "install common packages", "command": "pip3 -q install requests"},
         ]
     elif profile == "hf-transformers":
         hf = manifest.provider.params.get("hf", {})

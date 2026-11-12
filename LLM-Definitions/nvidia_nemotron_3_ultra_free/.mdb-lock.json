@@ -1,5 +1,5 @@
 {
-    "generator": "mdb 2.3.1",
+    "generator": "mdb 2.5.0",
     "manifest_sha256": "196d541d3e453ee74e81d5921e6907f9b6816bea1f0b158804627f4c612b9d20",
     "files": {
         "Model-Card.md": "8012d8d03e05d0fca6fbea1709228ab6caf00e10e31b23dd50c226ee22a76f1b",
@@ -9,6 +9,6 @@
         "nvidiaNemotron3UltraFreeScore.py": "4779fee67e99f496b610572854e3974212368bc286b6a46de7836a331e6435c3",
         "options.json": "fb16f08e48661a664635b3f445338c59e61bc65e1b9d206551b57dfa722bc2d8",
         "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
-        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+        "requirements.json": "9a33900057c3c903a9be658218e8b3f5e51d84055153fd81a6548705f1e3a988"
     }
 }

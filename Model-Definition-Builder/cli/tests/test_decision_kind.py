@@ -320,3 +320,12 @@ def test_google_smoke_test_asks_a_decision():
     url, headers, body = sent[0]
     assert url.endswith("/v1beta/decisions") and headers["x-goog-api-key"] == "the-key"
     assert set(body) == {"model", "input", "questions"}
+
+
+def test_api_images_keep_the_base_image_numpy(core):
+    """The SCR base image of 2026-11 ships pandas 3.1.1 for Python 3.11, built for numpy 2; the former
+    numpy==1.26.4 pin of the api-wrapper profile broke it, and SCR's server, which imports pandas at start, exited
+    before it loaded the scorer (gemini_decision_1 on zeus, 2026-11-12). An API model installs requests only."""
+    steps = json.loads(render_assets(_gemini_manifest(core), core)["requirements.json"].decode())
+    commands = " ".join(step["command"] for step in steps)
+    assert "numpy" not in commands and "pip3 -q install requests" in commands
