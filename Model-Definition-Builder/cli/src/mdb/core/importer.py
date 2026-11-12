@@ -46,6 +46,8 @@ def _detect_family(score_text: str) -> tuple[str, str, str]:
     if "def scoreModel(state" in score_text:
         if "import von" in score_text or "from von" in score_text:
             return "decision", "dec_von", "von"
+        if "generativelanguage.googleapis.com" in score_text:
+            return "decision", "dec_gemini", "google"
         if "openrouter.ai" in score_text:
             return "decision", "dec_systemone_api", "openrouter"
         return "decision", "dec_systemone_api", "typesafe"

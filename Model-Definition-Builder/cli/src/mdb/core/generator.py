@@ -44,7 +44,7 @@ SELFHOSTED_TEMPLATES = ("openai_compat_selfhosted", "emb_openai_compat_selfhoste
 # (azure_openai_env).
 KEY_OPTION_TEMPLATES = (
     "openai_chat", "anthropic_messages", "gemini_generate", "bedrock_converse", "azure_openai_v1",
-    "dec_systemone_api", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
+    "dec_systemone_api", "dec_gemini", "emb_openai", "emb_voyage", "emb_gemini", "emb_bedrock_titan",
     "emb_bedrock_cohere", "emb_azure_openai_v1",
 )
 
@@ -966,6 +966,12 @@ def deployment_notes(manifest: ModelManifest) -> str:
         lines.append("- The key arrives per call in the `API_KEY` option; the container posts the state and "
                      "the questions to the provider's System One endpoint and needs no environment "
                      "configuration beyond network access to it.")
+    elif template == "dec_gemini":
+        lines.append(f"- {from_env}." if env_var else "- The key arrives per call in the `API_KEY` option.")
+        lines.append("- The container keeps the System One contract for its callers and translates it for "
+                     "Google's Decisions API: the state is sent as the `input` text, the questions unchanged, "
+                     "the key in the `x-goog-api-key` header. It needs network access to "
+                     "`generativelanguage.googleapis.com`.")
     elif env_var:
         lines.append(f"- {from_env}. Beyond that the container needs network access to the provider.")
     else:

@@ -7,6 +7,11 @@ This changelog documents all the different updates that occur for this framework
 ### Added
 
 - **The RAG Builder offers Weaviate.** A Weaviate setup takes `WEAVIATE_RAG_USER`/`_PW`, `WEAVIATE_HOST` and `WEAVIATE_PORT` from the credential domain and needs no database. The ingestion job, the Studio flow and the retrieval model it manifests are set up for Weaviate. The new option *RAG: offer Weaviate* (`enable_weaviate`) withholds it.
+- **Gemini Decision 1 as a decision model.** `gemini_decision_1` calls Google's Decisions API with the `Google` key entry. The new `dec_gemini` score template translates inside the SCR container (state as `input`, key in `x-goog-api-key`, Google's token counts), so its callers keep the System One contract. `mdb add google gemini-decision-1 --kind decision` finds it in Google's model list; OpenRouter's snapshot lists `google/gemini-decision-1` too.
+
+### Fixed
+
+- **A decision model's `answer` and `confidence` answer the first question.** They took the first answer in the provider's order, and Gemini Decision 1 returns the answers in another order than the questions were asked. Re-register and republish a decision model to bring its scorer up to date.
 
 ## [2.5.0] - 2026-11-10
 

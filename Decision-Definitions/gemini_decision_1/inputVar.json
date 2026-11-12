@@ -1,0 +1,23 @@
+[
+    {
+        "name": "state",
+        "description": "The state the questions are asked about: text, or a JSON object or array",
+        "level": "nominal",
+        "type": "string",
+        "length": 100000
+    },
+    {
+        "name": "questions",
+        "description": "The typed questions as a JSON object, in the System One shape: {\"<id>\": {\"type\": \"choice\"|\"noul\"|\"score\", \"instructions\": \"...\", \"criteria\": ...}}",
+        "level": "nominal",
+        "type": "string",
+        "length": 100000
+    },
+    {
+        "name": "options",
+        "description": "This is an optional argument to detail model parameters",
+        "level": "nominal",
+        "type": "string",
+        "length": 1000
+    }
+]

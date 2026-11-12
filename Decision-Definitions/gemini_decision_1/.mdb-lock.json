@@ -1,0 +1,14 @@
+{
+    "generator": "mdb 2.5.0",
+    "manifest_sha256": "8358d6f0938065fd29abf3ba1088aca57fecdc39c44c0523ed7c51c517ad183f",
+    "files": {
+        "Model-Card.md": "e31029a657a233ba995ebdb724835c60d8caaddf1356bfb13bbbfeee4b5ad3c7",
+        "README.md": "acb3698a0c81e5541cfc21fbea9ed3a048ec96088cc4e13db686dfcf0e029607",
+        "geminiDecision1Score.py": "996e76665252b9c4b1bbc30bfea8013866891d83251ed75f5036c3d5b5fe6e89",
+        "inputVar.json": "de2cdec7ea81011e78fd0f553b1e2d060a135b1d3911a8b3f83909a9db4f96f3",
+        "modelConfiguration.json": "c9c5650f7688e070b16507106deb713cd9737e6714281ed15a641d11ffb58760",
+        "options.json": "6138c58b7157bd5e89a2ac03cf0b4ad86b5127d8b9e9f064a3989aeb87ebf830",
+        "outputVar.json": "44d1ba094471b76a2af5ad0b5106e11cc97111005d4f27211a772217222a3412",
+        "requirements.json": "23644c62b8ebaa9a08d4b6df1bb422a841ba0fa3da256b9e2fe01acd8d4ca483"
+    }
+}
