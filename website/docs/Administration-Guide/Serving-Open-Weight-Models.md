@@ -53,6 +53,8 @@ Then apply `SCR-LLM-Deployment-YAML/stage-weights-job-template.yaml` with the mo
 /mnt/weights/<model_id>
 ```
 
+A repository that holds several variants of one model needs only the one the definition loads. The ONNX repositories of Phi carry CPU, CUDA and DirectML builds, far more than the 2.6 GB the CPU variant takes: add `--include '<pattern>'` to the download line of the Job, with the pattern the definition names in `provider.params.hf.include` (`cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/*` for `phi_3_mini_4k`). The shipped `phi_3_mini_4k` and `phi_35_mini` read their weights this way.
+
 The Job itself is named `stage-weights-<job name>`, where the job name is the `model_id` with every `_` replaced by `-` (`stage-weights-von-1-2` for `von_1_2`): a Kubernetes name takes no underscore, so `kubectl apply` refuses a Job named after the `model_id` itself.
 
 The first call a model container answers loads the weights from the volume - tens of seconds for a checkpoint of a few GB on Azure Files - and every later call of that container reuses them: the score code keeps the loaded model for the life of the worker process, because SAS Container Runtime runs the score file again for each request.

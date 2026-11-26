@@ -12,6 +12,10 @@
 #                      a Job named after the model_id itself is refused
 #   {{ HF-REPO }}    - Hugging Face repository, e.g. Qwen/Qwen2.5-7B-Instruct
 #
+# A repository that holds several variants of one model (an ONNX repository
+# carries CPU, CUDA and DirectML builds): take only the variant the definition
+# names in provider.params.hf.include, by adding a line to the download below:
+#     --include 'cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/*' #
 # The Hugging Face token is only needed for GATED repositories. For a public
 # model, delete the HF_TOKEN env block below - no secret is required.
 # For a gated model, accept its license on Hugging Face first, then create:

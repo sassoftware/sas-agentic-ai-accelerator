@@ -749,9 +749,13 @@ def _hf_weight_steps(
             f"weights on the shared llm-weights volume instead - see the "
             f"Administration Guide page 'Serving Open-Weight Models'."
         )
+    # hf.include: a pattern of the files to take, for a repository that holds
+    # several variants of one model (an ONNX repository carries CPU, CUDA and
+    # DirectML builds; all of them are tens of GB).
+    include = f" --include '{hf['include']}'" if hf.get("include") else ""
     return [{
         "step": "download model",
-        "command": f"hf download --quiet {repo} --local-dir /pybox/model/{manifest.model_id}",
+        "command": f"hf download --quiet {repo}{include} --local-dir /pybox/model/{manifest.model_id}",
     }]
 
 
@@ -806,11 +810,13 @@ def _render_requirements(manifest: ModelManifest) -> str:
         hf = manifest.provider.params.get("hf", {})
         repo = hf.get("repo") or manifest.provider.model_version
         # onnxruntime-genai does not use torch; hf download needs no git-lfs.
+        # The hf_onnx score template feeds the prompt with Generator.append_tokens,
+        # which onnxruntime-genai has from 0.6 on.
         steps = [
             upgrade_step,
             {
                 "step": "install huggingface CLI and other packages",
-                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' onnxruntime-genai {KEEP_BASE_NUMPY}",
+                "command": f"pip3 -q install 'huggingface-hub>=0.18.0' 'onnxruntime-genai>=0.6' {KEEP_BASE_NUMPY}",
             },
         ]
         steps.extend(_hf_weight_steps(manifest, hf, repo))

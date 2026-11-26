@@ -3,15 +3,21 @@ kind: llm
 model_id: phi_35_mini
 display_name: Phi 3.5 Mini
 provider:
-  adapter: openai
-  model_version: phi_35_mini
-  params: {}
+  adapter: hf-selfhosted
+  model_version: microsoft/Phi-3.5-mini-instruct-onnx
+  params:
+    hf:
+      repo: microsoft/Phi-3.5-mini-instruct-onnx
+      gated: false
+      onnx_dir: cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4
+      include: cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4/*
   auth:
     mode: none
 runtime:
-  template: openai_chat
-  requirements_profile: api-wrapper
+  template: hf_onnx
+  requirements_profile: hf-onnx
   timeout_s: 60
+  weights_source: mounted
 options:
   max_tokens:
     default: 2048
@@ -34,8 +40,6 @@ metadata:
     second_cost: 3.9178e-05
 modeler: SAS Agentic AI Accelerator
 generation:
-  overrides:
-  - phi35miniScore.py
-  - requirements.json
+  overrides: []
   score_code_file: phi35miniScore.py
-  catalog_provenance: mdb import of hand-written folder
+  catalog_provenance: manual entry (self-hosted)

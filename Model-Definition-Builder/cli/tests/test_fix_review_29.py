@@ -149,7 +149,7 @@ def test_validate_names_the_refusal_once(tmp_path, monkeypatch, repo_root, core)
 
 def test_every_definition_of_the_repository_renders(repo_root, core):
     """The committed definitions with auth.mode none and a template that sends a key keep their scorer by hand
-    (the self-hosted Llama, Mistral NeMo and Phi folders): they are not refused. Every other one takes a key."""
+    (the self-hosted Llama and Mistral NeMo folders; the Phi folders are generated from hf_onnx since 2.6.1): they are not refused. Every other one takes a key."""
     kept = []
     for folder in _definitions(repo_root):
         manifest = load_manifest(folder)
@@ -157,4 +157,4 @@ def test_every_definition_of_the_repository_renders(repo_root, core):
         if manifest.provider.auth.mode == "none" and manifest.runtime.template in KEY_OPTION_TEMPLATES:
             assert effective_score_file(manifest) in manifest.generation.overrides, folder.name
             kept.append(folder.name)
-    assert sorted(kept) == ["llama_32_1b", "llama_32_3b", "mistral_nemo", "phi_35_mini", "phi_3_mini_4k"]
+    assert sorted(kept) == ["llama_32_1b", "llama_32_3b", "mistral_nemo"]

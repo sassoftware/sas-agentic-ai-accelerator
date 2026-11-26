@@ -1,14 +1,10 @@
 [
     {
-       "step":"install huggingface CLI",
-       "command":"pip3 -q install huggingface-hub[cli] \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
+        "step": "upgrade pip before pip install",
+        "command": "pip3 -q install --upgrade pip setuptools wheel"
     },
     {
-      "step":"install onnxruntime",
-      "command":"pip3 -q install onnxruntime-genai==0.5.2 \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
-    },
-    {
-       "step":"download model",
-       "command":"hf download microsoft/Phi-3.5-mini-instruct-onnx --include cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4/* --local-dir /pybox/model"
+        "step": "install huggingface CLI and other packages",
+        "command": "pip3 -q install 'huggingface-hub>=0.18.0' 'onnxruntime-genai>=0.6' \"numpy==$(python3 -c 'import numpy; print(numpy.__version__)')\""
     }
 ]

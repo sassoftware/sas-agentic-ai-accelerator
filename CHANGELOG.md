@@ -2,6 +2,13 @@
 
 This changelog documents all the different updates that occur for this framework.
 
+## [Unreleased]
+
+### Changed
+
+- **Phi 3 Mini and Phi 3.5 Mini read their weights from the shared volume.** `phi_3_mini_4k` and `phi_35_mini` are now generated from the `hf_onnx` template with `weights_source: mounted` and the current `onnxruntime-genai` (0.6 or newer; they pinned 0.5.2). Their image holds no weights and builds in about a minute. Before you publish one, stage its weights once with the staging Job and `--include` ([Serving Open-Weight Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Serving-Open-Weight-Models)), then deploy with `mdb deploy`, which mounts the volume.
+- **`provider.params.hf.include`** narrows the download of a baked self-hosted model to a file pattern, for repositories that hold several variants.
+
 ## [2.6.0] - 2026-11-12
 
 The RAG Builder offers Weaviate, Gemini Decision 1 joins the decision models, and models published on a current SAS Viya start again: their images no longer pin numpy.

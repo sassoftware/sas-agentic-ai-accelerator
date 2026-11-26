@@ -276,3 +276,40 @@ def test_no_committed_image_pins_a_numpy_of_its_own(repo_root):
         for step in json.loads(path.read_text(encoding="utf-8")):
             if "numpy" in step["command"]:
                 assert KEEP_BASE_NUMPY in step["command"], f"{path.parent.name}: {step['command']}"
+
+
+# -- Phi on the generated ONNX template, weights on the shared volume ------------------
+
+def test_hf_include_narrows_the_baked_download():
+    """An ONNX repository holds CPU, CUDA and DirectML builds of one model: hf.include names the files to take."""
+    from mdb.core.generator import _render_requirements
+    hf = {"repo": "org/model-onnx", "onnx_dir": "cpu/int4", "include": "cpu/int4/*"}
+    manifest = _manifest(provider=ProviderBlock(adapter="hf-selfhosted", model_version="org/model-onnx",
+                                                params={"hf": hf}, auth=AuthBlock(mode="none")),
+                         runtime=RuntimeBlock(template="hf_onnx", requirements_profile="hf-onnx"))
+    commands = [step["command"] for step in json.loads(_render_requirements(manifest))]
+    assert commands[-1] == "hf download --quiet org/model-onnx --include 'cpu/int4/*' --local-dir /pybox/model/test_model_1"
+    # the hf_onnx scorer calls Generator.append_tokens, which onnxruntime-genai has from 0.6 on
+    assert any("'onnxruntime-genai>=0.6'" in command for command in commands)
+
+
+@pytest.mark.parametrize("model_id, score, onnx_dir", [
+    ("phi_3_mini_4k", "phi3Score.py", "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"),
+    ("phi_35_mini", "phi35miniScore.py", "cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4"),
+])
+def test_phi_definitions_are_generated_and_read_mounted_weights(repo_root, core, model_id, score, onnx_dir):
+    """The image holds no weights: a build that downloads 2.6 GB failed on the test system (buildkit, EOF), and the
+    hand-written scorers called an onnxruntime-genai API that 0.6 removed (params.input_ids, model.generate).
+    Measured 2026-11-26: the image builds in about a minute and the container answers with onnxruntime-genai 0.20."""
+    from mdb.core.manifest import load_manifest
+    folder = repo_root / "LLM-Definitions" / model_id
+    manifest = load_manifest(folder)
+    assert manifest.runtime.template == "hf_onnx" and manifest.runtime.weights_source == "mounted"
+    assert manifest.generation.overrides == [] and manifest.generation.score_code_file == score
+    rendered = render_assets(manifest, core)
+    text = rendered[score].decode()
+    assert f"onnx_dir = '/pybox/model/mount/{model_id}/{onnx_dir}'" in text
+    assert "generator.append_tokens(input_tokens)" in text and "params.input_ids" not in text
+    commands = " ".join(step["command"] for step in json.loads(rendered["requirements.json"].decode()))
+    assert "hf download" not in commands and "onnxruntime-genai==0.5.2" not in commands
+    assert (folder / score).read_text(encoding="utf-8").splitlines() == text.splitlines()

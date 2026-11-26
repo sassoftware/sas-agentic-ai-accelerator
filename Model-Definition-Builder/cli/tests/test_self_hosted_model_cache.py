@@ -299,9 +299,9 @@ def test_every_template_that_loads_weights_is_covered():
     including = {path.name.split(".")[0] for path in TEMPLATES.glob("*.py.j2")
                  if '{% include "partials/_model_cache.py.j2" %}' in path.read_text(encoding="utf-8")}
     assert including == set(SELF_HOSTED) == set(HARNESS)
-    # the committed definitions cover all but hf_onnx, which is built in the test
-    assert {load_manifest(folder).runtime.template for folder in COMMITTED.values()} == set(SELF_HOSTED) - {"hf_onnx"}
-    assert len(COMMITTED) == 14
+    # the committed definitions cover every one of them (hf_onnx: the two Phi definitions)
+    assert {load_manifest(folder).runtime.template for folder in COMMITTED.values()} == set(SELF_HOSTED)
+    assert len(COMMITTED) == 16
 
 
 @pytest.mark.parametrize("model_id", sorted(COMMITTED))
