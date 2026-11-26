@@ -36,6 +36,12 @@ kubectl apply -f llm-weights-pvc.yaml -n llm
 
 Size it for the total of every model you intend to stage, plus headroom.
 
+## mdb tells you when to switch
+
+`mdb add`, `mdb validate --live`, `mdb publish` and `mdb ship` ask Hugging Face how much the image build of a baked model downloads, with `provider.params.hf.include` applied. Above 2 GB they print the size and recommend the shared volume, and `mdb add` offers to set `weights_source: mounted` for you. It is a recommendation: the command goes on, and offline (`--offline`, `MDB_OFFLINE`) or for a repository Hugging Face does not list nothing is asked.
+
+Measured on 2026-11-26 on the test system: an image build that downloaded 2.6 GB failed twice with a buildkit connection error; with the same weights staged on the volume the image built in about a minute.
+
 ## Stage the weights
 
 Run a one-off Job that downloads a model into the volume. Only this Job needs a Hugging Face token, and only for gated repositories.
@@ -52,6 +58,8 @@ Then apply `SCR-LLM-Deployment-YAML/stage-weights-job-template.yaml` with the mo
 ```
 /mnt/weights/<model_id>
 ```
+
+A repository that holds several variants of one model needs only the one the definition loads. The ONNX repositories of Phi carry CPU, CUDA and DirectML builds, far more than the 2.6 GB the CPU variant takes: add `--include '<pattern>'` to the download line of the Job, with the pattern the definition names in `provider.params.hf.include` (`cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/*` for `phi_3_mini_4k`). The shipped `phi_3_mini_4k` and `phi_35_mini` read their weights this way.
 
 The Job itself is named `stage-weights-<job name>`, where the job name is the `model_id` with every `_` replaced by `-` (`stage-weights-von-1-2` for `von_1_2`): a Kubernetes name takes no underscore, so `kubectl apply` refuses a Job named after the `model_id` itself.
 

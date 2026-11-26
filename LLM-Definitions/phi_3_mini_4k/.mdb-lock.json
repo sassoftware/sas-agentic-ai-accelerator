@@ -1,12 +1,14 @@
 {
-    "generator": "mdb 2.3.1",
-    "manifest_sha256": "b2fc344c072a35c22b3268933ea68a6cb7d6e833860b856580e846420a6a2cd9",
+    "generator": "mdb 2.6.0",
+    "manifest_sha256": "572b00dde3d2d96c0beb3bafd7f3490d52cc9a39af6c2b921c2963653eccd3f7",
     "files": {
-        "Model-Card.md": "976970ef5e3690f01b643a8650b516c6efa7c6c0ae810619b0d05056f93bb97c",
-        "README.md": "9df3b687f4d389dec632b2f3fbba5959ccfc4db4ad2e792e74cbc597eb15e52f",
+        "Model-Card.md": "b2b87841ec51c1df93857cc03d28b690cdf00d0adbe541b9023c2d8582ce8619",
+        "README.md": "9bd991246c5b29059b373333610113031c97267fe1512fc02b5ecd9137597c5c",
         "inputVar.json": "0002f5ff18dd98033aa773d20d61c2b377a053aeb4b7c8c6fb891672ba79a06d",
         "modelConfiguration.json": "d3b328c6ac36879e28ad68982397706790d6aec153513072718194aaaa495832",
         "options.json": "01bedff4248b364e7ce96d8ffa4eb7d3f8f76f6b2d56ba1db5a696b76a9d1752",
-        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2"
+        "outputVar.json": "6c266c15308588bd656793c367c5f2bf64532a31f138105cd14ece8bfcab21b2",
+        "phi3Score.py": "4defba090ae9814bdaab207a5dbb10abf51ad0e7ce7c10469b40b3f2073e9c1a",
+        "requirements.json": "010e23c858143673db9c0b283b0e8e43696af085b4bcfa3f5c05a11fdb6bbf90"
     }
 }

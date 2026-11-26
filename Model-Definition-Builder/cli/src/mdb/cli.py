@@ -605,6 +605,24 @@ def _review_catalog_values(manifest, skip_review: bool, core=None) -> None:
                 console.print(f"[yellow]'{_plain(raw)}' is not a number - keeping {_plain(current)}.[/yellow]")
 
 
+def _weights_advice(manifest: ModelManifest, session=None) -> Optional[str]:
+    """The recommendation of core.weights for a definition whose image build downloads more than 2 GB, printed
+    in yellow; None when there is nothing to say. Asking Hugging Face is best effort: offline, a gated or an
+    unknown repository says nothing here and never fails the command."""
+    from .core.weights import baked_download, baked_source, mounting_advice
+    if baked_source(manifest) is None or env_flag("MDB_OFFLINE"):
+        return None
+    try:
+        advice = mounting_advice(manifest, baked_download(manifest, session or make_session()))
+    except Exception as exc:
+        console.print(f"[dim]{_plain(manifest.model_id)}: the size of the weights was not checked "
+                      f"({_plain(one_line(str(exc)))}).[/dim]")
+        return None
+    if advice:
+        _line(advice, "yellow")
+    return advice
+
+
 @app.command()
 def add(
     provider: Optional[str] = typer.Argument(None, help="Provider adapter id (see 'mdb providers')"),
@@ -790,6 +808,9 @@ def add(
         # - confirm them consciously by default; --accept-defaults / --yes skip
         # the review (unknown token pricing is still asked/warned about).
         _review_catalog_values(manifest, skip_review=yes or accept_defaults, core=ctx.core)
+        if not offline and _weights_advice(manifest) and not yes and \
+                Confirm.ask("Read the weights from the shared volume (weights_source: mounted)?", default=True):
+            manifest.runtime.weights_source = "mounted"
         rendered = render_assets(manifest, ctx.core)
     except (GenerationError, ValueError) as exc:
         _line(one_line(str(exc)), "red")
@@ -955,6 +976,7 @@ def validate(
             else:
                 has_error = True
                 console.print(f"[red]{_plain(folder.name)}: smoke test failed - {_plain(result.detail)}[/red]")
+            _weights_advice(manifest, session)
     raise typer.Exit(1 if has_error else 0)
 
 
@@ -4084,6 +4106,8 @@ def publish(
     with _viya_session() as session:
         for folder in ctx.resolve_targets(ids or [], all_):
             model_id = folder.name
+            if (folder / MANIFEST_FILENAME).is_file():
+                _weights_advice(load_manifest(folder))
             try:
                 state = publish_model(session, model_id, dest, wait=wait)
             except Exception as exc:

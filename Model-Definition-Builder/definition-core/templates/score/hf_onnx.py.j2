@@ -4,9 +4,9 @@ import logging
 import sys
 import onnxruntime_genai as og
 
-# Self-hosted ONNX model via onnxruntime-genai. The weights are downloaded
-# into the image at build time (see requirements.json); onnx_dir points at
-# the variant folder inside the downloaded repo.
+# Self-hosted ONNX model via onnxruntime-genai (0.6 or newer). The weights are
+# in the image (weights_source baked, downloaded at build time) or on the shared
+# llm-weights volume (mounted); onnx_dir is the variant folder to load.
 onnx_dir = '{{ onnx_dir }}'
 
 {% include "partials/_model_cache.py.j2" %}
