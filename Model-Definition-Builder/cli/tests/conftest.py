@@ -122,3 +122,16 @@ def core(repo_root: Path) -> CoreAssets:
 @pytest.fixture(scope="session")
 def fact_sheet(repo_root: Path) -> Path:
     return fact_sheet_path(repo_root, "llm")
+
+
+@pytest.fixture(autouse=True)
+def no_weights_request(monkeypatch):
+    """mdb add, validate --live and publish ask Hugging Face for the size of a baked model's weights
+    (core.weights). No test asks for real: the request is refused here, which the commands treat as
+    "not checked", and a test of the check puts its own listing in place of this one."""
+    from mdb.core import weights
+
+    def refused(session, url, headers=None, offline=False):
+        raise RuntimeError("no request to Hugging Face in a test")
+
+    monkeypatch.setattr(weights, "get_json", refused)

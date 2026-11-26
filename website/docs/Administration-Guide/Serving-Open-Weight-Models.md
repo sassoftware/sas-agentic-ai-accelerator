@@ -36,6 +36,12 @@ kubectl apply -f llm-weights-pvc.yaml -n llm
 
 Size it for the total of every model you intend to stage, plus headroom.
 
+## mdb tells you when to switch
+
+`mdb add`, `mdb validate --live`, `mdb publish` and `mdb ship` ask Hugging Face how much the image build of a baked model downloads, with `provider.params.hf.include` applied. Above 2 GB they print the size and recommend the shared volume, and `mdb add` offers to set `weights_source: mounted` for you. It is a recommendation: the command goes on, and offline (`--offline`, `MDB_OFFLINE`) or for a repository Hugging Face does not list nothing is asked.
+
+Measured on 2026-11-26 on the test system: an image build that downloaded 2.6 GB failed twice with a buildkit connection error; with the same weights staged on the volume the image built in about a minute.
+
 ## Stage the weights
 
 Run a one-off Job that downloads a model into the volume. Only this Job needs a Hugging Face token, and only for gated repositories.

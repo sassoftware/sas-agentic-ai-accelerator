@@ -4,6 +4,10 @@ This changelog documents all the different updates that occur for this framework
 
 ## [Unreleased]
 
+### Added
+
+- **mdb recommends the shared volume for large weights.** `mdb add`, `mdb validate --live`, `mdb publish` and `mdb ship` ask Hugging Face how much the image build of a baked self-hosted model downloads. Above 2 GB they print the size and recommend `weights_source: mounted`; `mdb add` offers to set it. Nothing is refused.
+
 ### Changed
 
 - **Phi 3 Mini and Phi 3.5 Mini read their weights from the shared volume.** `phi_3_mini_4k` and `phi_35_mini` are now generated from the `hf_onnx` template with `weights_source: mounted` and the current `onnxruntime-genai` (0.6 or newer; they pinned 0.5.2). Their image holds no weights and builds in about a minute. Before you publish one, stage its weights once with the staging Job and `--include` ([Serving Open-Weight Models](https://sassoftware.github.io/sas-agentic-ai-accelerator/Administration-Guide/Serving-Open-Weight-Models)), then deploy with `mdb deploy`, which mounts the volume.
